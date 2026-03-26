@@ -7,10 +7,10 @@
 // ============================================================
 
 // ─── Connexion MySQL ──────────────────────────────────────────
-define('DB_HOST',    'localhost');
-define('DB_NAME',    'telephonie_mobile');
+define('DB_HOST',    'simcity_db');
+define('DB_NAME',    'simcity_db');
 define('DB_USER',    'root');       // ← À modifier
-define('DB_PASS',    '');           // ← À modifier
+define('DB_PASS',    'root');           // ← À modifier
 define('DB_CHARSET', 'utf8mb4');
 
 // ─── Session ─────────────────────────────────────────────────
