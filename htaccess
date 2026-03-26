@@ -1,0 +1,51 @@
+# ============================================================
+#  SimCity — Protection des fichiers sensibles
+# ============================================================
+
+# ─── Bloquer l'accès direct à config.php ─────────────────────
+<Files "config.php">
+    Require all denied
+</Files>
+
+# ─── Bloquer l'accès direct à reset.php (sécurité critique) ──
+# Restreignez à votre IP d'administration ou supprimez le fichier.
+# Exemple : Require ip 192.168.1.0/24
+<Files "reset.php">
+    Require all denied
+</Files>
+
+# ─── Bloquer l'accès direct à install.php après installation ─
+<Files "install.php">
+    Require all denied
+</Files>
+
+# ─── Interdire l'exécution de scripts dans le dossier uploads ─
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Bloquer tout script PHP dans uploads/
+    RewriteRule ^uploads/.*\.php$ - [F,L]
+    RewriteRule ^uploads/.*\.phtml$ - [F,L]
+    RewriteRule ^uploads/.*\.phar$ - [F,L]
+</IfModule>
+
+# ─── En-têtes de sécurité HTTP ────────────────────────────────
+<IfModule mod_headers.c>
+    # Protection XSS navigateur
+    Header always set X-XSS-Protection "1; mode=block"
+
+    # Interdit le chargement dans une iframe (clickjacking)
+    Header always set X-Frame-Options "DENY"
+
+    # Interdit au navigateur de deviner le type MIME
+    Header always set X-Content-Type-Options "nosniff"
+
+    # HTTPS only - décommenter si vous utilisez HTTPS
+    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+    # Politique de référencement
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# ─── Cacher la version Apache ─────────────────────────────────
+ServerSignature Off
