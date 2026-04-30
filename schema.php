@@ -244,6 +244,11 @@ function simcity_apply_schema(PDO $pdo): void
     if (empty($pdo->query("SHOW COLUMNS FROM users LIKE 'active'")->fetchAll())) {
         $pdo->exec("ALTER TABLE users ADD COLUMN active TINYINT(1) NOT NULL DEFAULT 1 AFTER email");
     }
+    if (empty($pdo->query("SHOW COLUMNS FROM users LIKE 'is_admin'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0 AFTER active");
+        // Le compte admin initial devient super-admin
+        $pdo->exec("UPDATE users SET is_admin=1 WHERE username='admin'");
+    }
 
     // ─────────────────────────────────────────────────────────
     // DONNÉES PAR DÉFAUT

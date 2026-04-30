@@ -443,7 +443,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
         $waitSec = (int)$_SESSION['login_locked_until'] - time();
         $login_error = "Trop de tentatives. Réessayez dans $waitSec seconde(s).";
     } else {
-        $st = $pdo->prepare("SELECT id, username, password, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name FROM users WHERE username=?");
+        $st = $pdo->prepare("SELECT id, username, password, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name, IFNULL(is_admin,0) as is_admin FROM users WHERE username=?");
         $st->execute([trim($_POST['username'] ?? '')]);
         $u = $st->fetch();
         if ($u && password_verify($_POST['password'] ?? '', $u['password'])) {
@@ -457,6 +457,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                 $_SESSION['login_locked_until'] = 0;
                 $_SESSION['user_id'] = $u['id'];
                 $_SESSION['username'] = $u['username'];
+                $_SESSION['is_admin'] = !empty($u['is_admin']);
                 $fullName = trim(($u['first_name'] ?? '') . ' ' . ($u['last_name'] ?? ''));
                 if ($fullName) $_SESSION['admin_fullname'] = $fullName;
                 header('Location: index.php'); exit;
@@ -941,6 +942,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 invalidateAgentSignatures($pdo, $agentId, "Réinitialisation manuelle par l'administrateur");
             }
             flash('success', 'Signatures réinitialisées. Un nouveau bon devra être signé.');
+        } elseif ($ent === 'db_reset') {
+            // Réinitialisation complète — super-admin uniquement
+            if (empty($_SESSION['is_admin'])) { flash('error', 'Accès refusé.'); }
+            elseif (($d['confirm_word'] ?? '') !== 'SUPPRIMER') { flash('error', 'Mot de confirmation incorrect.'); }
+            else {
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+                $pdo->exec("DROP TABLE IF EXISTS `signatures`,`sign_tokens`,`sim_history`,`attachments`,`mobile_lines`,`devices`,`history_logs`,`agents`,`billing_accounts`,`plan_types`,`operators`,`models`,`services`,`settings`,`users`");
+                $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                session_destroy();
+                header('Location: install.php'); exit;
+            }
         } elseif ($ent === 'service') {
             if ($act === 'add') $pdo->prepare("INSERT INTO services(name,direction,notes)VALUES(?,?,?)")->execute([S($d,'name'),S($d,'direction'),S($d,'notes')]);
             elseif ($act === 'edit') $pdo->prepare("UPDATE services SET name=?,direction=?,notes=? WHERE id=?")->execute([S($d,'name'),S($d,'direction'),S($d,'notes'),$id]);
@@ -957,16 +969,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($ent === 'billing') {
             if ($act === 'add') $pdo->prepare("INSERT INTO billing_accounts(account_number,name,notes)VALUES(?,?,?)")->execute([S($d,'account_number'),S($d,'name'),S($d,'notes')]);
             elseif ($act === 'edit') $pdo->prepare("UPDATE billing_accounts SET account_number=?,name=?,notes=? WHERE id=?")->execute([S($d,'account_number'),S($d,'name'),S($d,'notes'),$id]);
-        } elseif ($ent === 'admin') { 
+        } elseif ($ent === 'admin') {
+            $isAdminVal = !empty($_SESSION['is_admin']) ? (!empty($d['is_admin']) ? 1 : 0) : null;
             if ($act === 'add') {
-                $pdo->prepare("INSERT INTO users(username, password, first_name, last_name, email) VALUES(?,?,?,?,?)")->execute([S($d,'username'), password_hash(S($d,'password'), PASSWORD_DEFAULT), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email')]);
+                $pdo->prepare("INSERT INTO users(username, password, first_name, last_name, email, is_admin) VALUES(?,?,?,?,?,?)")->execute([S($d,'username'), password_hash(S($d,'password'), PASSWORD_DEFAULT), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email'), $isAdminVal ?? 0]);
                 logHistory($pdo, 'admin', $pdo->lastInsertId(), "Création de l'administrateur ".S($d,'username'));
             } elseif ($act === 'edit') {
+                $isAdminSet = $isAdminVal !== null ? ', is_admin=?' : '';
+                $params = [S($d,'username'), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email')];
                 if (!empty($d['password'])) {
-                    $pdo->prepare("UPDATE users SET username=?, password=?, first_name=?, last_name=?, email=? WHERE id=?")->execute([S($d,'username'), password_hash(S($d,'password'), PASSWORD_DEFAULT), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email'), $id]);
+                    $sql = "UPDATE users SET username=?, password=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
+                    array_splice($params, 1, 0, [password_hash(S($d,'password'), PASSWORD_DEFAULT)]);
                 } else {
-                    $pdo->prepare("UPDATE users SET username=?, first_name=?, last_name=?, email=? WHERE id=?")->execute([S($d,'username'), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email'), $id]);
+                    $sql = "UPDATE users SET username=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
                 }
+                if ($isAdminVal !== null) $params[] = $isAdminVal;
+                $params[] = $id;
+                $pdo->prepare($sql)->execute($params);
                 logHistory($pdo, 'admin', $id, "Modification du compte administrateur ".S($d,'username'));
             } elseif ($act === 'disable') {
                 // Empêcher la désactivation de son propre compte
@@ -1918,6 +1937,47 @@ elseif ($page === 'refs') {
 
     </div><!-- fin grille paramètres -->
 
+    <?php if(!empty($_SESSION['is_admin'])): ?>
+    <!-- Bloc reset — super-admin uniquement -->
+    <div class="card" style="margin-top:1.5rem;border-color:var(--danger);border-width:1px;">
+      <div class="card-header" style="color:var(--danger);">⚠️ Zone dangereuse</div>
+      <div style="padding:1.5rem;">
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+          Supprime <strong>toutes les données</strong> (lignes, matériels, agents, historique, comptes…) et recrée la structure vide.<br>
+          <strong style="color:var(--danger);">Cette action est irréversible. Effectuez une sauvegarde MySQL avant de continuer.</strong>
+        </p>
+        <button type="button" class="btn-primary" style="background:var(--danger);box-shadow:none;"
+          onclick="openModal('modal-db-reset')">🗑️ Réinitialiser la base de données</button>
+      </div>
+    </div>
+
+    <!-- Modal confirmation reset DB -->
+    <div class="modal-overlay" id="modal-db-reset">
+      <div class="modal" style="border:1px solid var(--danger);">
+        <div class="modal-header" style="border-color:var(--danger);">
+          <h3 style="color:var(--danger);">⚠️ Confirmer la réinitialisation</h3>
+          <button type="button" class="modal-close" onclick="closeModal('modal-db-reset')">✕</button>
+        </div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="db_reset">
+          <input type="hidden" name="_action" value="reset">
+          <p style="color:var(--text2);font-size:.9rem;margin-bottom:1.5rem;line-height:1.6;">
+            Toutes les tables seront supprimées et vous serez redirigé vers <code>install.php</code> pour recréer la structure.<br><br>
+            <strong>Tapez <span style="color:var(--danger);font-family:var(--font-mono);">SUPPRIMER</span> pour confirmer :</strong>
+          </p>
+          <div class="form-group form-full">
+            <input type="text" name="confirm_word" autocomplete="off" placeholder="SUPPRIMER" required
+              style="font-family:var(--font-mono);border-color:var(--danger);">
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" onclick="closeModal('modal-db-reset')">Annuler</button>
+            <button type="submit" class="btn-primary" style="background:var(--danger);box-shadow:none;">Supprimer toutes les données</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <?php endif; ?>
+
     <?php else: ?>
     <div class="search-bar-wrap">
       <div class="search-bar"><span class="search-bar-icon">🔍</span><input type="text" placeholder="Filtrer..." oninput="tableSearch(this,'tbody-refs','count')"></div>
@@ -2052,6 +2112,14 @@ elseif ($page === 'refs') {
             <div class="form-group form-full"><label>Adresse e-mail</label><input type="email" name="email" id="<?=$act?>-email"></div>
             <div class="form-group"><label>Identifiant (login) *</label><input type="text" name="username" id="<?=$act?>-username" required></div>
             <div class="form-group"><label>Mot de passe <?=$act==='edit'?'(Laissez vide pour ne pas modifier)':'*'?></label><input type="password" name="password" id="<?=$act?>-password" <?=$act==='add'?'required':''?>></div>
+            <?php if(!empty($_SESSION['is_admin'])): ?>
+            <div class="form-group form-full">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;">
+                <input type="checkbox" name="is_admin" id="<?=$act?>-is_admin" value="1" style="width:15px;height:15px;accent-color:var(--danger);">
+                <span>Super-administrateur <small style="color:var(--text3);">(accès à la réinitialisation de la base de données)</small></span>
+              </label>
+            </div>
+            <?php endif; ?>
         <?php endif; ?>
       </div>
       <div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('modal-<?=$act?>-<?=$ent?>')">Annuler</button><button type="submit" class="btn-primary">Enregistrer</button></div>
@@ -2397,6 +2465,11 @@ function openEditModal(data, ent){
       else e.value = data[k] || ''; 
     }
   });
+  // Restaure la case is_admin pour les comptes admin
+  if(ent === 'admin') {
+    const chkAdmin = document.getElementById('edit-is_admin');
+    if(chkAdmin) chkAdmin.checked = (data.is_admin == 1 || data.is_admin === '1');
+  }
   // Restaure la case téléphone perso pour les lignes
   if(ent === 'line') {
     const chk = document.getElementById('edit-personal_device');
