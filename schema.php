@@ -85,18 +85,19 @@ function simcity_apply_schema(PDO $pdo): void
 
     // ── Matériels ────────────────────────────────────────────
     $pdo->exec("CREATE TABLE IF NOT EXISTS devices (
-        id            INT AUTO_INCREMENT PRIMARY KEY,
-        imei          VARCHAR(50) UNIQUE,
-        imei2         VARCHAR(50),
-        serial_number VARCHAR(100),
-        model_id      INT,
-        status        VARCHAR(20) DEFAULT 'Stock',
-        agent_id      INT NULL,
-        service_id    INT NULL,
-        purchase_date DATE NULL,
-        notes         TEXT,
-        archived      TINYINT(1) DEFAULT 0,
-        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        imei            VARCHAR(50) UNIQUE,
+        imei2           VARCHAR(50),
+        serial_number   VARCHAR(100),
+        inventory_label VARCHAR(100) NULL,
+        model_id        INT,
+        status          VARCHAR(20) DEFAULT 'Stock',
+        agent_id        INT NULL,
+        service_id      INT NULL,
+        purchase_date   DATE NULL,
+        notes           TEXT,
+        archived        TINYINT(1) DEFAULT 0,
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL
     ) ENGINE=InnoDB;");
 
@@ -224,6 +225,11 @@ function simcity_apply_schema(PDO $pdo): void
         $pdo->exec("ALTER TABLE mobile_lines ADD COLUMN esim            TINYINT(1) NOT NULL DEFAULT 0 AFTER sim_vierge");
         $pdo->exec("ALTER TABLE mobile_lines ADD COLUMN eid             VARCHAR(40) NULL              AFTER esim");
         $pdo->exec("ALTER TABLE mobile_lines ADD COLUMN activation_code TEXT NULL                     AFTER eid");
+    }
+
+    // devices.inventory_label
+    if (empty($pdo->query("SHOW COLUMNS FROM devices LIKE 'inventory_label'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE devices ADD COLUMN inventory_label VARCHAR(100) NULL AFTER serial_number");
     }
 
     // sign_tokens.dsi_name

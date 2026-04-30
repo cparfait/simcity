@@ -66,6 +66,28 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
             $pdo->prepare("UPDATE sign_tokens SET used_at=NOW() WHERE token=?")->execute([$token]);
             logHistory($pdo, 'agent', $tok['agent_id'], "✍️ Bon de ".($tok['bon_type']==='remise'?'remise':'restitution')." signé électroniquement par $signerName");
 
+            // Si bon de REMISE signé → activer les équipements si ce n'est pas déjà le cas
+            if ($tok['bon_type'] === 'remise') {
+                $agentId = (int)$tok['agent_id'];
+                $devActRows = $pdo->query("SELECT id FROM devices WHERE agent_id=$agentId AND archived=0 AND status!='Deployed'")->fetchAll();
+                if ($devActRows) {
+                    $pdo->prepare("UPDATE devices SET status='Deployed' WHERE agent_id=? AND archived=0")->execute([$agentId]);
+                    foreach ($devActRows as $dr) {
+                        $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('device',?,?,?)")
+                            ->execute([$dr['id'], "✅ Matériel mis en service — bon de remise signé par $signerName", 'Système']);
+                    }
+                }
+                $lineActRows = $pdo->query("SELECT id FROM mobile_lines WHERE agent_id=$agentId AND archived=0 AND status NOT IN ('Active','Stock') OR (agent_id=$agentId AND archived=0 AND status='Stock' AND sim_vierge=0)")->fetchAll();
+                if ($lineActRows) {
+                    foreach ($lineActRows as $lr) {
+                        $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('line',?,?,?)")
+                            ->execute([$lr['id'], "✅ Ligne activée — bon de remise signé par $signerName", 'Système']);
+                    }
+                    $pdo->prepare("UPDATE mobile_lines SET status='Active' WHERE agent_id=? AND archived=0 AND sim_vierge=0 AND status!='Active'")->execute([$agentId]);
+                }
+                logHistory($pdo, 'agent', $agentId, "✅ Bon de remise signé par $signerName — équipements activés", null);
+            }
+
             // Si bon de RESTITUTION signé → retour automatique en stock
             if ($tok['bon_type'] === 'restitution') {
                 $agentId = (int)$tok['agent_id'];
@@ -258,7 +280,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
     $id = (int)$_GET['agent_id'];
     $agt = $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=$id")->fetch();
     $lines = $pdo->query("SELECT l.phone_number, l.iccid, l.eid, l.activation_code, p.name as plan_name, COALESCE(l.personal_device,0) as personal_device, COALESCE(l.esim,0) as esim FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.agent_id=$id AND l.archived=0")->fetchAll();
-    $devices = $pdo->query("SELECT DISTINCT d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
+    $devices = $pdo->query("SELECT DISTINCT d.imei, d.serial_number, d.inventory_label, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
     $pdfLogo = getSetting($pdo, 'pdf_logo_path', '');
 
     // Générer ou réutiliser un token de signature (valable 30 jours)
@@ -296,7 +318,8 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
     function equipTable($devices, $lines) {
         $html = '<table><thead><tr><th>Type</th><th>Détails</th><th>Identifiant</th></tr></thead><tbody>';
         foreach($devices as $d) {
-            $html .= '<tr><td>Matériel</td><td>'.htmlspecialchars($d['brand'].' '.$d['name']).'</td><td>IMEI: '.htmlspecialchars($d['imei']).'</td></tr>';
+            $devId = htmlspecialchars($d['inventory_label'] ? 'Inv: '.$d['inventory_label'].' | S/N: '.($d['serial_number']?:$d['imei']) : 'IMEI: '.$d['imei'].($d['serial_number']?' | S/N: '.$d['serial_number']:''));
+            $html .= '<tr><td>Matériel</td><td>'.htmlspecialchars($d['brand'].' '.$d['name']).'</td><td>'.$devId.'</td></tr>';
         }
         foreach($lines as $l) {
             if(!empty($l['personal_device'])) {
@@ -606,20 +629,24 @@ if (isset($_GET['ajax_global_search'])) {
             'link'=>'?page=lines&tab='.($r['archived']?'archive':'active').'&q='.urlencode($r['phone_number']?:$r['iccid'])];
     }
 
-    // ── 2. LIGNES — via historique (ex-agent, ligne en stock) ───
+    // ── 2. LIGNES — via historique (ex-agent, ligne archivée) ─────
     if ($hasSpace) {
-        // "Prénom Nom" ou "Nom Prénom"
+        // "Prénom Nom" ou "Nom Prénom" — inclut les lignes archivées d'un agent
         $histLineQ = $pdo->prepare("SELECT DISTINCT h.entity_id FROM history_logs h
             WHERE h.entity_type='line'
               AND (h.action_desc LIKE ? OR h.action_desc LIKE ?
-                   OR (h.action_desc LIKE ? AND h.action_desc LIKE ?))
-            LIMIT 10");
-        $histLineQ->execute([$like, '%'.implode('%',$parts).'%',
-            $likeP1, $likeP2]);
+                   OR (h.action_desc LIKE ? AND h.action_desc LIKE ?)
+                   OR h.agent_id IN (SELECT id FROM agents WHERE first_name LIKE ? OR last_name LIKE ?
+                       OR CONCAT(first_name,' ',last_name) LIKE ? OR CONCAT(last_name,' ',first_name) LIKE ?))
+            LIMIT 15");
+        $histLineQ->execute([$like, '%'.implode('%',$parts).'%', $likeP1, $likeP2, $like, $like, $like, $like]);
     } else {
         $histLineQ = $pdo->prepare("SELECT DISTINCT h.entity_id FROM history_logs h
-            WHERE h.entity_type='line' AND h.action_desc LIKE ? LIMIT 10");
-        $histLineQ->execute([$like]);
+            WHERE h.entity_type='line'
+              AND (h.action_desc LIKE ?
+                   OR h.agent_id IN (SELECT id FROM agents WHERE first_name LIKE ? OR last_name LIKE ?))
+            LIMIT 15");
+        $histLineQ->execute([$like, $like, $like]);
     }
     foreach ($histLineQ->fetchAll(PDO::FETCH_COLUMN) as $lineId) {
         if (isset($seenLines[$lineId])) continue;
@@ -658,13 +685,18 @@ if (isset($_GET['ajax_global_search'])) {
         $histDevQ = $pdo->prepare("SELECT DISTINCT h.entity_id FROM history_logs h
             WHERE h.entity_type='device'
               AND (h.action_desc LIKE ? OR h.action_desc LIKE ?
-                   OR (h.action_desc LIKE ? AND h.action_desc LIKE ?))
-            LIMIT 10");
-        $histDevQ->execute([$like, '%'.implode('%',$parts).'%', $likeP1, $likeP2]);
+                   OR (h.action_desc LIKE ? AND h.action_desc LIKE ?)
+                   OR h.agent_id IN (SELECT id FROM agents WHERE first_name LIKE ? OR last_name LIKE ?
+                       OR CONCAT(first_name,' ',last_name) LIKE ? OR CONCAT(last_name,' ',first_name) LIKE ?))
+            LIMIT 15");
+        $histDevQ->execute([$like, '%'.implode('%',$parts).'%', $likeP1, $likeP2, $like, $like, $like, $like]);
     } else {
         $histDevQ = $pdo->prepare("SELECT DISTINCT h.entity_id FROM history_logs h
-            WHERE h.entity_type='device' AND h.action_desc LIKE ? LIMIT 10");
-        $histDevQ->execute([$like]);
+            WHERE h.entity_type='device'
+              AND (h.action_desc LIKE ?
+                   OR h.agent_id IN (SELECT id FROM agents WHERE first_name LIKE ? OR last_name LIKE ?))
+            LIMIT 15");
+        $histDevQ->execute([$like, $like, $like]);
     }
     foreach ($histDevQ->fetchAll(PDO::FETCH_COLUMN) as $devId) {
         if (isset($seenDevices[$devId])) continue;
@@ -1065,12 +1097,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($ent === 'device') {
             $mod = IV($d,'model_id'); $agt = IV($d,'agent_id'); $svc = IV($d,'service_id'); $pd = NV($d,'purchase_date');
             if ($act === 'add') {
-                $pdo->prepare("INSERT INTO devices(imei,imei2,serial_number,model_id,status,agent_id,service_id,purchase_date,notes)VALUES(?,?,?,?,?,?,?,?,?)")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),$mod,S($d,'status','Stock'),$agt,$svc,$pd,S($d,'notes')]);
-                $newId = $pdo->lastInsertId(); 
+                $pdo->prepare("INSERT INTO devices(imei,imei2,serial_number,inventory_label,model_id,status,agent_id,service_id,purchase_date,notes)VALUES(?,?,?,?,?,?,?,?,?,?)")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status','Stock'),$agt,$svc,$pd,S($d,'notes')]);
+                $newId = $pdo->lastInsertId();
                 if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $newId, "Matériel affecté à $agtName", $agt); }
             } elseif ($act === 'edit') {
                 $old = $pdo->query("SELECT agent_id FROM devices WHERE id=$id")->fetchColumn();
-                $pdo->prepare("UPDATE devices SET imei=?,imei2=?,serial_number=?,model_id=?,status=?,agent_id=?,service_id=?,purchase_date=?,notes=? WHERE id=?")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),$mod,S($d,'status'),$agt,$svc,$pd,S($d,'notes'),$id]);
+                $pdo->prepare("UPDATE devices SET imei=?,imei2=?,serial_number=?,inventory_label=?,model_id=?,status=?,agent_id=?,service_id=?,purchase_date=?,notes=? WHERE id=?")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status'),$agt,$svc,$pd,S($d,'notes'),$id]);
                 if ($old != $agt) {
                     if ($old) { logHistory($pdo, 'device', $id, "Matériel retiré de la dotation", $old); invalidateAgentSignatures($pdo, $old, "Matériel retiré"); }
                     if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $id, "Matériel affecté à $agtName", $agt); invalidateAgentSignatures($pdo, $agt, "Nouveau matériel affecté"); } 
@@ -1078,9 +1110,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } elseif ($act === 'archive') {
                 $old = $pdo->query("SELECT agent_id FROM devices WHERE id=$id")->fetchColumn();
-                $pdo->prepare("UPDATE devices SET archived=1, status=?, agent_id=NULL WHERE id=?")->execute([S($d,'archive_reason','HS'), $id]); 
-                logHistory($pdo, 'device', $id, "Matériel Archivé (Raison : ".S($d,'archive_reason').")", $old);
-                if ($old) invalidateAgentSignatures($pdo, $old, "Matériel archivé/perdu/cassé");
+                $archiveReason = S($d,'archive_reason','Non précisé');
+                $archiveComment = S($d,'archive_comment','');
+                $statusMap = ['Perdu'=>'Lost','Volé'=>'Lost','Cassé'=>'HS','Obsolète'=>'HS'];
+                $archiveStatus = $statusMap[$archiveReason] ?? 'HS';
+                $logMsg = "Matériel Archivé — Motif : $archiveReason" . ($archiveComment ? " — Commentaire : $archiveComment" : "");
+                $pdo->prepare("UPDATE devices SET archived=1, status=?, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$archiveStatus, $id]);
+                logHistory($pdo, 'device', $id, $logMsg, $old);
+                if ($old) invalidateAgentSignatures($pdo, $old, "Matériel archivé — $archiveReason");
                 $linesAff = $pdo->query("SELECT id, agent_id FROM mobile_lines WHERE device_id=$id")->fetchAll();
                 if ($linesAff) {
                     $pdo->prepare("UPDATE mobile_lines SET device_id=NULL WHERE device_id=?")->execute([$id]);
@@ -1117,8 +1154,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare("UPDATE mobile_lines SET iccid=?, pin=?, puk=?, sim_vierge=0$updateEsimPart WHERE id=?")
                 ->execute($updateParams);
             logHistory($pdo, 'line', $lid, "🔄 Changement de SIM — Motif : $reason (ancien ICCID : {$cur['iccid']})", $cur['agent_id']);
-            if ($cur['agent_id']) invalidateAgentSignatures($pdo, $cur['agent_id'], "Changement de carte SIM ($reason)");
-            flash('success', 'Changement de SIM enregistré avec succès.');
+            // Détecter si c'est une migration eSIM pour régénérer le bon
+            $isEsimSwap = (stripos($reason, 'esim') !== false || stripos($reason, 'eSIM') !== false || !empty($d['new_eid']) || !empty($d['new_activation_code']));
+            if ($cur['agent_id']) {
+                invalidateAgentSignatures($pdo, $cur['agent_id'], "Changement de carte SIM ($reason)");
+                if ($isEsimSwap) {
+                    flash('success', "Migration eSIM enregistrée — un nouveau bon de remise doit être généré et signé. Imprimez-le via l'icône 🖨️ de la ligne.");
+                } else {
+                    flash('success', 'Changement de SIM enregistré. Un nouveau bon de remise doit être généré et signé.');
+                }
+            } else {
+                flash('success', 'Changement de SIM enregistré avec succès.');
+            }
 
         } elseif ($ent === 'line') {
             $phoneNum = str_replace(' ', '', S($d,'phone_number'));
@@ -1173,8 +1220,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($act === 'archive') {
                 $devId = $pdo->query("SELECT device_id FROM mobile_lines WHERE id=$id")->fetchColumn();
                 $old = $pdo->query("SELECT agent_id FROM mobile_lines WHERE id=$id")->fetchColumn();
-                $pdo->prepare("UPDATE mobile_lines SET archived=1, status=?, device_id=NULL, agent_id=NULL, service_id=NULL WHERE id=?")->execute([S($d,'archive_reason','Resiliated'), $id]);
-                logHistory($pdo, 'line', $id, "Ligne Archivée (Raison : ".S($d,'archive_reason').")", $old);
+                $archiveReason = S($d,'archive_reason','Résiliation');
+                $archiveComment = S($d,'archive_comment','');
+                $logMsg = "Ligne Archivée — Motif : $archiveReason" . ($archiveComment ? " — Commentaire : $archiveComment" : "");
+                $pdo->prepare("UPDATE mobile_lines SET archived=1, status='Resiliated', device_id=NULL, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$id]);
+                logHistory($pdo, 'line', $id, $logMsg, $old);
 
                 if ($devId) {
                     $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]);
@@ -1197,7 +1247,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $page = preg_replace('/[^a-z_]/', '', $_GET['page'] ?? 'dashboard');
 $tab = preg_replace('/[^a-z_]/', '', $_GET['tab'] ?? 'active');
 
-$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres'];
+$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise'];
 ob_start();
 
 // ==================================================================
@@ -1390,7 +1440,7 @@ elseif ($page === 'lines') {
     $billings = $pdo->query("SELECT id, account_number, name FROM billing_accounts ORDER BY name")->fetchAll();
     $devices = $pdo->query("SELECT d.id, d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE d.archived=0 AND d.status='Stock' ORDER BY m.brand, m.name")->fetchAll();
     // SIM vierges en stock (pour le swap)
-    $simStock = $pdo->query("SELECT id, iccid, pin, puk, IFNULL(esim,0) as esim FROM mobile_lines WHERE archived=0 AND sim_vierge=1 AND iccid IS NOT NULL AND iccid != '' ORDER BY iccid")->fetchAll();
+    $simStock = $pdo->query("SELECT id, iccid, pin, puk, IFNULL(esim,0) as esim FROM mobile_lines WHERE archived=0 AND sim_vierge=1 ORDER BY iccid")->fetchAll();
     ?>
     <div class="page-header">
       <span class="page-title-txt">💳 Inventaire des Lignes & Cartes SIM</span>
@@ -1474,18 +1524,17 @@ elseif ($page === 'lines') {
           <td><?=statusBadge($l['status'])?></td>
           <td class="actions">
             <?php $hist = fetchEntityHistory($pdo, 'line', $l['id']); ?>
-            <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
             <?php if(!$isArchive): ?>
+                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'>✏️</button>
+                <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
                 <?php if($l['agent_id']): ?>
                 <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Imprimer le bon de remise" style="text-decoration:none;">🖨️</a>
                 <?php endif; ?>
                 <button class="btn-icon" title="Changer la SIM (garder le numéro)" style="color:var(--warning)"
                     onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')">🔄</button>
-                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'>✏️</button>
-                <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="archive"><input type="hidden" name="_id" value="<?=$l['id']?>">
-                    <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="(function(btn){var r=prompt('Raison de la résiliation ? (ex: Départ agent)');if(!r)return;var i=document.createElement('input');i.type='hidden';i.name='archive_reason';i.value=r;btn.form.appendChild(i);btn.form.submit();})(this)">🗄️</button>
-                </form>
+                <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>)">🗄️</button>
             <?php else: ?>
+                <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$l['id']?>"><button type="submit" class="btn-icon" title="Restaurer" style="color:var(--success)">♻️</button></form>
             <?php endif; ?>
           </td>
@@ -1669,6 +1718,38 @@ elseif ($page === 'lines') {
         </div>
       </form></div>
     </div>
+
+    <!-- Modal archivage ligne -->
+    <div class="modal-overlay" id="modal-archive-line">
+      <div class="modal" style="max-width:480px;">
+        <div class="modal-header"><h3>🗄️ Archiver / Résilier une ligne</h3><button type="button" class="modal-close" onclick="closeModal('modal-archive-line')">✕</button></div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="line">
+          <input type="hidden" name="_action" value="archive">
+          <input type="hidden" name="_id" id="archive-line-id">
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Motif *</label>
+              <select name="archive_reason" required>
+                <option value="">-- Sélectionner --</option>
+                <option value="Perte">📵 Perte du téléphone / SIM</option>
+                <option value="HS">⚠️ Hors service / Dysfonctionnement</option>
+                <option value="Résiliation">✂️ Résiliation du contrat</option>
+                <option value="Départ agent">👤 Départ de l'agent</option>
+              </select>
+            </div>
+            <div class="form-group form-full">
+              <label>Commentaire <span style="font-weight:400;text-transform:none;">(optionnel)</span></label>
+              <textarea name="archive_comment" rows="2" placeholder="Informations complémentaires..."></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" onclick="closeModal('modal-archive-line')">Annuler</button>
+            <button type="submit" class="btn-primary" style="background:var(--danger);box-shadow:none;">🗄️ Archiver</button>
+          </div>
+        </form>
+      </div>
+    </div>
     <?php
 }
 
@@ -1680,7 +1761,7 @@ elseif ($page === 'devices') {
     $where = "d.archived=" . ($isArchive ? "1" : "0");
     if ($isStock) $where .= " AND d.status='Stock'"; elseif (!$isArchive) $where .= " AND d.status!='Stock'";
 
-    $devices = $pdo->query("SELECT d.*, a.first_name, a.last_name, s.name as service_name, m.brand, m.name as model_name, m.category FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC")->fetchAll();
+    $devices = $pdo->query("SELECT d.id, d.imei, d.imei2, d.serial_number, d.inventory_label, d.model_id, d.status, d.agent_id, d.service_id, d.purchase_date, d.notes, d.archived, d.created_at, a.first_name, a.last_name, s.name as service_name, m.brand, m.name as model_name, m.category FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC")->fetchAll();
     
     $models = $pdo->query("SELECT id, brand, name FROM models ORDER BY brand, name")->fetchAll();
     $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
@@ -1723,7 +1804,7 @@ elseif ($page === 'devices') {
       <table class="data-table">
         <thead><tr>
           <th style="width:36px;cursor:default;"><input type="checkbox" id="chk-all-device" title="Tout sélectionner" onchange="toggleAllBulk('device',this.checked)" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></th>
-          <th>Modèle</th><th>Type</th><th>Identifiants (IMEI / Série)</th><th>Affectation</th><th>Statut</th><th>Date d'achat</th><th>Actions</th></tr></thead>
+          <th>Modèle</th><th>Type</th><th>Identifiants</th><th>Affectation</th><th>Statut</th><th>Date d'achat</th><th>Actions</th></tr></thead>
         <tbody id="tbody-dev">
         <?php if(empty($devices)): ?><tr><td colspan="8" class="empty-cell">Aucun équipement dans cet onglet</td></tr><?php endif; ?>
         <?php foreach($devices as $d): ?>
@@ -1731,19 +1812,18 @@ elseif ($page === 'devices') {
           <td><input type="checkbox" class="bulk-chk-device" value="<?=$d['id']?>" onchange="updateBulkBar('device')" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></td>
           <td><strong><?=h($d['brand'].' '.$d['model_name'])?></strong></td>
           <td><span class="badge badge-muted"><?=h($d['category']?:'N/A')?></span></td>
-          <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span></td>
+          <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span><?php if($d['inventory_label']): ?><br><span class="badge badge-muted" style="font-size:.68rem;">🏷️ <?=h($d['inventory_label'])?></span><?php endif; ?></td>
           <td><strong><?=h($d['first_name'].' '.$d['last_name']?:'Non affecté')?></strong><br><span class="muted">🏢 <?=h($d['service_name']?:'-')?></span></td>
           <td><?=statusBadge($d['status'])?></td>
           <td><?=$d['purchase_date']?date('d/m/Y',strtotime($d['purchase_date'])):'-'?></td>
           <td class="actions">
             <?php $hist = fetchEntityHistory($pdo, 'device', $d['id']); ?>
-            <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
             <?php if(!$isArchive): ?>
                 <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($d, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"device")'>✏️</button>
-                <form method="post" style="display:inline"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="archive"><input type="hidden" name="_id" value="<?=$d['id']?>">
-                    <button type="button" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="(function(btn){var r=prompt('Raison de l\'archivage ? (ex: Cassé, Perdu)');if(!r)return;var i=document.createElement('input');i.type='hidden';i.name='archive_reason';i.value=r;btn.form.appendChild(i);btn.form.submit();})(this)">🗄️</button>
-                </form>
+                <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
+                <button type="button" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="openArchiveDevice(<?=$d['id']?>)">🗄️</button>
             <?php else: ?>
+                <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$d['id']?>"><button type="submit" class="btn-icon" title="Restaurer au Stock" style="color:var(--success)">♻️</button></form>
             <?php endif; ?>
           </td>
@@ -1751,6 +1831,38 @@ elseif ($page === 'devices') {
         <?php endforeach; ?>
         </tbody>
       </table>
+    </div>
+
+    <!-- Modal archivage matériel -->
+    <div class="modal-overlay" id="modal-archive-device">
+      <div class="modal" style="max-width:480px;">
+        <div class="modal-header"><h3>🗄️ Archiver un matériel</h3><button type="button" class="modal-close" onclick="closeModal('modal-archive-device')">✕</button></div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="device">
+          <input type="hidden" name="_action" value="archive">
+          <input type="hidden" name="_id" id="archive-device-id">
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label>Motif de l'archivage *</label>
+              <select name="archive_reason" required>
+                <option value="">-- Sélectionner --</option>
+                <option value="Perdu">📵 Perdu</option>
+                <option value="Volé">🚨 Volé</option>
+                <option value="Cassé">💥 Cassé / HS</option>
+                <option value="Obsolète">⚡ Obsolète / Réformé</option>
+              </select>
+            </div>
+            <div class="form-group form-full">
+              <label>Commentaire <span style="font-weight:400;text-transform:none;">(optionnel)</span></label>
+              <textarea name="archive_comment" rows="2" placeholder="Informations complémentaires..."></textarea>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" onclick="closeModal('modal-archive-device')">Annuler</button>
+            <button type="submit" class="btn-primary" style="background:var(--danger);box-shadow:none;">🗄️ Archiver</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <?php foreach(['add'=>'Ajouter', 'edit'=>'Modifier'] as $act => $title): ?>
@@ -1765,6 +1877,7 @@ elseif ($page === 'devices') {
         <div class="form-group"><label>IMEI 1 *</label><input type="text" name="imei" id="<?=$act?>-imei" required></div>
         <div class="form-group"><label>IMEI 2</label><input type="text" name="imei2" id="<?=$act?>-imei2"></div>
         <div class="form-group"><label>Numéro de série</label><input type="text" name="serial_number" id="<?=$act?>-serial_number"></div>
+        <div class="form-group"><label>🏷️ Libellé d'inventaire</label><input type="text" name="inventory_label" id="<?=$act?>-inventory_label" placeholder="Ex: MOB-0042, IT-2024-001..."></div>
         <div class="form-group"><label>Date d'achat</label><input type="date" name="purchase_date" id="<?=$act?>-purchase_date"></div>
         <div class="form-group"><label>Statut</label>
           <select name="status" id="<?=$act?>-status"><option value="Stock">En Stock</option><option value="Deployed">Déployé</option><option value="Repair">En réparation</option></select>
@@ -2128,6 +2241,101 @@ elseif ($page === 'refs') {
     <?php endforeach;
 }
 
+// ==================================================================
+// VUE : HISTORIQUE DES BONS DE REMISE
+// ==================================================================
+elseif ($page === 'history') {
+    $bons = $pdo->query("
+        SELECT t.id, t.token, t.bon_type,
+               DATE_FORMAT(t.created_at, '%d/%m/%Y %H:%i') as created_at,
+               t.expires_at, t.used_at, t.created_by, t.dsi_name, t.agent_id,
+               CONCAT(IFNULL(a.first_name,''), ' ', IFNULL(a.last_name,'')) as agent_name,
+               IFNULL(svc.name, '—') as service_name,
+               a.archived as agent_archived,
+               (SELECT DATE_FORMAT(MAX(signed_at), '%d/%m/%Y %H:%i') FROM signatures WHERE token=t.token) as last_signed_at,
+               (SELECT signer_name FROM signatures WHERE token=t.token ORDER BY signed_at DESC LIMIT 1) as signer_name,
+               (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=0) as active_sigs,
+               (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=1) as archived_sigs
+        FROM sign_tokens t
+        LEFT JOIN agents a ON t.agent_id = a.id
+        LEFT JOIN services svc ON a.service_id = svc.id
+        ORDER BY t.created_at DESC
+    ")->fetchAll();
+    ?>
+    <div class="page-header">
+      <span class="page-title-txt">📋 Historique des Bons de Remise</span>
+    </div>
+
+    <div class="search-bar-wrap">
+      <div class="search-bar"><span class="search-bar-icon">🔍</span><input type="text" placeholder="Rechercher agent, service, créé par..." oninput="tableSearch(this,'tbody-history','count-history')"></div>
+      <div class="search-count" id="count-history"></div>
+    </div>
+
+    <div class="card" style="overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr>
+          <th>Type de Bon</th>
+          <th>Agent / Bénéficiaire</th>
+          <th>Créé le</th>
+          <th>Créé par (DSI)</th>
+          <th>Statut</th>
+          <th>Signé le / Par</th>
+          <th>Actions</th>
+        </tr></thead>
+        <tbody id="tbody-history">
+        <?php if(empty($bons)): ?><tr><td colspan="7" class="empty-cell">Aucun bon de remise généré</td></tr><?php endif; ?>
+        <?php foreach($bons as $b):
+            // Déterminer le statut
+            $now = time();
+            $isExpired = $b['expires_at'] && strtotime($b['expires_at']) < $now;
+            if ($b['active_sigs'] > 0) {
+                $statusLabel = '<span class="badge badge-success">✅ Signé</span>';
+            } elseif ($b['archived_sigs'] > 0 && $b['active_sigs'] == 0) {
+                $statusLabel = '<span class="badge badge-muted">🗄️ Archivé</span>';
+            } elseif ($isExpired) {
+                $statusLabel = '<span class="badge badge-warning">⏰ Expiré</span>';
+            } else {
+                $statusLabel = '<span class="badge" style="background:rgba(56,189,248,.15);color:var(--info);">⏳ En attente</span>';
+            }
+            $bonTypeLabel = $b['bon_type'] === 'remise' ? '📥 Remise' : '📤 Restitution';
+            $bonTypeColor = $b['bon_type'] === 'remise' ? 'var(--success)' : 'var(--warning)';
+        ?>
+        <tr>
+          <td><span style="font-weight:600;color:<?=$bonTypeColor?>"><?=$bonTypeLabel?></span></td>
+          <td>
+            <?php if($b['agent_id']): ?>
+              <strong style="cursor:pointer;border-bottom:1px dashed var(--border2);" onclick="viewAgent(<?=$b['agent_id']?>, '<?=h(trim($b['agent_name']))?>')" title="Voir la fiche"><?=h(trim($b['agent_name']))?></strong>
+            <?php else: ?>
+              <span class="muted">Agent supprimé</span>
+            <?php endif; ?>
+            <br><span class="muted">🏢 <?=h($b['service_name'])?></span>
+            <?php if($b['agent_archived']): ?><span class="badge badge-warning" style="font-size:.65rem;margin-left:4px;">🗄️ Parti</span><?php endif; ?>
+          </td>
+          <td><?=h($b['created_at'])?></td>
+          <td><?=h($b['dsi_name'] ?: $b['created_by'] ?: '—')?></td>
+          <td><?=$statusLabel?></td>
+          <td>
+            <?php if($b['last_signed_at']): ?>
+              <strong style="color:var(--success);font-size:.85rem;"><?=h($b['last_signed_at'])?></strong>
+              <?php if($b['signer_name']): ?><br><span class="muted">par <?=h($b['signer_name'])?></span><?php endif; ?>
+              <?php if($b['archived_sigs'] > 0): ?><br><span style="font-size:.7rem;color:var(--text3);"><?=$b['archived_sigs']?> version(s) archivée(s)</span><?php endif; ?>
+            <?php else: ?>
+              <span class="muted">—</span>
+            <?php endif; ?>
+          </td>
+          <td class="actions">
+            <?php if($b['agent_id']): ?>
+              <a href="index.php?page=pdf_bon&agent_id=<?=$b['agent_id']?>" target="_blank" class="btn-icon" title="Voir / Imprimer le bon de remise actuel" style="text-decoration:none;">🖨️</a>
+            <?php endif; ?>
+          </td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <?php
+}
+
 $content = ob_get_clean();
 ?>
 
@@ -2216,6 +2424,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
     <a href="?page=devices" class="nav-item <?=$page==='devices'?'active':''?>"><span class="nav-icon">📱</span><span class="nav-label">Matériels (Mobiles)</span></a>
     
     <div class="sidebar-section">Outils</div>
+    <a href="?page=history" class="nav-item <?=$page==='history'?'active':''?>"><span class="nav-icon">📋</span><span class="nav-label">Historique des bons</span></a>
     <a href="?page=refs" class="nav-item <?=$page==='refs'?'active':''?>"><span class="nav-icon">⚙️</span><span class="nav-label">Référentiels & Comptes</span></a>
     <?php
     $navOperators = $pdo->query("SELECT name, website FROM operators WHERE website IS NOT NULL AND website != '' ORDER BY name")->fetchAll();
@@ -2555,6 +2764,24 @@ function showHistory(data) {
 
 function openSidebar(){ document.getElementById('sidebar').classList.add('open'); document.getElementById('sidebar-overlay').classList.add('open'); }
 function closeSidebar(){ document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebar-overlay').classList.remove('open'); }
+
+// ARCHIVE MODALS
+function openArchiveDevice(id) {
+  const el = document.getElementById('archive-device-id');
+  if (el) el.value = id;
+  // Reset form
+  const form = document.querySelector('#modal-archive-device form');
+  if (form) { form.querySelector('select[name="archive_reason"]').value = ''; const ta = form.querySelector('textarea'); if(ta) ta.value = ''; }
+  openModal('modal-archive-device');
+}
+function openArchiveLine(id) {
+  const el = document.getElementById('archive-line-id');
+  if (el) el.value = id;
+  // Reset form
+  const form = document.querySelector('#modal-archive-line form');
+  if (form) { form.querySelector('select[name="archive_reason"]').value = ''; const ta = form.querySelector('textarea'); if(ta) ta.value = ''; }
+  openModal('modal-archive-line');
+}
 
 // SIM SWAP
 function openSimSwap(lineId, phone, iccid, isEsim, eid) {
