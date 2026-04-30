@@ -1439,8 +1439,8 @@ elseif ($page === 'lines') {
     $plans = $pdo->query("SELECT p.id, p.name, IFNULL(o.name,'') as operator_name FROM plan_types p LEFT JOIN operators o ON p.operator_id=o.id ORDER BY o.name, p.name")->fetchAll();
     $billings = $pdo->query("SELECT id, account_number, name FROM billing_accounts ORDER BY name")->fetchAll();
     $devices = $pdo->query("SELECT d.id, d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE d.archived=0 AND d.status='Stock' ORDER BY m.brand, m.name")->fetchAll();
-    // SIM vierges en stock (pour le swap)
-    $simStock = $pdo->query("SELECT id, iccid, pin, puk, IFNULL(esim,0) as esim FROM mobile_lines WHERE archived=0 AND sim_vierge=1 ORDER BY iccid")->fetchAll();
+    // Toutes les SIM en stock (pour le swap) — vierges ET numérotées non affectées
+    $simStock = $pdo->query("SELECT id, phone_number, iccid, pin, puk, IFNULL(esim,0) as esim, IFNULL(sim_vierge,0) as sim_vierge FROM mobile_lines WHERE archived=0 AND status='Stock' ORDER BY phone_number, iccid")->fetchAll();
     ?>
     <div class="page-header">
       <span class="page-title-txt">💳 Inventaire des Lignes & Cartes SIM</span>
@@ -1666,17 +1666,20 @@ elseif ($page === 'lines') {
           </div>
 
           <div class="form-group form-full">
-            <label>Choisir une SIM vierge en stock</label>
+            <label>Choisir une SIM en stock</label>
             <select id="swap-sim-stock" onchange="fillSwapFromStock(this)">
-              <option value="">-- <?= count($simStock) > 0 ? count($simStock).' SIM(s) disponible(s) en stock' : 'Aucune SIM vierge en stock' ?> --</option>
+              <option value="">-- <?= count($simStock) > 0 ? count($simStock).' SIM(s) disponible(s) en stock' : 'Aucune SIM en stock' ?> --</option>
               <?php foreach($simStock as $sv): ?>
               <option value="<?=h($sv['iccid'])?>"
                 data-pin="<?=h($sv['pin'])?>"
                 data-puk="<?=h($sv['puk'])?>"
                 data-id="<?=$sv['id']?>"
-                data-esim="<?=!empty($sv['esim'])?'1':'0'?>">
-                <?= !empty($sv['esim']) ? '📲 eSIM — ' : '💳 SIM — ' ?><?=h($sv['iccid'])?>
-                <?= $sv['pin'] ? ' (PIN: '.$sv['pin'].')' : '' ?>
+                data-esim="<?=!empty($sv['esim'])?'1':'0'?>"
+                data-phone="<?=h($sv['phone_number']??'')?>">
+                <?= !empty($sv['esim']) ? '📲 eSIM' : '💳 SIM' ?>
+                <?= $sv['phone_number'] ? ' — '.formatPhone($sv['phone_number']) : ' — Vierge' ?>
+                <?= $sv['iccid'] ? ' (ICCID: '.h($sv['iccid']).')' : '' ?>
+                <?= $sv['pin'] ? ' — PIN: '.$sv['pin'] : '' ?>
               </option>
               <?php endforeach; ?>
             </select>
