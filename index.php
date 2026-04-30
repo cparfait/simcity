@@ -1685,11 +1685,11 @@ elseif ($page === 'lines') {
             </select>
           </div>
 
-          <div class="form-group form-full" style="border-top:1px solid var(--border);padding-top:1rem;margin-top:-.25rem;">
+          <div id="swap-manual-iccid-sep" class="form-group form-full" style="border-top:1px solid var(--border);padding-top:1rem;margin-top:-.25rem;">
             <label style="color:var(--text3);">— ou saisir manuellement un ICCID —</label>
           </div>
 
-          <div class="form-group form-full">
+          <div class="form-group form-full" id="swap-iccid-row">
             <label>Nouvel ICCID *</label>
             <input type="text" name="new_iccid" id="swap-new-iccid" placeholder="893310..." required>
           </div>
@@ -2797,7 +2797,7 @@ function openSimSwap(lineId, phone, iccid, isEsim, eid) {
   document.getElementById('swap-new-pin').value   = '';
   document.getElementById('swap-new-puk').value   = '';
   const stockSel = document.getElementById('swap-sim-stock');
-  if (stockSel) stockSel.value = '';
+  if (stockSel) { stockSel.value = ''; fillSwapFromStock(stockSel); }
   // Champs eSIM : afficher si c'est une eSIM
   const eidRow  = document.getElementById('swap-eid-row');
   const codeRow = document.getElementById('swap-code-row');
@@ -2817,10 +2817,31 @@ function openSimSwap(lineId, phone, iccid, isEsim, eid) {
 }
 function fillSwapFromStock(sel) {
   const opt = sel.options[sel.selectedIndex];
-  document.getElementById('swap-new-iccid').value     = opt.value || '';
-  document.getElementById('swap-new-pin').value       = opt.dataset.pin || '';
-  document.getElementById('swap-new-puk').value       = opt.dataset.puk || '';
-  document.getElementById('swap-stock-sim-id').value  = opt.dataset.id || '';
+  const iccidRow = document.getElementById('swap-iccid-row');
+  const sepRow   = document.getElementById('swap-manual-iccid-sep');
+  const iccidInp = document.getElementById('swap-new-iccid');
+
+  if (opt.value !== '') {
+    // SIM du stock sélectionnée — remplir les champs automatiquement
+    iccidInp.value = opt.value;
+    document.getElementById('swap-new-pin').value       = opt.dataset.pin || '';
+    document.getElementById('swap-new-puk').value       = opt.dataset.puk || '';
+    document.getElementById('swap-stock-sim-id').value  = opt.dataset.id || '';
+    // Masquer le champ ICCID et le séparateur (déjà rempli depuis le stock)
+    iccidInp.required = false;
+    if (iccidRow)  iccidRow.style.display  = 'none';
+    if (sepRow)    sepRow.style.display    = 'none';
+  } else {
+    // Pas de sélection — vider et afficher les champs manuels
+    iccidInp.value = '';
+    document.getElementById('swap-new-pin').value      = '';
+    document.getElementById('swap-new-puk').value      = '';
+    document.getElementById('swap-stock-sim-id').value = '';
+    iccidInp.required = true;
+    if (iccidRow)  iccidRow.style.display  = '';
+    if (sepRow)    sepRow.style.display    = '';
+  }
+
   // Afficher les champs eSIM si la SIM sélectionnée est une eSIM
   const isEsim = opt.dataset.esim === '1';
   const eidRow  = document.getElementById('swap-eid-row');
