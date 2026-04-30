@@ -26,9 +26,16 @@ try {
     die("<p style='font-family:sans-serif;color:#dc2626;padding:2rem;'>Erreur DB : impossible de se connecter.</p>");
 }
 
-// ─── Jeton CSRF simple pour ce formulaire ─────────────────────
+// ─── Session & contrôle d'accès ──────────────────────────────
 session_name(SESSION_NAME);
 session_start();
+
+if (empty($_SESSION['user_id']) || empty($_SESSION['is_admin'])) {
+    http_response_code(403);
+    die("<div style='font-family:sans-serif;padding:3rem;text-align:center;color:#dc2626;'><h2>⛔ Accès refusé</h2><p>Cette page est réservée aux super-administrateurs.</p><a href='index.php' style='color:#4361ee;'>← Retour à l'application</a></div>");
+}
+
+// ─── Jeton CSRF simple pour ce formulaire ─────────────────────
 if (empty($_SESSION['reset_csrf'])) {
     $_SESSION['reset_csrf'] = bin2hex(random_bytes(32));
 }
