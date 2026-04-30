@@ -1,79 +1,119 @@
 # 📱 SimCity v5.0
-
 **Gestion du Parc Mobile — DSI**
 
-SimCity est une application web PHP permettant de gérer l'ensemble du parc de téléphonie mobile d'une organisation : lignes, cartes SIM, terminaux, agents et attributions. Elle intègre un système de signature électronique des bons de remise/restitution pour une gestion zéro papier.
+SimCity est une application web PHP de gestion de parc téléphonique : lignes mobiles, cartes SIM, terminaux, agents et attributions, avec signature électronique des bons de remise/restitution.
 
-## Fonctionnalités
-
-- **Tableau de bord** — Vue d'ensemble avec KPI (lignes actives, terminaux, agents), alertes de stock et recherche globale
-- **Gestion des lignes & SIM** — Suivi des lignes mobiles, cartes SIM (physiques et eSIM), codes PIN/PUK, ICCID, historique des changements de SIM
-- **Parc matériel & terminaux** — Inventaire des smartphones et appareils avec IMEI, numéro de série, statut (Stock, Attribué, SAV…)
-- **Référentiels** — Gestion des agents, services/directions, opérateurs, forfaits, comptes de facturation et modèles d'appareils
-- **Signature électronique** — Génération de bons de remise et de restitution avec signature en ligne via lien sécurisé et QR code
-- **Retour automatique en stock** — À la signature d'un bon de restitution, le matériel et la ligne sont automatiquement remis en stock
-- **Import CSV** — Importation en masse des données (lignes, appareils, agents…)
-- **Historique & traçabilité** — Journal complet des actions et modifications sur chaque entité
-- **Pièces jointes** — Upload de documents liés aux lignes ou appareils
-- **Gestion des utilisateurs** — Authentification sécurisée avec sessions, protection CSRF et comptes administrateurs
+---
 
 ## Prérequis
 
-- PHP 7.4+ (avec extension PDO MySQL)
+- PHP 7.4+ avec extension PDO MySQL
 - MySQL / MariaDB
-- Un serveur web (Apache, Nginx, Laragon…)
+- Serveur web : Apache, Nginx ou Laragon
+
+---
 
 ## Installation
 
-1. Clonez le dépôt dans votre répertoire web :
-   ```bash
-   git clone https://github.com/VOTRE_USERNAME/simcity.git
-   ```
+### 1. Cloner le dépôt
 
-2. Modifiez le fichier `config.php` avec vos identifiants de base de données :
-   ```php
-   define('DB_HOST', 'localhost');
-   define('DB_NAME', 'simcity_db');
-   define('DB_USER', 'votre_user');
-   define('DB_PASS', 'votre_mot_de_passe');
-   ```
+```bash
+git clone https://github.com/cparfait/simcity.git
+```
 
-3. Accédez à `install.php` depuis votre navigateur pour créer la base de données et les tables :
-   ```
-   http://localhost/telephonie_mobile/install.php
-   ```
+Placez le dossier dans le répertoire web de votre serveur (ex: `C:\laragon\www\simcity` sous Laragon).
 
-4. Connectez-vous avec le compte par défaut :
-   - **Identifiant :** `admin`
-   - **Mot de passe :** `admin`
+### 2. Configurer la base de données
 
-   ⚠️ **Changez le mot de passe par défaut après la première connexion.**
+Éditez `config.php` avec vos identifiants MySQL :
 
-5. Supprimez ou protégez le fichier `install.php` en production.
+```php
+define('DB_HOST', 'localhost');      // Hôte MySQL (ou nom du conteneur Docker)
+define('DB_NAME', 'simcity_db');     // Nom de la base (créée automatiquement)
+define('DB_USER', 'root');
+define('DB_PASS', '');               // Vide par défaut sous Laragon
+```
+
+### 3. Créer les tables
+
+Accédez à `install.php` depuis votre navigateur :
+
+```
+http://localhost/simcity/install.php
+```
+
+L'écran doit afficher **"✅ Installation terminée"** avec la liste des tables créées.
+
+### 4. Première connexion
+
+Connectez-vous sur `index.php` avec le compte par défaut :
+
+| Identifiant | Mot de passe |
+|---|---|
+| `admin` | `admin` |
+
+> ⚠️ **Changez ce mot de passe immédiatement** via Référentiels → Comptes Admin.
+
+### 5. Après installation
+
+- Supprimez ou protégez `install.php` et `reset.php` (accès restreint en production)
+- Configurez l'**URL publique du site** dans Paramètres → URL publique pour que les QR codes de signature pointent vers la bonne adresse
+
+---
+
+## Utilisation
+
+### Démarrage rapide
+
+1. **Référentiels** — Commencez par créer vos services, opérateurs, forfaits et modèles d'appareils
+2. **Agents** — Ajoutez les utilisateurs (employés) avec leur service
+3. **Parc Matériel** — Enregistrez vos téléphones/tablettes (IMEI, S/N) — ils arrivent en stock
+4. **Lignes & SIM** — Créez les lignes mobiles et associez un agent, un forfait et un téléphone
+5. **Bon de remise** — Cliquez sur 🖨️ dans les actions d'une ligne pour générer le bon, l'imprimer et le faire signer via QR code
+
+### Signature électronique
+
+- Le bon de remise contient deux QR codes : un pour la **remise** (attribution), un pour la **restitution** (retour)
+- L'agent scanne le QR code et signe depuis son téléphone
+- À la signature du bon de restitution, le matériel et la ligne sont **automatiquement remis en stock**
+
+### Changement de SIM
+
+Utilisez le bouton 🔄 dans les actions d'une ligne pour enregistrer un changement de carte SIM (perte, casse, migration eSIM…). L'historique des SIM précédentes est conservé.
+
+### Stock et alertes
+
+- Les seuils d'alerte stock sont configurables dans **Paramètres**
+- Une alerte apparaît sur le tableau de bord quand le stock SIM ou matériel passe sous le seuil
+
+---
 
 ## Structure du projet
 
 ```
-telephonie_mobile/
-├── config.php       # Configuration (DB, sessions, sécurité, uploads)
-├── index.php        # Application principale (routage, vues, logique métier)
-├── schema.php       # Schéma de base de données et migrations
-├── install.php      # Script d'installation initiale
-├── import.php       # Outil d'importation CSV
-├── reset.php        # Réinitialisation de la base de données
-├── htaccess         # Règles Apache de protection
+simcity/
+├── config.php        # Configuration (DB, sessions, uploads) — ne pas versionner en prod
+├── index.php         # Application principale
+├── schema.php        # Schéma et migrations de la base de données
+├── install.php       # Installation initiale — à supprimer après usage
+├── reset.php         # Réinitialisation complète — à supprimer après usage
+├── import.php        # Import CSV en masse
 ├── js/
-│   └── qrcode.min.js  # Génération de QR codes côté client
-└── uploads/         # Pièces jointes (créé automatiquement)
+│   └── qrcode.min.js # Génération QR codes (client-side)
+└── uploads/          # Pièces jointes — créé automatiquement
 ```
 
-## Sécurité
+---
 
-- Sessions sécurisées (HttpOnly, SameSite Strict)
-- Protection CSRF sur les formulaires
-- Mots de passe hachés avec `password_hash()`
-- Validation et échappement des entrées utilisateur
-- Restriction des types de fichiers uploadés (images uniquement, SVG exclus)
+## Réinitialisation
+
+Pour repartir de zéro (supprime toutes les données) :
+
+1. Accédez à `reset.php`
+2. Saisissez `SUPPRIMER` pour confirmer
+3. Relancez `install.php` pour recréer les tables
+
+---
 
 ## Licence
 
