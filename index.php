@@ -390,11 +390,10 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
             });
         } catch(e) {}
         <?php endforeach; ?>
-        setTimeout(function(){ window.print(); }, 700);
     });
     </script>
     <?php else: ?>
-    <script>window.addEventListener('load',function(){ setTimeout(function(){window.print();},200); });</script>
+    <script>/* QR code non disponible — pas d'impression automatique */</script>
     <?php endif; ?>
     </head><body>
 
