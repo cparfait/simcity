@@ -382,7 +382,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         <div class="header-text"><h1>%BON_TITLE%</h1><p style="margin:.2rem 0 0;font-size:.8rem;">Édité le '.date('d/m/Y').'</p></div>
         <div class="qr-wrap">
             <div id="%QR_ID%"></div>
-            <span style="display:block;margin-top:3px;">Signer en ligne</span>
+            <a href="%QR_URL%" style="display:block;margin-top:3px;font-size:.75rem;color:#4361ee;text-decoration:none;">Signer en ligne</a>
         </div>
     </div>';
 
