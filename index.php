@@ -115,7 +115,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
         $st2->execute([$token]); $alreadySigned = (bool)$st2->fetchColumn();
         // Bloquer restitution si remise pas encore signée (avec un token valide)
         if (!$alreadySigned && $tok['bon_type'] === 'restitution') {
-            $remiseSigned = $pdo->prepare("SELECT COUNT(*) FROM signatures s JOIN sign_tokens t ON s.token=t.token WHERE t.agent_id=? AND t.bon_type='remise'");
+            $remiseSigned = $pdo->prepare("SELECT COUNT(*) FROM signatures s JOIN sign_tokens t ON s.token=t.token WHERE t.agent_id=? AND t.bon_type='remise' AND s.superseded=0");
             $remiseSigned->execute([$tok['agent_id']]);
             $remiseNotSigned = ($remiseSigned->fetchColumn() == 0);
         }
@@ -225,12 +225,15 @@ canvas{display:block;width:100%;border-radius:8px;}
 
 // ─── 3. GENERATION PDF (BON DE REMISE) ────────────────────────
 function formatPhone($phone) { $val = preg_replace('/[^0-9]/', '', (string)$phone); return $val ? implode(' ', str_split($val, 2)) : ''; }
-function baseUrl() {
+function baseUrl($pdo = null) {
+    if ($pdo) {
+        $custom = getSetting($pdo, 'site_url', '');
+        if ($custom) return rtrim($custom, '/') . '/index.php';
+    }
     $proto = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     $host  = $_SERVER['HTTP_HOST'] ?? 'localhost';
     $script = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '/index.php');
     $dir   = rtrim(dirname($script), '/');
-    // Si à la racine, dirname renvoie '/' ou '\' — on normalise à ''
     if ($dir === '/' || $dir === '\\' || $dir === '.') $dir = '';
     return $proto . '://' . $host . $dir . '/index.php';
 }
@@ -255,7 +258,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
     $id = (int)$_GET['agent_id'];
     $agt = $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=$id")->fetch();
     $lines = $pdo->query("SELECT l.phone_number, l.iccid, l.eid, l.activation_code, p.name as plan_name, COALESCE(l.personal_device,0) as personal_device, COALESCE(l.esim,0) as esim FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.agent_id=$id AND l.archived=0")->fetchAll();
-    $devices = $pdo->query("SELECT d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
+    $devices = $pdo->query("SELECT DISTINCT d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
     $pdfLogo = getSetting($pdo, 'pdf_logo_path', '');
 
     // Générer ou réutiliser un token de signature (valable 30 jours)
@@ -285,8 +288,8 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
     $dsiNameRemise      = $sigRemise['dsi_name']      ?? $tokRemiseRow['dsi_name']      ?? $currentAdmin;
     $dsiNameRestitution = $sigRestitution['dsi_name'] ?? $tokRestRow['dsi_name']         ?? $currentAdmin;
 
-    $urlRemise      = baseUrl() . '?page=sign&token=' . $tokRemise;
-    $urlRestitution = baseUrl() . '?page=sign&token=' . $tokRestitution;
+    $urlRemise      = baseUrl($pdo) . '?page=sign&token=' . $tokRemise;
+    $urlRestitution = baseUrl($pdo) . '?page=sign&token=' . $tokRestitution;
     // QR codes générés côté client via qrcode.js (pas de dépendance externe)
 
     // Construire le tableau des équipements (réutilisé 2 fois)
@@ -380,7 +383,6 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         <div class="qr-wrap">
             <div id="%QR_ID%"></div>
             <span style="display:block;margin-top:3px;">Signer en ligne</span>
-            <a href="%QR_URL%" class="qr-url" style="font-size:.55rem;word-break:break-all;color:#555;max-width:130px;display:block;margin-top:3px;text-decoration:none;">%QR_URL%</a>
         </div>
     </div>';
 
@@ -861,6 +863,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?")->execute([$val, $key]);
                 }
             }
+            // Sauvegarde de l'URL du site
+            if (array_key_exists('site_url', $d)) {
+                $url = trim($d['site_url'] ?? '');
+                // Normaliser : retirer le slash final
+                $url = rtrim($url, '/');
+                $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='site_url'")->execute([$url]);
+            }
             // Suppression du logo
             if (!empty($d['delete_logo'])) {
                 $oldLogo = getSetting($pdo, 'pdf_logo_path', '');
@@ -904,9 +913,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($bulkAction === 'archive') {
                             $devId = $pdo->query("SELECT device_id FROM mobile_lines WHERE id=$bid")->fetchColumn();
                             $oldAgt = $pdo->query("SELECT agent_id FROM mobile_lines WHERE id=$bid")->fetchColumn();
-                            $pdo->prepare("UPDATE mobile_lines SET archived=1, status='Resiliated', device_id=NULL, agent_id=NULL WHERE id=?")->execute([$bid]);
+                            $pdo->prepare("UPDATE mobile_lines SET archived=1, status='Resiliated', device_id=NULL, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$bid]);
                             logHistory($pdo, 'line', $bid, "Archivage en masse", $oldAgt);
-                            if ($devId) { $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL WHERE id=?")->execute([$devId]); logHistory($pdo,'device',$devId,"Retour stock auto (archivage masse ligne)"); }
+                            if ($devId) { $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]); logHistory($pdo,'device',$devId,"Retour stock auto (archivage masse ligne)"); }
                         } elseif ($bulkAction === 'restore') {
                             $pdo->prepare("UPDATE mobile_lines SET archived=0, status='Stock', agent_id=NULL WHERE id=?")->execute([$bid]);
                             logHistory($pdo, 'line', $bid, "Restauration en masse");
@@ -914,7 +923,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } elseif ($bulkType === 'device') {
                         if ($bulkAction === 'archive') {
                             $oldAgt = $pdo->query("SELECT agent_id FROM devices WHERE id=$bid")->fetchColumn();
-                            $pdo->prepare("UPDATE devices SET archived=1, status='HS', agent_id=NULL WHERE id=?")->execute([$bid]);
+                            $pdo->prepare("UPDATE devices SET archived=1, status='HS', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$bid]);
                             logHistory($pdo, 'device', $bid, "Archivage en masse", $oldAgt);
                             $pdo->prepare("UPDATE mobile_lines SET device_id=NULL WHERE device_id=?")->execute([$bid]);
                         } elseif ($bulkAction === 'restore') {
@@ -1008,10 +1017,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $agtName = trim(($agtRow['first_name']??'').' '.($agtRow['last_name']??''));
                 $pdo->prepare("UPDATE agents SET archived=1 WHERE id=?")->execute([$id]);
                 logHistory($pdo, 'agent', $id, "Agent archivé (départ de la société)", $id);
+                // Invalider les signatures actives de l'agent
+                invalidateAgentSignatures($pdo, $id, "Agent archivé (départ de la société)");
                 // Libérer tous les matériels de cet agent
                 $devIds = $pdo->query("SELECT id FROM devices WHERE agent_id=$id AND archived=0")->fetchAll(PDO::FETCH_COLUMN);
                 if ($devIds) {
-                    $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL WHERE agent_id=? AND archived=0")->execute([$id]);
+                    $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE agent_id=? AND archived=0")->execute([$id]);
                     foreach ($devIds as $did) {
                         logHistory($pdo, 'device', (int)$did, "Retourné au stock automatiquement (Agent \"$agtName\" a quitté la société)");
                     }
@@ -1022,11 +1033,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     foreach ($lineRows as $lr) {
                         logHistory($pdo, 'line', (int)$lr['id'], "Ligne libérée automatiquement (Agent \"$agtName\" a quitté la société)");
                         if ($lr['device_id']) {
-                            $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL WHERE id=? AND archived=0")->execute([$lr['device_id']]);
+                            $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=? AND archived=0")->execute([$lr['device_id']]);
                             logHistory($pdo, 'device', (int)$lr['device_id'], "Retourné au stock automatiquement via libération de ligne (Agent \"$agtName\")");
                         }
                     }
-                    $pdo->prepare("UPDATE mobile_lines SET agent_id=NULL, device_id=NULL WHERE agent_id=? AND archived=0")->execute([$id]);
+                    $pdo->prepare("UPDATE mobile_lines SET agent_id=NULL, service_id=NULL, device_id=NULL, status='Stock' WHERE agent_id=? AND archived=0")->execute([$id]);
                 }
             } elseif ($act === 'restore') {
                 $pdo->prepare("UPDATE agents SET archived=0 WHERE id=?")->execute([$id]);
@@ -1102,7 +1113,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $newId = $pdo->lastInsertId();
                 if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'line', $newId, "Ligne/SIM".($isEsim?" (eSIM)":" ")." attribuée à $agtName", $agt); }
                 if ($dev) {
-                    $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=? WHERE id=?")->execute([$agt, $dev]);
+                    $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agt, $svc, $dev]);
                     logHistory($pdo, 'device', $dev, "Déployé et associé à la ligne", $agt);
                 }
             } elseif ($act === 'edit') {
@@ -1122,18 +1133,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 if ($oldDev != $dev) {
                     if ($oldDev) {
-                        $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL WHERE id=?")->execute([$oldDev]);
+                        $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$oldDev]);
                         logHistory($pdo, 'device', $oldDev, "Détaché de la ligne (Retour au stock)", $oldAgt);
                     }
                     if ($dev) {
-                        $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=? WHERE id=?")->execute([$agt, $dev]);
+                        $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agt, $svc, $dev]);
                         logHistory($pdo, 'device', $dev, "Associé à la ligne", $agt);
                     }
                     // Téléphone changé → invalider les signatures de l'agent concerné
                     if ($agt) invalidateAgentSignatures($pdo, $agt, "Téléphone associé modifié sur la ligne");
                     if ($oldAgt && $oldAgt != $agt) invalidateAgentSignatures($pdo, $oldAgt, "Téléphone retiré de la ligne");
                 } elseif ($dev && $oldAgt != $agt) {
-                    $pdo->prepare("UPDATE devices SET agent_id=? WHERE id=?")->execute([$agt, $dev]);
+                    $pdo->prepare("UPDATE devices SET agent_id=?, service_id=? WHERE id=?")->execute([$agt, $svc, $dev]);
                     logHistory($pdo, 'device', $dev, "Transféré suite au changement d'utilisateur sur la ligne", $agt);
                     // Agent changé sur la ligne → invalider les deux agents
                     if ($agt)    invalidateAgentSignatures($pdo, $agt,    "Ligne transférée à cet agent");
@@ -1143,11 +1154,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($act === 'archive') {
                 $devId = $pdo->query("SELECT device_id FROM mobile_lines WHERE id=$id")->fetchColumn();
                 $old = $pdo->query("SELECT agent_id FROM mobile_lines WHERE id=$id")->fetchColumn();
-                $pdo->prepare("UPDATE mobile_lines SET archived=1, status=?, device_id=NULL, agent_id=NULL WHERE id=?")->execute([S($d,'archive_reason','Resiliated'), $id]); 
-                logHistory($pdo, 'line', $id, "Ligne Archivée (Raison : ".S($d,'archive_reason').")", $old); 
+                $pdo->prepare("UPDATE mobile_lines SET archived=1, status=?, device_id=NULL, agent_id=NULL, service_id=NULL WHERE id=?")->execute([S($d,'archive_reason','Resiliated'), $id]);
+                logHistory($pdo, 'line', $id, "Ligne Archivée (Raison : ".S($d,'archive_reason').")", $old);
 
                 if ($devId) {
-                    $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL WHERE id=?")->execute([$devId]);
+                    $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]);
                     logHistory($pdo, 'device', $devId, "Retourné au stock automatiquement (La ligne a été résiliée/archivée)");
                 }
             } elseif ($act === 'restore') {
@@ -1157,7 +1168,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if ($ent !== 'attachment' && $ent !== 'reset_signatures') flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'reset_signatures', 'bulk', 'settings'])) flash('success', 'Opération réussie.');
         
     } catch (Exception $e) { flash('error', 'Erreur SQL : ' . $e->getMessage()); }
     $redirect = 'index.php?page=' . ($_GET['page'] ?? 'dashboard'); if(isset($_GET['tab'])) $redirect .= '&tab='.$_GET['tab']; header('Location: ' . $redirect); exit;
@@ -1236,7 +1247,7 @@ if ($page === 'dashboard') {
           <div class="kpi-sub"><?=$cDevStk?> <?=($cDevStk > 1 ? 'terminaux' : 'terminal')?> en stock</div>
         </a>
         <a href="?page=refs&tab=agents" class="kpi-card kpi-green" style="text-decoration:none">
-          <div class="kpi-icon">🏢</div><div class="kpi-info"><span class="kpi-val"><?=$pdo->query("SELECT COUNT(*) FROM agents")->fetchColumn()?></span><span class="kpi-label">Utilisateurs</span></div>
+          <div class="kpi-icon">🏢</div><div class="kpi-info"><span class="kpi-val"><?=$pdo->query("SELECT COUNT(*) FROM agents WHERE archived=0")->fetchColumn()?></span><span class="kpi-label">Utilisateurs</span></div>
         </a>
       </div>
 
@@ -1352,13 +1363,13 @@ elseif ($page === 'lines') {
     $where = "l.archived=" . ($isArchive ? "1" : "0");
     if ($isStock) $where .= " AND l.status='Stock'"; elseif (!$isArchive) $where .= " AND l.status!='Stock'";
 
-    $lines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.pin, l.puk, l.agent_id, l.billing_id, l.plan_id, l.service_id, l.device_id, l.activation_date, l.options_details, l.status, l.notes, l.archived, l.created_at, IFNULL(l.personal_device,0) as personal_device, IFNULL(l.sim_vierge,0) as sim_vierge, IFNULL(l.esim,0) as esim, l.eid, l.activation_code, a.first_name, a.last_name, s.name as service_name, b.account_number, p.name as plan_name, IFNULL(o.name,'') as operator_name, d.imei, m.brand, m.name as model_name FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id LEFT JOIN billing_accounts b ON l.billing_id=b.id LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id LEFT JOIN devices d ON l.device_id=d.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY l.created_at DESC")->fetchAll();
+    $lines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.pin, l.puk, l.agent_id, l.billing_id, l.plan_id, l.service_id, l.device_id, l.activation_date, l.options_details, l.status, l.notes, l.archived, l.created_at, IFNULL(l.personal_device,0) as personal_device, IFNULL(l.sim_vierge,0) as sim_vierge, IFNULL(l.esim,0) as esim, l.eid, l.activation_code, a.first_name, a.last_name, s.name as service_name, b.account_number, p.name as plan_name, IFNULL(o.name,'') as operator_name, d.imei, d.serial_number, m.brand, m.name as model_name FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id LEFT JOIN billing_accounts b ON l.billing_id=b.id LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id LEFT JOIN devices d ON l.device_id=d.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY l.created_at DESC")->fetchAll();
     
     $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     $plans = $pdo->query("SELECT p.id, p.name, IFNULL(o.name,'') as operator_name FROM plan_types p LEFT JOIN operators o ON p.operator_id=o.id ORDER BY o.name, p.name")->fetchAll();
     $billings = $pdo->query("SELECT id, account_number, name FROM billing_accounts ORDER BY name")->fetchAll();
-    $devices = $pdo->query("SELECT d.id, d.imei, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE d.archived=0 AND d.status='Stock' ORDER BY m.brand, m.name")->fetchAll();
+    $devices = $pdo->query("SELECT d.id, d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE d.archived=0 AND d.status='Stock' ORDER BY m.brand, m.name")->fetchAll();
     // SIM vierges en stock (pour le swap)
     $simStock = $pdo->query("SELECT id, iccid, pin, puk, IFNULL(esim,0) as esim FROM mobile_lines WHERE archived=0 AND sim_vierge=1 AND iccid IS NOT NULL AND iccid != '' ORDER BY iccid")->fetchAll();
     ?>
@@ -1446,11 +1457,14 @@ elseif ($page === 'lines') {
             <?php $hist = fetchEntityHistory($pdo, 'line', $l['id']); ?>
             <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
             <?php if(!$isArchive): ?>
+                <?php if($l['agent_id']): ?>
+                <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Imprimer le bon de remise" style="text-decoration:none;">🖨️</a>
+                <?php endif; ?>
                 <button class="btn-icon" title="Changer la SIM (garder le numéro)" style="color:var(--warning)"
                     onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')">🔄</button>
                 <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'>✏️</button>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="archive"><input type="hidden" name="_id" value="<?=$l['id']?>">
-                    <button type="submit" class="btn-icon btn-del" title="Résilier / Archiver" onclick="return prompt('Raison de la résiliation/archivage ? (ex: Départ agent)') ? (this.form.appendChild(Object.assign(document.createElement('input'),{type:'hidden',name:'archive_reason',value:prompt.last})), true) : false;">🗄️</button>
+                    <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="(function(btn){var r=prompt('Raison de la résiliation ? (ex: Départ agent)');if(!r)return;var i=document.createElement('input');i.type='hidden';i.name='archive_reason';i.value=r;btn.form.appendChild(i);btn.form.submit();})(this)">🗄️</button>
                 </form>
             <?php else: ?>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$l['id']?>"><button type="submit" class="btn-icon" title="Restaurer" style="color:var(--success)">♻️</button></form>
@@ -1525,10 +1539,11 @@ elseif ($page === 'lines') {
           <label>Téléphone associé</label>
           <select name="device_id" id="<?=$act?>-device_id">
             <option value="">-- Actuellement aucun ou Conserver le même --</option>
-            <?php foreach($devices as $d): ?><option value="<?=$d['id']?>"><?=h($d['brand'].' '.$d['name'].' (IMEI: '.$d['imei'].')')?></option><?php endforeach; ?>
+            <?php foreach($devices as $d): ?><option value="<?=$d['id']?>"><?=h($d['brand'].' '.$d['name'].' (S/N: '.($d['serial_number']?:$d['imei']).')')?></option><?php endforeach; ?>
           </select>
         </div>
         <div class="form-group"><label>Date d'activation</label><input type="date" name="activation_date" id="<?=$act?>-activation_date"></div>
+        <div class="form-group form-full"><label>Options / Détails forfait</label><textarea name="options_details" id="<?=$act?>-options_details" rows="2" placeholder="Ex: Option international, roaming..."></textarea></div>
         <div class="form-group form-full"><label>Notes internes</label><textarea name="notes" id="<?=$act?>-notes" rows="2"></textarea></div>
       </div>
       <div class="modal-footer"><button type="button" class="btn-secondary" onclick="closeModal('modal-<?=$act?>-line')">Annuler</button><button type="submit" class="btn-primary">Enregistrer</button></div>
@@ -1707,7 +1722,7 @@ elseif ($page === 'devices') {
             <?php if(!$isArchive): ?>
                 <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($d, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"device")'>✏️</button>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="archive"><input type="hidden" name="_id" value="<?=$d['id']?>">
-                    <button type="submit" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="return prompt('Raison de l\'archivage ? (ex: Cassé, Perdu)') ? (this.form.appendChild(Object.assign(document.createElement('input'),{type:'hidden',name:'archive_reason',value:prompt.last})), true) : false;">🗄️</button>
+                    <button type="button" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="(function(btn){var r=prompt('Raison de l\'archivage ? (ex: Cassé, Perdu)');if(!r)return;var i=document.createElement('input');i.type='hidden';i.name='archive_reason';i.value=r;btn.form.appendChild(i);btn.form.submit();})(this)">🗄️</button>
                 </form>
             <?php else: ?>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$d['id']?>"><button type="submit" class="btn-icon" title="Restaurer au Stock" style="color:var(--success)">♻️</button></form>
@@ -1800,7 +1815,8 @@ elseif ($page === 'refs') {
         $currentLogo = getSetting($pdo, 'pdf_logo_path', '');
     ?>
     <!-- ── ONGLET PARAMÈTRES ───────────────────────────────────── -->
-    <div style="display:flex;flex-direction:column;gap:1.5rem;max-width:640px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto auto;gap:1.5rem;align-items:start;">
+    <div style="display:flex;flex-direction:column;gap:1.5rem;">
 
       <!-- Bloc logo -->
       <div class="card">
@@ -1831,7 +1847,7 @@ elseif ($page === 'refs') {
           <?php endif; ?>
           <div class="form-group form-full">
             <label><?=$currentLogo && file_exists($currentLogo) ? 'Remplacer le logo' : 'Choisir un logo'?></label>
-            <input type="file" name="pdf_logo" accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+            <input type="file" name="pdf_logo" accept="image/png,image/jpeg,image/gif,image/webp"
               style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;color:var(--text);width:100%;">
           </div>
           <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:.5rem;">
@@ -1840,7 +1856,42 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
-      <!-- Bloc seuils -->
+      <!-- Bloc URL du site -->
+      <?php $currentSiteUrl = getSetting($pdo, 'site_url', ''); ?>
+      <div class="card">
+        <div class="card-header">🔗 URL publique du site</div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="settings">
+          <input type="hidden" name="_action" value="save">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+            L'URL de base utilisée pour générer les liens des <strong>QR codes de signature</strong>.<br>
+            Laissez vide pour utiliser la détection automatique.<br>
+            <strong>Exemple :</strong> <code style="font-family:var(--font-mono);font-size:.82rem;">https://simcity.monentreprise.fr</code>
+          </p>
+          <div class="form-group form-full">
+            <label>URL du site</label>
+            <input type="url" name="site_url" value="<?=h($currentSiteUrl)?>"
+              placeholder="https://simcity.monentreprise.fr"
+              style="font-family:var(--font-mono);font-size:.88rem;">
+          </div>
+          <?php if($currentSiteUrl): ?>
+          <p style="font-size:.82rem;color:var(--success);margin-top:.5rem;">
+            ✅ URL active — les QR codes pointent vers : <code style="font-family:var(--font-mono);"><?=h($currentSiteUrl)?>/index.php</code>
+          </p>
+          <?php else: ?>
+          <p style="font-size:.82rem;color:var(--text3);margin-top:.5rem;">
+            ⚙️ Détection automatique active (basée sur le serveur HTTP).
+          </p>
+          <?php endif; ?>
+          <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
+            <button type="submit" class="btn-primary">💾 Enregistrer</button>
+          </div>
+        </form>
+      </div>
+
+      </div><!-- fin colonne gauche -->
+
+      <!-- Bloc seuils — colonne droite -->
       <div class="card">
         <div class="card-header">🔔 Seuils d'alerte Stock</div>
         <form method="post" style="padding:1.5rem;">
@@ -1850,7 +1901,7 @@ elseif ($page === 'refs') {
             Quand le stock descend <strong>en-dessous ou à égalité</strong> du seuil configuré, une alerte s'affiche sur le tableau de bord.
           </p>
           <?php foreach($allSettings as $s):
-              if($s['setting_key'] === 'pdf_logo_path') continue; ?>
+              if(in_array($s['setting_key'], ['pdf_logo_path', 'site_url'])) continue; ?>
           <div class="form-group form-full" style="margin-bottom:1.25rem;">
             <label><?=h($s['label'])?></label>
             <div style="display:flex;align-items:center;gap:1rem;">
@@ -1865,7 +1916,7 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
-    </div>
+    </div><!-- fin grille paramètres -->
 
     <?php else: ?>
     <div class="search-bar-wrap">
@@ -2354,6 +2405,17 @@ function openEditModal(data, ent){
     if(chkSv) { chkSv.checked = (data.sim_vierge == 1 || data.sim_vierge === '1'); toggleSimVierge('edit'); }
     const chkEsim = document.getElementById('edit-esim');
     if(chkEsim) { chkEsim.checked = (data.esim == 1 || data.esim === '1'); toggleEsim('edit'); }
+    // Si la ligne a déjà un téléphone (Deployed), il n'est pas dans le dropdown (filtré sur Stock).
+    // On l'ajoute dynamiquement pour qu'il soit sélectionnable et ne soit pas remis en stock à chaque édition.
+    const devSel = document.getElementById('edit-device_id');
+    if(devSel && data.device_id) {
+      const exists = Array.from(devSel.options).some(o => o.value == data.device_id);
+      if(!exists) {
+        const label = '📱 (Actuellement assigné) ' + (data.brand||'') + ' ' + (data.model_name||'') + ' — S/N: ' + (data.serial_number || data.imei || data.device_id);
+        devSel.add(new Option(label, data.device_id));
+      }
+      devSel.value = data.device_id;
+    }
   }
   openModal('modal-edit-'+ent);
 }

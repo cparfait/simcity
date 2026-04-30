@@ -32,7 +32,8 @@ try {
     define('SIMCITY_SCHEMA_MANUAL', true);
     require_once __DIR__ . '/schema.php';
 
-    $usersBefore = (int)$pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
+    $usersBefore = 0;
+    try { $usersBefore = (int)$pdo->query("SELECT COUNT(*) FROM users")->fetchColumn(); } catch(Exception $e) {}
     simcity_apply_schema($pdo);
 
     // ── Affichage du résultat ───────────────────────────────────
@@ -64,6 +65,7 @@ try {
     echo "<h2 style='color:#dc2626;'>❌ Erreur d'installation</h2>";
     // Ne pas exposer les détails de l'erreur en production
     echo "<p>Une erreur est survenue. Vérifiez vos paramètres de connexion dans config.php.</p>";
+    echo "<p style='font-family:monospace;background:#fff;padding:10px;border-radius:6px;border:1px solid #fca5a5;font-size:.85rem;word-break:break-all;'><b>Détail :</b> " . htmlspecialchars($e->getMessage()) . "</p>";
     echo "</div>";
 }
 ?>

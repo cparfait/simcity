@@ -260,6 +260,7 @@ function simcity_apply_schema(PDO $pdo): void
         ['sim_stock_alert',    '5', "Seuil d'alerte Stock SIM (cartes SIM disponibles)"],
         ['device_stock_alert', '3', "Seuil d'alerte Stock Smartphones (matériels disponibles)"],
         ['pdf_logo_path',      '',  "Logo affiché sur les bons de remise PDF"],
+        ['site_url',           '',  "URL publique du site (base des QR codes de signature)"],
     ] as [$k, $v, $l]) {
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);
