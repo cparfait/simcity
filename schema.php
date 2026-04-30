@@ -189,6 +189,7 @@ function simcity_apply_schema(PDO $pdo): void
         last_name  VARCHAR(100) NULL,
         email      VARCHAR(150) NULL,
         active     TINYINT(1) NOT NULL DEFAULT 1,
+        is_admin   TINYINT(1) NOT NULL DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB;");
 
