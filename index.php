@@ -122,10 +122,41 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
             }
         }
         ?><!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-        <style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#f0fdf4;}
-        .box{text-align:center;padding:2rem;background:#fff;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);max-width:400px;width:90%;}
-        .check{font-size:4rem;} h2{color:#10b981;} p{color:#555;}</style></head>
-        <body><div class="box"><div class="check">✅</div><h2>Signature enregistrée</h2><p>Merci <?=htmlspecialchars($signerName)?>.<br>Votre signature a bien été prise en compte.</p><p style="font-size:.8rem;color:#999;margin-top:1rem;">Signé le <?=date('d/m/Y à H:i')?></p></div></body></html>
+        <style>
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;background:#f0fdf4;display:flex;align-items:center;justify-content:center;}
+        .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:1rem;}
+        .box{text-align:center;padding:2.5rem 2rem;background:#fff;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.15);max-width:420px;width:100%;}
+        .check{font-size:4rem;margin-bottom:.5rem;}
+        h2{color:#10b981;font-size:1.4rem;margin-bottom:.75rem;}
+        p{color:#555;line-height:1.5;}
+        .ts{font-size:.8rem;color:#999;margin-top:.75rem;}
+        .btn{margin-top:1.75rem;padding:.75rem 2.5rem;background:#10b981;color:#fff;border:none;border-radius:10px;font-size:1rem;cursor:pointer;font-weight:600;letter-spacing:.02em;box-shadow:0 4px 12px rgba(16,185,129,.3);}
+        .btn:active{transform:scale(.97);}
+        .closed-msg{display:none;flex-direction:column;align-items:center;gap:.5rem;color:#64748b;font-size:1rem;}
+        </style></head>
+        <body>
+        <div class="overlay" id="sig-overlay">
+          <div class="box">
+            <div class="check">✅</div>
+            <h2>Signature enregistrée</h2>
+            <p>Merci <strong><?=htmlspecialchars($signerName)?></strong>.<br>Votre signature a bien été prise en compte.</p>
+            <p class="ts">Signé le <?=date('d/m/Y à H:i')?></p>
+            <button class="btn" onclick="closeSigModal()">Fermer</button>
+          </div>
+        </div>
+        <div class="closed-msg" id="closed-msg">
+          <span style="font-size:2rem;">👍</span>
+          <p>Vous pouvez fermer cet onglet.</p>
+        </div>
+        <script>
+        function closeSigModal() {
+          document.getElementById('sig-overlay').style.display = 'none';
+          var m = document.getElementById('closed-msg');
+          m.style.display = 'flex';
+        }
+        </script>
+        </body></html>
         <?php exit;
     }
 
@@ -141,6 +172,16 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
             $remiseSigned->execute([$tok['agent_id']]);
             $remiseNotSigned = ($remiseSigned->fetchColumn() == 0);
         }
+    }
+    // Chercher un motif d'archivage récent (perte/casse) pour afficher en rouge sur la restitution
+    $archiveAlertMsg = '';
+    if ($tok && $tok['bon_type'] === 'restitution' && !$alreadySigned && !$remiseNotSigned) {
+        $archiveAlert = $pdo->prepare("SELECT action_desc FROM history_logs
+            WHERE agent_id=? AND (action_desc LIKE '%Archivé%' OR action_desc LIKE '%archivé%' OR action_desc LIKE '%Perdu%' OR action_desc LIKE '%Volé%' OR action_desc LIKE '%Cassé%')
+            ORDER BY action_date DESC LIMIT 1");
+        $archiveAlert->execute([$tok['agent_id']]);
+        $archiveAlertRow = $archiveAlert->fetch();
+        if ($archiveAlertRow) $archiveAlertMsg = $archiveAlertRow['action_desc'];
     }
     ?>
 <!DOCTYPE html><html lang="fr"><head>
@@ -183,6 +224,13 @@ canvas{display:block;width:100%;border-radius:8px;}
 <?php else: ?>
     <h2>✍️ Signature électronique</h2>
     <div class="sub">Bon de <?=$tok['bon_type']==='remise'?'remise de matériel':'restitution de matériel'?></div>
+    <?php if($archiveAlertMsg): ?>
+    <div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.25rem;color:#dc2626;">
+        <div style="font-size:1.4rem;margin-bottom:.35rem;">⚠️</div>
+        <strong style="font-size:1rem;">Restitution suite à un incident</strong><br>
+        <span style="font-size:.9rem;margin-top:.35rem;display:block;"><?=htmlspecialchars($archiveAlertMsg)?></span>
+    </div>
+    <?php endif; ?>
     <div class="info">
         <strong><?=htmlspecialchars($agt['first_name'].' '.$agt['last_name'])?></strong>
         <?=htmlspecialchars($agt['service_name']?:'')?>
@@ -838,7 +886,80 @@ if (isset($_GET['ajax_agent_details'])) {
             echo "<li style='padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid var(--border)'>";
             echo "<strong style='color:var(--primary); font-size:.8rem;'>$icon - {$h['dt']}</strong><br><span style='font-size:.9rem;'>{$desc}</span><br><span style='font-size:.7rem; color:var(--text3);'>Par : " . h($h['author']?:'Système') . "</span></li>";
         } echo "</ul>";
-    } echo "</div></div>"; exit;
+    } echo "</div></div>";
+
+    // ── Section Bons de remise / restitution ──────────────────────────────────
+    $bonsAgent = $pdo->query("
+        SELECT t.id, t.bon_type, t.token,
+               DATE_FORMAT(t.created_at, '%d/%m/%Y %H:%i') as created_at,
+               t.expires_at, t.created_by, t.dsi_name,
+               (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=0) as active_sigs,
+               (SELECT DATE_FORMAT(MAX(signed_at), '%d/%m/%Y %H:%i') FROM signatures WHERE token=t.token AND superseded=0) as signed_at,
+               (SELECT signer_name FROM signatures WHERE token=t.token AND superseded=0 ORDER BY signed_at DESC LIMIT 1) as signer_name
+        FROM sign_tokens t
+        WHERE t.agent_id = $id
+        ORDER BY t.created_at DESC
+        LIMIT 30
+    ")->fetchAll();
+
+    if ($bonsAgent) {
+        echo "<div style='margin-top:1.5rem;'>";
+        echo "<h4 style='color:var(--primary); margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:5px;'>📋 Historique des bons de remise / restitution</h4>";
+
+        // Grouper les bons par paires (remise + restitution proches dans le temps)
+        $pairs = []; $usedIds = [];
+        $bonsById = [];
+        foreach ($bonsAgent as $b) $bonsById[$b['id']] = $b;
+
+        // Appariement : pour chaque remise, chercher la restitution la plus proche après
+        $remises = array_filter($bonsAgent, fn($b) => $b['bon_type'] === 'remise');
+        $restitutions = array_filter($bonsAgent, fn($b) => $b['bon_type'] === 'restitution');
+        foreach ($remises as $r) {
+            $pair = ['remise' => $r, 'restitution' => null];
+            foreach ($restitutions as $rt) {
+                if (!in_array($rt['id'], $usedIds) && strtotime(str_replace('/', '-', $rt['created_at'])) >= strtotime(str_replace('/', '-', $r['created_at']))) {
+                    $pair['restitution'] = $rt;
+                    $usedIds[] = $rt['id'];
+                    break;
+                }
+            }
+            $usedIds[] = $r['id'];
+            $pairs[] = $pair;
+        }
+        // Ajouter les restitutions non appariées
+        foreach ($restitutions as $rt) {
+            if (!in_array($rt['id'], $usedIds)) { $pairs[] = ['remise' => null, 'restitution' => $rt]; $usedIds[] = $rt['id']; }
+        }
+
+        $pairColors = ['rgba(16,185,129,.06)', 'rgba(99,102,241,.05)', 'rgba(245,158,11,.05)', 'rgba(236,72,153,.05)'];
+        $now = time();
+        foreach ($pairs as $pi => $pair):
+            $bg = $pairColors[$pi % count($pairColors)];
+            echo "<div style='background:$bg;border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:.75rem;'>";
+            foreach (['remise' => ['📥','var(--success)','Bon de Remise'], 'restitution' => ['📤','var(--warning)','Bon de Restitution']] as $type => [$icon, $color, $label]):
+                $b = $pair[$type];
+                if (!$b) continue;
+                $isExpired = $b['expires_at'] && strtotime($b['expires_at']) < $now;
+                if ($b['active_sigs'] > 0) {
+                    $badge = "<span style='background:rgba(16,185,129,.15);color:var(--success);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>✅ Signé</span>";
+                } elseif ($isExpired) {
+                    $badge = "<span style='background:rgba(245,158,11,.15);color:var(--warning);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>⏰ Expiré</span>";
+                } else {
+                    $badge = "<span style='background:rgba(56,189,248,.15);color:var(--info);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>⏳ En attente</span>";
+                }
+                echo "<div style='display:flex;align-items:baseline;gap:.75rem;margin-bottom:.35rem;'>";
+                echo "<span style='font-weight:700;color:$color;font-size:.9rem;'>$icon $label</span> $badge";
+                echo "<span style='font-size:.78rem;color:var(--text3);margin-left:auto;'>Créé le {$b['created_at']} — par " . h($b['dsi_name'] ?: $b['created_by'] ?: '—') . "</span>";
+                echo "</div>";
+                if ($b['active_sigs'] > 0 && $b['signer_name']) {
+                    echo "<div style='font-size:.78rem;color:var(--success);margin-left:1.5rem;'>✍️ " . h($b['signer_name']) . " — le {$b['signed_at']}</div>";
+                }
+            endforeach;
+            echo "</div>";
+        endforeach;
+        echo "</div>";
+    }
+    exit;
 }
 
 // ─── 6. TRAITEMENT DES FORMULAIRES POST ────────────────────────
@@ -1117,10 +1238,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE devices SET archived=1, status=?, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$archiveStatus, $id]);
                 logHistory($pdo, 'device', $id, $logMsg, $old);
                 if ($old) invalidateAgentSignatures($pdo, $old, "Matériel archivé — $archiveReason");
-                $linesAff = $pdo->query("SELECT id, agent_id FROM mobile_lines WHERE device_id=$id")->fetchAll();
-                if ($linesAff) {
-                    $pdo->prepare("UPDATE mobile_lines SET device_id=NULL WHERE device_id=?")->execute([$id]);
-                    foreach($linesAff as $la) logHistory($pdo, 'line', $la['id'], "Matériel dissocié automatiquement (Terminal déclaré HS/Perdu/Archivé)", $la['agent_id']); 
+                $linesAff = $pdo->query("SELECT id, agent_id FROM mobile_lines WHERE device_id=$id AND archived=0")->fetchAll();
+                $archiveAlsoLineId = !empty($d['archive_also_line']) && !empty($d['archive_also_line_id']) ? (int)$d['archive_also_line_id'] : 0;
+                foreach($linesAff as $la) {
+                    if ($archiveAlsoLineId && $la['id'] == $archiveAlsoLineId) {
+                        $pdo->prepare("UPDATE mobile_lines SET archived=1, status='Resiliated', device_id=NULL, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$la['id']]);
+                        logHistory($pdo, 'line', $la['id'], "Ligne archivée automatiquement — téléphone associé archivé ($archiveReason)" . ($archiveComment ? " — $archiveComment" : ""), $la['agent_id']);
+                    } else {
+                        $pdo->prepare("UPDATE mobile_lines SET device_id=NULL WHERE id=?")->execute([$la['id']]);
+                        logHistory($pdo, 'line', $la['id'], "Matériel dissocié automatiquement (Terminal déclaré HS/Perdu/Archivé)", $la['agent_id']);
+                    }
                 }
             } elseif ($act === 'restore') {
                 $pdo->prepare("UPDATE devices SET archived=0, status='Stock', agent_id=NULL WHERE id=?")->execute([$id]); 
@@ -1226,8 +1353,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 logHistory($pdo, 'line', $id, $logMsg, $old);
 
                 if ($devId) {
-                    $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]);
-                    logHistory($pdo, 'device', $devId, "Retourné au stock automatiquement (La ligne a été résiliée/archivée)");
+                    $archiveAlsoDev = !empty($d['archive_also_device']) && !empty($d['archive_also_device_id']) && (int)$d['archive_also_device_id'] === $devId;
+                    if ($archiveAlsoDev) {
+                        $oldDevAgt = $pdo->query("SELECT agent_id FROM devices WHERE id=$devId")->fetchColumn();
+                        $pdo->prepare("UPDATE devices SET archived=1, status='HS', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]);
+                        logHistory($pdo, 'device', $devId, "Matériel archivé automatiquement — ligne associée archivée ($archiveReason)" . ($archiveComment ? " — $archiveComment" : ""));
+                        if ($oldDevAgt) invalidateAgentSignatures($pdo, $oldDevAgt, "Téléphone archivé avec la ligne");
+                    } else {
+                        $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]);
+                        logHistory($pdo, 'device', $devId, "Retourné au stock automatiquement (La ligne a été résiliée/archivée)");
+                    }
                 }
             } elseif ($act === 'restore') {
                 $pdo->prepare("UPDATE mobile_lines SET archived=0, status='Stock', agent_id=NULL WHERE id=?")->execute([$id]); 
@@ -1439,7 +1574,7 @@ elseif ($page === 'lines') {
     $billings = $pdo->query("SELECT id, account_number, name FROM billing_accounts ORDER BY name")->fetchAll();
     $devices = $pdo->query("SELECT d.id, d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE d.archived=0 AND d.status='Stock' ORDER BY m.brand, m.name")->fetchAll();
     // Toutes les SIM en stock (pour le swap) — vierges ET numérotées non affectées
-    $simStock = $pdo->query("SELECT id, phone_number, iccid, pin, puk, IFNULL(esim,0) as esim, IFNULL(sim_vierge,0) as sim_vierge FROM mobile_lines WHERE archived=0 AND status='Stock' ORDER BY phone_number, iccid")->fetchAll();
+    $simStock = $pdo->query("SELECT id, iccid, pin, puk, IFNULL(esim,0) as esim FROM mobile_lines WHERE archived=0 AND sim_vierge=1 ORDER BY iccid")->fetchAll();
     ?>
     <div class="page-header">
       <span class="page-title-txt">💳 Inventaire des Lignes & Cartes SIM</span>
@@ -1531,7 +1666,7 @@ elseif ($page === 'lines') {
                 <?php endif; ?>
                 <button class="btn-icon" title="Changer la SIM (garder le numéro)" style="color:var(--warning)"
                     onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')">🔄</button>
-                <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>)">🗄️</button>
+                <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>, <?=(int)$l['device_id']?>, <?=json_encode($l['device_id'] ? ($l['brand'].' '.$l['model_name'].' — S/N: '.($l['serial_number']?:($l['imei']?:'—'))) : '')?>)">🗄️</button>
             <?php else: ?>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$l['id']?>"><button type="submit" class="btn-icon" title="Restaurer" style="color:var(--success)">♻️</button></form>
@@ -1673,11 +1808,9 @@ elseif ($page === 'lines') {
                 data-pin="<?=h($sv['pin'])?>"
                 data-puk="<?=h($sv['puk'])?>"
                 data-id="<?=$sv['id']?>"
-                data-esim="<?=!empty($sv['esim'])?'1':'0'?>"
-                data-phone="<?=h($sv['phone_number']??'')?>">
-                <?= !empty($sv['esim']) ? '📲 eSIM' : '💳 SIM' ?>
-                <?= $sv['phone_number'] ? ' — '.formatPhone($sv['phone_number']) : ' — Vierge' ?>
-                <?= $sv['iccid'] ? ' (ICCID: '.h($sv['iccid']).')' : '' ?>
+                data-esim="<?=!empty($sv['esim'])?'1':'0'?>">
+                <?= !empty($sv['esim']) ? '📲 SIM vierge eSIM' : '💳 SIM vierge' ?>
+                <?= $sv['iccid'] ? ' — IMEI: '.h($sv['iccid']) : ' — Sans IMEI' ?>
                 <?= $sv['pin'] ? ' — PIN: '.$sv['pin'] : '' ?>
               </option>
               <?php endforeach; ?>
@@ -1685,11 +1818,11 @@ elseif ($page === 'lines') {
           </div>
 
           <div id="swap-manual-iccid-sep" class="form-group form-full" style="border-top:1px solid var(--border);padding-top:1rem;margin-top:-.25rem;">
-            <label style="color:var(--text3);">— ou saisir manuellement un ICCID —</label>
+            <label style="color:var(--text3);">— ou saisir manuellement l'IMEI / ICCID —</label>
           </div>
 
           <div class="form-group form-full" id="swap-iccid-row">
-            <label>Nouvel ICCID *</label>
+            <label>Nouvel IMEI / ICCID *</label>
             <input type="text" name="new_iccid" id="swap-new-iccid" placeholder="893310..." required>
           </div>
           <div class="form-group">
@@ -1711,7 +1844,7 @@ elseif ($page === 'lines') {
         </div>
 
         <div style="background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.3);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-top:.5rem;font-size:.85rem;color:var(--warning);">
-          ⚠️ L'ancien ICCID <strong id="swap-old-iccid-confirm"></strong> sera archivé dans l'historique. Cette action est irréversible.
+          ⚠️ L'ancien IMEI/ICCID <strong id="swap-old-iccid-confirm"></strong> sera archivé dans l'historique. Cette action est irréversible.
         </div>
 
         <div class="modal-footer">
@@ -1729,6 +1862,7 @@ elseif ($page === 'lines') {
           <input type="hidden" name="_entity" value="line">
           <input type="hidden" name="_action" value="archive">
           <input type="hidden" name="_id" id="archive-line-id">
+          <input type="hidden" name="archive_also_device_id" id="archive-line-device-id">
           <div class="form-grid">
             <div class="form-group form-full">
               <label>Motif *</label>
@@ -1743,6 +1877,16 @@ elseif ($page === 'lines') {
             <div class="form-group form-full">
               <label>Commentaire <span style="font-weight:400;text-transform:none;">(optionnel)</span></label>
               <textarea name="archive_comment" rows="2" placeholder="Informations complémentaires..."></textarea>
+            </div>
+            <!-- Section téléphone associé (affichée si un device est lié) -->
+            <div id="archive-line-device-section" class="form-group form-full" style="display:none;">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.75rem 1rem;text-transform:none;font-size:.88rem;font-weight:400;">
+                <input type="checkbox" name="archive_also_device" id="archive-line-also-device" value="1" style="width:15px;height:15px;accent-color:var(--danger);flex-shrink:0;">
+                <span>
+                  <strong style="color:var(--text);font-size:.9rem;">Archiver aussi le téléphone associé</strong>
+                  <span id="archive-line-device-label" style="display:block;color:var(--text2);font-size:.82rem;margin-top:.15rem;"></span>
+                </span>
+              </label>
             </div>
           </div>
           <div class="modal-footer">
@@ -1763,7 +1907,10 @@ elseif ($page === 'devices') {
     $where = "d.archived=" . ($isArchive ? "1" : "0");
     if ($isStock) $where .= " AND d.status='Stock'"; elseif (!$isArchive) $where .= " AND d.status!='Stock'";
 
-    $devices = $pdo->query("SELECT d.id, d.imei, d.imei2, d.serial_number, d.inventory_label, d.model_id, d.status, d.agent_id, d.service_id, d.purchase_date, d.notes, d.archived, d.created_at, a.first_name, a.last_name, s.name as service_name, m.brand, m.name as model_name, m.category FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC")->fetchAll();
+    $devices = $pdo->query("SELECT d.id, d.imei, d.imei2, d.serial_number, d.inventory_label, d.model_id, d.status, d.agent_id, d.service_id, d.purchase_date, d.notes, d.archived, d.created_at, a.first_name, a.last_name, s.name as service_name, m.brand, m.name as model_name, m.category,
+        (SELECT id FROM mobile_lines WHERE device_id=d.id AND archived=0 LIMIT 1) as line_id,
+        (SELECT phone_number FROM mobile_lines WHERE device_id=d.id AND archived=0 LIMIT 1) as line_phone
+        FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC")->fetchAll();
     
     $models = $pdo->query("SELECT id, brand, name FROM models ORDER BY brand, name")->fetchAll();
     $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
@@ -1823,7 +1970,7 @@ elseif ($page === 'devices') {
             <?php if(!$isArchive): ?>
                 <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($d, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"device")'>✏️</button>
                 <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
-                <button type="button" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="openArchiveDevice(<?=$d['id']?>)">🗄️</button>
+                <button type="button" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="openArchiveDevice(<?=$d['id']?>, <?=(int)$d['line_id']?>, <?=json_encode($d['line_id'] ? formatPhone($d['line_phone']) : '')?>)">🗄️</button>
             <?php else: ?>
                 <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$d['id']?>"><button type="submit" class="btn-icon" title="Restaurer au Stock" style="color:var(--success)">♻️</button></form>
@@ -1843,6 +1990,7 @@ elseif ($page === 'devices') {
           <input type="hidden" name="_entity" value="device">
           <input type="hidden" name="_action" value="archive">
           <input type="hidden" name="_id" id="archive-device-id">
+          <input type="hidden" name="archive_also_line_id" id="archive-device-line-id">
           <div class="form-grid">
             <div class="form-group form-full">
               <label>Motif de l'archivage *</label>
@@ -1857,6 +2005,16 @@ elseif ($page === 'devices') {
             <div class="form-group form-full">
               <label>Commentaire <span style="font-weight:400;text-transform:none;">(optionnel)</span></label>
               <textarea name="archive_comment" rows="2" placeholder="Informations complémentaires..."></textarea>
+            </div>
+            <!-- Section ligne associée (affichée si une ligne est liée) -->
+            <div id="archive-device-line-section" class="form-group form-full" style="display:none;">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.75rem 1rem;text-transform:none;font-size:.88rem;font-weight:400;">
+                <input type="checkbox" name="archive_also_line" id="archive-device-also-line" value="1" style="width:15px;height:15px;accent-color:var(--danger);flex-shrink:0;">
+                <span>
+                  <strong style="color:var(--text);font-size:.9rem;">Archiver aussi la ligne associée</strong>
+                  <span id="archive-device-line-label" style="display:block;color:var(--text2);font-size:.82rem;margin-top:.15rem;"></span>
+                </span>
+              </label>
             </div>
           </div>
           <div class="modal-footer">
@@ -2250,91 +2408,168 @@ elseif ($page === 'history') {
     $bons = $pdo->query("
         SELECT t.id, t.token, t.bon_type,
                DATE_FORMAT(t.created_at, '%d/%m/%Y %H:%i') as created_at,
-               t.expires_at, t.used_at, t.created_by, t.dsi_name, t.agent_id,
+               t.created_at as raw_created_at,
+               t.expires_at, t.created_by, t.dsi_name, t.agent_id,
                CONCAT(IFNULL(a.first_name,''), ' ', IFNULL(a.last_name,'')) as agent_name,
                IFNULL(svc.name, '—') as service_name,
                a.archived as agent_archived,
-               (SELECT DATE_FORMAT(MAX(signed_at), '%d/%m/%Y %H:%i') FROM signatures WHERE token=t.token) as last_signed_at,
-               (SELECT signer_name FROM signatures WHERE token=t.token ORDER BY signed_at DESC LIMIT 1) as signer_name,
+               (SELECT GROUP_CONCAT(DISTINCT ml.phone_number ORDER BY ml.id SEPARATOR ' / ')
+                FROM mobile_lines ml
+                WHERE ml.agent_id = t.agent_id AND ml.archived=0 AND ml.sim_vierge=0
+               ) as phone_numbers,
+               (SELECT DATE_FORMAT(MAX(signed_at), '%d/%m/%Y %H:%i') FROM signatures WHERE token=t.token AND superseded=0) as signed_at,
+               (SELECT signer_name FROM signatures WHERE token=t.token AND superseded=0 ORDER BY signed_at DESC LIMIT 1) as signer_name,
                (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=0) as active_sigs,
                (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=1) as archived_sigs
         FROM sign_tokens t
         LEFT JOIN agents a ON t.agent_id = a.id
         LEFT JOIN services svc ON a.service_id = svc.id
-        ORDER BY t.created_at DESC
+        ORDER BY t.agent_id, t.created_at DESC
     ")->fetchAll();
+
+    // ── Grouper les tokens en paires (remise + restitution) par agent ──
+    $grouped = [];
+    foreach ($bons as $b) {
+        $grouped[(int)$b['agent_id']][] = $b;
+    }
+
+    $pairs = [];
+    foreach ($grouped as $agentId => $agentBons) {
+        $remises     = array_values(array_filter($agentBons, fn($b) => $b['bon_type'] === 'remise'));
+        $restits     = array_values(array_filter($agentBons, fn($b) => $b['bon_type'] === 'restitution'));
+        $usedRestits = [];
+
+        foreach ($remises as $r) {
+            $pair = ['remise' => $r, 'restitution' => null,
+                     'agent_name' => $r['agent_name'], 'agent_id' => $r['agent_id'],
+                     'service_name' => $r['service_name'], 'agent_archived' => $r['agent_archived'],
+                     'phone_numbers' => $r['phone_numbers'],
+                     'sort_time' => strtotime($r['raw_created_at'])];
+            $rTime = strtotime($r['raw_created_at']);
+            // Chercher la restitution la plus proche (dans les 5 min) non encore utilisée
+            $bestDiff = PHP_INT_MAX; $bestIdx = -1;
+            foreach ($restits as $idx => $rt) {
+                if (in_array($idx, $usedRestits)) continue;
+                $diff = abs(strtotime($rt['raw_created_at']) - $rTime);
+                if ($diff < $bestDiff) { $bestDiff = $diff; $bestIdx = $idx; }
+            }
+            if ($bestIdx >= 0 && $bestDiff <= 300) {
+                $pair['restitution'] = $restits[$bestIdx];
+                $usedRestits[] = $bestIdx;
+            }
+            $pairs[] = $pair;
+        }
+        // Restitutions non appariées
+        foreach ($restits as $idx => $rt) {
+            if (!in_array($idx, $usedRestits)) {
+                $pairs[] = ['remise' => null, 'restitution' => $rt,
+                            'agent_name' => $rt['agent_name'], 'agent_id' => $rt['agent_id'],
+                            'service_name' => $rt['service_name'], 'agent_archived' => $rt['agent_archived'],
+                            'phone_numbers' => $rt['phone_numbers'],
+                            'sort_time' => strtotime($rt['raw_created_at'])];
+            }
+        }
+    }
+    usort($pairs, fn($a, $b) => $b['sort_time'] - $a['sort_time']);
+
+    // ── Couleurs de cycle pour les paires ──
+    $pairBorderColors = ['#10b981','#4361ee','#f59e0b','#8b5cf6','#ec4899','#38bdf8'];
+
+    $now = time();
+    function bonStatusHtml(array $b, int $now): string {
+        $isExpired = $b['expires_at'] && strtotime($b['expires_at']) < $now;
+        if ($b['active_sigs'] > 0)   return '<span style="background:rgba(16,185,129,.15);color:#10b981;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">✅ Signé</span>';
+        if ($b['archived_sigs'] > 0) return '<span style="background:rgba(148,163,184,.1);color:#94a3b8;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">🗄️ Archivé</span>';
+        if ($isExpired)              return '<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏰ Expiré</span>';
+        return '<span style="background:rgba(56,189,248,.15);color:#38bdf8;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏳ En attente</span>';
+    }
     ?>
     <div class="page-header">
       <span class="page-title-txt">📋 Historique des Bons de Remise</span>
     </div>
 
     <div class="search-bar-wrap">
-      <div class="search-bar"><span class="search-bar-icon">🔍</span><input type="text" placeholder="Rechercher agent, service, créé par..." oninput="tableSearch(this,'tbody-history','count-history')"></div>
+      <div class="search-bar"><span class="search-bar-icon">🔍</span>
+        <input type="text" id="history-search" placeholder="Rechercher agent, service, numéro de ligne..." oninput="historySearch(this.value)">
+      </div>
       <div class="search-count" id="count-history"></div>
     </div>
 
-    <div class="card" style="overflow-x:auto;">
-      <table class="data-table">
-        <thead><tr>
-          <th>Type de Bon</th>
-          <th>Agent / Bénéficiaire</th>
-          <th>Créé le</th>
-          <th>Créé par (DSI)</th>
-          <th>Statut</th>
-          <th>Signé le / Par</th>
-          <th>Actions</th>
-        </tr></thead>
-        <tbody id="tbody-history">
-        <?php if(empty($bons)): ?><tr><td colspan="7" class="empty-cell">Aucun bon de remise généré</td></tr><?php endif; ?>
-        <?php foreach($bons as $b):
-            // Déterminer le statut
-            $now = time();
-            $isExpired = $b['expires_at'] && strtotime($b['expires_at']) < $now;
-            if ($b['active_sigs'] > 0) {
-                $statusLabel = '<span class="badge badge-success">✅ Signé</span>';
-            } elseif ($b['archived_sigs'] > 0 && $b['active_sigs'] == 0) {
-                $statusLabel = '<span class="badge badge-muted">🗄️ Archivé</span>';
-            } elseif ($isExpired) {
-                $statusLabel = '<span class="badge badge-warning">⏰ Expiré</span>';
-            } else {
-                $statusLabel = '<span class="badge" style="background:rgba(56,189,248,.15);color:var(--info);">⏳ En attente</span>';
-            }
-            $bonTypeLabel = $b['bon_type'] === 'remise' ? '📥 Remise' : '📤 Restitution';
-            $bonTypeColor = $b['bon_type'] === 'remise' ? 'var(--success)' : 'var(--warning)';
+    <div id="history-pairs-container">
+    <?php if(empty($pairs)): ?>
+      <div class="card" style="padding:2rem;text-align:center;color:var(--text3);">Aucun bon de remise généré.</div>
+    <?php endif; ?>
+    <?php foreach($pairs as $pi => $pair):
+        $borderColor = $pairBorderColors[$pi % count($pairBorderColors)];
+        $agentName = trim($pair['agent_name']);
+    ?>
+    <div class="history-pair-card" data-search="<?=h(strtolower($agentName.' '.$pair['service_name'].' '.($pair['phone_numbers']??'').' '.($pair['remise']['dsi_name']??'').' '.($pair['restitution']['dsi_name']??'')))?>" style="background:var(--card);border:1px solid var(--border);border-left:4px solid <?=$borderColor?>;border-radius:var(--radius);margin-bottom:1rem;overflow:hidden;">
+      <!-- En-tête : Agent + Ligne -->
+      <div style="padding:.75rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;background:var(--card2);">
+        <div style="display:flex;align-items:center;gap:.75rem;">
+          <?php if($pair['agent_id']): ?>
+            <strong style="cursor:pointer;font-size:.95rem;" onclick="viewAgent(<?=$pair['agent_id']?>, '<?=h($agentName)?>')" title="Voir la fiche">👤 <?=h($agentName)?></strong>
+          <?php else: ?>
+            <strong style="color:var(--text3);">👤 Agent supprimé</strong>
+          <?php endif; ?>
+          <span style="font-size:.8rem;color:var(--text3);">🏢 <?=h($pair['service_name'])?></span>
+          <?php if($pair['agent_archived']): ?><span style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.68rem;font-weight:600;padding:.1rem .4rem;border-radius:999px;">🗄️ Parti</span><?php endif; ?>
+        </div>
+        <?php if($pair['phone_numbers']): ?>
+        <div style="font-family:var(--font-mono);font-size:.85rem;color:var(--primary);font-weight:600;">
+          📞 <?=h(implode(' / ', array_map('formatPhone', explode(' / ', $pair['phone_numbers']))))?></div>
+        <?php endif; ?>
+        <?php if($pair['agent_id']): ?>
+        <a href="index.php?page=pdf_bon&agent_id=<?=$pair['agent_id']?>" target="_blank" class="btn-icon" title="Imprimer le bon actuel" style="text-decoration:none;font-size:.8rem;">🖨️</a>
+        <?php endif; ?>
+      </div>
+      <!-- Bons : deux colonnes côte à côte -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
+        <?php foreach(['remise'=>['📥','Bon de Remise','#10b981','rgba(16,185,129,.06)'],'restitution'=>['📤','Bon de Restitution','#f59e0b','rgba(245,158,11,.06)']] as $btype=>[$icon,$label,$color,$bg]):
+            $b = $pair[$btype];
         ?>
-        <tr>
-          <td><span style="font-weight:600;color:<?=$bonTypeColor?>"><?=$bonTypeLabel?></span></td>
-          <td>
-            <?php if($b['agent_id']): ?>
-              <strong style="cursor:pointer;border-bottom:1px dashed var(--border2);" onclick="viewAgent(<?=$b['agent_id']?>, '<?=h(trim($b['agent_name']))?>')" title="Voir la fiche"><?=h(trim($b['agent_name']))?></strong>
-            <?php else: ?>
-              <span class="muted">Agent supprimé</span>
+        <div style="padding:1rem 1.25rem;border-right:<?=$btype==='remise'?'1px solid var(--border)':'none'?>;background:<?=$b?$bg:'var(--bg3)'?>;">
+          <?php if($b): ?>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:.5rem;flex-wrap:wrap;">
+              <span style="font-weight:700;color:<?=$color?>;font-size:.9rem;"><?=$icon?> <?=$label?></span>
+              <?=bonStatusHtml($b,$now)?>
+            </div>
+            <div style="font-size:.78rem;color:var(--text3);margin-bottom:.3rem;">
+              Créé le <strong style="color:var(--text2);"><?=h($b['created_at'])?></strong>
+              <?php if($b['dsi_name']||$b['created_by']): ?>— par <?=h($b['dsi_name']?:$b['created_by'])?><?php endif; ?>
+            </div>
+            <?php if($b['active_sigs'] > 0 && $b['signed_at']): ?>
+            <div style="font-size:.78rem;color:<?=$color?>;margin-top:.3rem;">
+              ✍️ <?=h($b['signer_name'])?> <span style="color:var(--text3);">— le <?=h($b['signed_at'])?></span>
+            </div>
             <?php endif; ?>
-            <br><span class="muted">🏢 <?=h($b['service_name'])?></span>
-            <?php if($b['agent_archived']): ?><span class="badge badge-warning" style="font-size:.65rem;margin-left:4px;">🗄️ Parti</span><?php endif; ?>
-          </td>
-          <td><?=h($b['created_at'])?></td>
-          <td><?=h($b['dsi_name'] ?: $b['created_by'] ?: '—')?></td>
-          <td><?=$statusLabel?></td>
-          <td>
-            <?php if($b['last_signed_at']): ?>
-              <strong style="color:var(--success);font-size:.85rem;"><?=h($b['last_signed_at'])?></strong>
-              <?php if($b['signer_name']): ?><br><span class="muted">par <?=h($b['signer_name'])?></span><?php endif; ?>
-              <?php if($b['archived_sigs'] > 0): ?><br><span style="font-size:.7rem;color:var(--text3);"><?=$b['archived_sigs']?> version(s) archivée(s)</span><?php endif; ?>
-            <?php else: ?>
-              <span class="muted">—</span>
+            <?php if($b['archived_sigs'] > 0): ?>
+            <div style="font-size:.7rem;color:var(--text3);margin-top:.2rem;"><?=$b['archived_sigs']?> version(s) archivée(s)</div>
             <?php endif; ?>
-          </td>
-          <td class="actions">
-            <?php if($b['agent_id']): ?>
-              <a href="index.php?page=pdf_bon&agent_id=<?=$b['agent_id']?>" target="_blank" class="btn-icon" title="Voir / Imprimer le bon de remise actuel" style="text-decoration:none;">🖨️</a>
-            <?php endif; ?>
-          </td>
-        </tr>
+          <?php else: ?>
+            <div style="color:var(--text3);font-size:.82rem;font-style:italic;"><?=$icon?> <?=$label?><br><span style="font-size:.75rem;">Non généré</span></div>
+          <?php endif; ?>
+        </div>
         <?php endforeach; ?>
-        </tbody>
-      </table>
+      </div>
     </div>
+    <?php endforeach; ?>
+    </div>
+
+    <script>
+    function historySearch(q) {
+      q = q.toLowerCase().trim();
+      const cards = document.querySelectorAll('.history-pair-card');
+      let visible = 0;
+      cards.forEach(c => {
+        const match = !q || c.dataset.search.includes(q);
+        c.style.display = match ? '' : 'none';
+        if (match) visible++;
+      });
+      const el = document.getElementById('count-history');
+      if (el) el.textContent = q ? visible + ' résultat(s)' : '';
+    }
+    </script>
     <?php
 }
 
@@ -2768,17 +3003,47 @@ function openSidebar(){ document.getElementById('sidebar').classList.add('open')
 function closeSidebar(){ document.getElementById('sidebar').classList.remove('open'); document.getElementById('sidebar-overlay').classList.remove('open'); }
 
 // ARCHIVE MODALS
-function openArchiveDevice(id) {
-  const el = document.getElementById('archive-device-id');
-  if (el) el.value = id;
+function openArchiveDevice(id, lineId, lineLabel) {
+  document.getElementById('archive-device-id').value = id;
+  // Section ligne associée
+  const sec = document.getElementById('archive-device-line-section');
+  const lbl = document.getElementById('archive-device-line-label');
+  const lid = document.getElementById('archive-device-line-id');
+  const chk = document.getElementById('archive-device-also-line');
+  if (sec) {
+    if (lineId) {
+      sec.style.display = '';
+      if (lbl) lbl.textContent = lineLabel || '';
+      if (lid) lid.value = lineId;
+    } else {
+      sec.style.display = 'none';
+      if (lid) lid.value = '';
+    }
+    if (chk) chk.checked = false;
+  }
   // Reset form
   const form = document.querySelector('#modal-archive-device form');
   if (form) { form.querySelector('select[name="archive_reason"]').value = ''; const ta = form.querySelector('textarea'); if(ta) ta.value = ''; }
   openModal('modal-archive-device');
 }
-function openArchiveLine(id) {
-  const el = document.getElementById('archive-line-id');
-  if (el) el.value = id;
+function openArchiveLine(id, deviceId, deviceLabel) {
+  document.getElementById('archive-line-id').value = id;
+  // Section téléphone associé
+  const sec = document.getElementById('archive-line-device-section');
+  const lbl = document.getElementById('archive-line-device-label');
+  const did = document.getElementById('archive-line-device-id');
+  const chk = document.getElementById('archive-line-also-device');
+  if (sec) {
+    if (deviceId) {
+      sec.style.display = '';
+      if (lbl) lbl.textContent = deviceLabel || '';
+      if (did) did.value = deviceId;
+    } else {
+      sec.style.display = 'none';
+      if (did) did.value = '';
+    }
+    if (chk) chk.checked = false;
+  }
   // Reset form
   const form = document.querySelector('#modal-archive-line form');
   if (form) { form.querySelector('select[name="archive_reason"]').value = ''; const ta = form.querySelector('textarea'); if(ta) ta.value = ''; }
@@ -2861,8 +3126,8 @@ async function loadSimHistory() {
     panel.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:.82rem;">'
       + '<thead><tr style="color:var(--text3);border-bottom:1px solid var(--border);">'
       + '<th style="padding:4px 8px;text-align:left;">Date</th>'
-      + '<th style="padding:4px 8px;text-align:left;">Ancien ICCID</th>'
-      + '<th style="padding:4px 8px;text-align:left;">Nouvel ICCID</th>'
+      + '<th style="padding:4px 8px;text-align:left;">Ancien IMEI/ICCID</th>'
+      + '<th style="padding:4px 8px;text-align:left;">Nouvel IMEI/ICCID</th>'
       + '<th style="padding:4px 8px;text-align:left;">Motif</th>'
       + '<th style="padding:4px 8px;text-align:left;">Par</th>'
       + '</tr></thead><tbody>'
