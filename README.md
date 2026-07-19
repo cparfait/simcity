@@ -69,13 +69,15 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 2. **Agents** — Ajoutez les utilisateurs (employés) avec leur service
 3. **Parc Matériel** — Enregistrez vos téléphones/tablettes (IMEI, S/N) — ils arrivent en stock
 4. **Lignes & SIM** — Créez les lignes mobiles et associez un agent, un forfait et un téléphone
-5. **Bon de remise** — Cliquez sur 🖨️ dans les actions d'une ligne pour générer le bon, l'imprimer et le faire signer via QR code
+5. **Bon de remise** — Depuis la fiche agent (bouton 📄) ou l'icône 🖨️ d'une ligne, générez le bon : contenu figé, numéro unique, signature via QR code
 
-### Signature électronique
+### Bons de remise / restitution
 
-- Le bon de remise contient deux QR codes : un pour la **remise** (attribution), un pour la **restitution** (retour)
-- L'agent scanne le QR code et signe depuis son téléphone
-- À la signature du bon de restitution, le matériel et la ligne sont **automatiquement remis en stock**
+- Chaque bon est un **document numéroté et immuable** (`BR-2026-0001`, `BT-2026-0001`…) : son contenu est photographié à la génération et ne change plus jamais, même après le retour du matériel — un bon signé reste imprimable à vie
+- Le **bon de remise** se génère depuis la fiche agent ; l'agent le signe depuis son téléphone via QR code ou lien — à la signature, les équipements listés sur le bon passent en service
+- Le **bon de restitution** se génère au moment du retour, en cochant les équipements rendus (**restitution partielle possible**) ; à la signature, seuls les équipements du bon retournent en stock
+- Si la dotation change (changement de SIM, de téléphone, transfert…), les bons **en attente** sont annulés automatiquement et un nouveau bon doit être généré ; les bons **signés** ne sont jamais modifiés
+- La page **Historique des bons** montre chaque cycle remise/restitution (lié structurellement, pas par date) avec impression individuelle
 
 ### Changement de SIM
 

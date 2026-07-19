@@ -47,80 +47,100 @@ try {
 // ─── 2b. PAGE PUBLIQUE DE SIGNATURE MOBILE ────────────────────
 if (isset($_GET['page']) && $_GET['page'] === 'sign') {
     $token = preg_replace('/[^a-zA-Z0-9]/', '', $_GET['token'] ?? '');
-    $tok = null;
+    $bon = null;
     if ($token) {
-        $st = $pdo->prepare("SELECT * FROM sign_tokens WHERE token=? AND (expires_at IS NULL OR expires_at > NOW())");
+        $st = $pdo->prepare("SELECT * FROM bons WHERE token=?");
         $st->execute([$token]);
-        $tok = $st->fetch();
+        $bon = $st->fetch();
     }
 
     // Traitement de la signature soumise
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && $tok && isset($_POST['signature_data'])) {
+    $canSignNow = $bon && $bon['status'] === 'pending' && (!$bon['expires_at'] || strtotime($bon['expires_at']) >= time());
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canSignNow && isset($_POST['signature_data'])) {
         $sigData = $_POST['signature_data'];
         $signerName = htmlspecialchars(trim($_POST['signer_name'] ?? ''), ENT_QUOTES);
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+        $justSigned = false;
         // Valider que c'est bien du base64 PNG
         if (strpos($sigData, 'data:image/png;base64,') === 0) {
-            $pdo->prepare("INSERT INTO signatures (token, agent_id, bon_type, signature_data, signer_name, ip) VALUES (?,?,?,?,?,?)")
-                ->execute([$tok['token'], $tok['agent_id'], $tok['bon_type'], $sigData, $signerName, $ip]);
-            $pdo->prepare("UPDATE sign_tokens SET used_at=NOW() WHERE token=?")->execute([$token]);
-            logHistory($pdo, 'agent', $tok['agent_id'], "✍️ Bon de ".($tok['bon_type']==='remise'?'remise':'restitution')." signé électroniquement par $signerName");
+            $pdo->beginTransaction();
+            try {
+                // Verrou + re-vérification : un bon ne peut être signé qu'une seule fois
+                $lock = $pdo->prepare("SELECT id FROM bons WHERE id=? AND status='pending' FOR UPDATE");
+                $lock->execute([$bon['id']]);
+                if ($lock->fetchColumn()) {
+                    $pdo->prepare("UPDATE bons SET status='signed', signed_at=NOW(), signer_name=?, signature_data=?, ip=? WHERE id=?")
+                        ->execute([$signerName, $sigData, $ip, $bon['id']]);
+                    $agentId = (int)$bon['agent_id'];
+                    $items   = $bon['items'] ? json_decode($bon['items'], true) : null;
+                    $log = $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, agent_id, author) VALUES (?,?,?,?,'Système')");
+                    $log->execute(['agent', $agentId, "✍️ Bon de {$bon['type']} {$bon['numero']} signé électroniquement par $signerName", $agentId]);
 
-            // Si bon de REMISE signé → activer les équipements si ce n'est pas déjà le cas
-            if ($tok['bon_type'] === 'remise') {
-                $agentId = (int)$tok['agent_id'];
-                $devActRows = $pdo->query("SELECT id FROM devices WHERE agent_id=$agentId AND archived=0 AND status!='Deployed'")->fetchAll();
-                if ($devActRows) {
-                    $pdo->prepare("UPDATE devices SET status='Deployed' WHERE agent_id=? AND archived=0")->execute([$agentId]);
-                    foreach ($devActRows as $dr) {
-                        $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('device',?,?,?)")
-                            ->execute([$dr['id'], "✅ Matériel mis en service — bon de remise signé par $signerName", 'Système']);
-                    }
-                }
-                $lineActRows = $pdo->query("SELECT id FROM mobile_lines WHERE agent_id=$agentId AND archived=0 AND status NOT IN ('Active','Stock') OR (agent_id=$agentId AND archived=0 AND status='Stock' AND sim_vierge=0)")->fetchAll();
-                if ($lineActRows) {
-                    foreach ($lineActRows as $lr) {
-                        $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('line',?,?,?)")
-                            ->execute([$lr['id'], "✅ Ligne activée — bon de remise signé par $signerName", 'Système']);
-                    }
-                    $pdo->prepare("UPDATE mobile_lines SET status='Active' WHERE agent_id=? AND archived=0 AND sim_vierge=0 AND status!='Active'")->execute([$agentId]);
-                }
-                logHistory($pdo, 'agent', $agentId, "✅ Bon de remise signé par $signerName — équipements activés", null);
-            }
-
-            // Si bon de RESTITUTION signé → retour automatique en stock
-            if ($tok['bon_type'] === 'restitution') {
-                $agentId = (int)$tok['agent_id'];
-
-                // 1. Matériels directement affectés à l'agent → stock, retirer agent ET service
-                $devRows = $pdo->query("SELECT id, service_id FROM devices WHERE agent_id=$agentId AND archived=0")->fetchAll();
-                if ($devRows) {
-                    $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE agent_id=? AND archived=0")->execute([$agentId]);
-                    foreach ($devRows as $dr) {
-                        $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('device',?,?,?)")
-                            ->execute([$dr['id'], "📦 Retour en stock — bon de restitution signé par $signerName (agent et service retirés)", 'Système']);
-                    }
-                }
-
-                // 2. Lignes mobiles de l'agent → libérer agent, service, device_id; mettre statut Stock
-                $lineRows = $pdo->query("SELECT id, device_id, service_id FROM mobile_lines WHERE agent_id=$agentId AND archived=0")->fetchAll();
-                if ($lineRows) {
-                    foreach ($lineRows as $lr) {
-                        // Historique ligne
-                        $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('line',?,?,?)")
-                            ->execute([$lr['id'], "📦 SIM remise en stock — bon de restitution signé par $signerName (agent, service et téléphone associé retirés)", 'Système']);
-                        // Si un téléphone associé via la ligne (pas encore traité) → stock + retirer agent et service
-                        if ($lr['device_id']) {
-                            $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=? AND archived=0")->execute([$lr['device_id']]);
-                            $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('device',?,?,?)")
-                                ->execute([$lr['device_id'], "📦 Retour en stock via ligne — bon de restitution signé par $signerName (agent et service retirés)", 'Système']);
+                    // Bon de REMISE signé → mise en service des équipements listés sur le bon
+                    if ($bon['type'] === 'remise') {
+                        foreach (($items['devices'] ?? []) as $it) {
+                            if (empty($it['device_id'])) continue;
+                            // Couvre aussi les téléphones liés uniquement via la ligne (agent_id NULL sur le device)
+                            $up = $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=? WHERE id=? AND archived=0 AND status!='Deployed'
+                                AND (agent_id=? OR (agent_id IS NULL AND id IN (SELECT device_id FROM mobile_lines WHERE agent_id=? AND archived=0)))");
+                            $up->execute([$agentId, (int)$it['device_id'], $agentId, $agentId]);
+                            if ($up->rowCount()) $log->execute(['device', (int)$it['device_id'], "✅ Matériel mis en service — bon {$bon['numero']} signé par $signerName", $agentId]);
+                        }
+                        foreach (($items['lines'] ?? []) as $it) {
+                            if (empty($it['line_id'])) continue;
+                            $up = $pdo->prepare("UPDATE mobile_lines SET status='Active' WHERE id=? AND agent_id=? AND archived=0 AND sim_vierge=0 AND status!='Active'");
+                            $up->execute([(int)$it['line_id'], $agentId]);
+                            if ($up->rowCount()) $log->execute(['line', (int)$it['line_id'], "✅ Ligne activée — bon {$bon['numero']} signé par $signerName", $agentId]);
                         }
                     }
-                    // Ligne : retirer agent, service, device_id, remettre en Stock
-                    $pdo->prepare("UPDATE mobile_lines SET agent_id=NULL, service_id=NULL, device_id=NULL, status='Stock' WHERE agent_id=? AND archived=0")->execute([$agentId]);
+
+                    // Bon de RESTITUTION signé → retour en stock des seuls items du bon
+                    if ($bon['type'] === 'restitution') {
+                        if ($items !== null) {
+                            foreach (($items['devices'] ?? []) as $it) {
+                                if (empty($it['device_id'])) continue;
+                                $up = $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=? AND archived=0
+                                    AND (agent_id=? OR id IN (SELECT device_id FROM mobile_lines WHERE agent_id=? AND archived=0))");
+                                $up->execute([(int)$it['device_id'], $agentId, $agentId]);
+                                if ($up->rowCount()) {
+                                    $log->execute(['device', (int)$it['device_id'], "📦 Retour en stock — bon {$bon['numero']} signé par $signerName", $agentId]);
+                                    // Dissocier les lignes qui référencent encore ce téléphone
+                                    $affLines = $pdo->prepare("SELECT id FROM mobile_lines WHERE device_id=? AND archived=0");
+                                    $affLines->execute([(int)$it['device_id']]);
+                                    foreach ($affLines->fetchAll(PDO::FETCH_COLUMN) as $lid) {
+                                        $pdo->prepare("UPDATE mobile_lines SET device_id=NULL WHERE id=?")->execute([$lid]);
+                                        $log->execute(['line', (int)$lid, "Téléphone dissocié — restitué via le bon {$bon['numero']}", $agentId]);
+                                    }
+                                }
+                            }
+                            foreach (($items['lines'] ?? []) as $it) {
+                                if (empty($it['line_id'])) continue;
+                                $up = $pdo->prepare("UPDATE mobile_lines SET agent_id=NULL, service_id=NULL, device_id=NULL, status='Stock' WHERE id=? AND agent_id=? AND archived=0");
+                                $up->execute([(int)$it['line_id'], $agentId]);
+                                if ($up->rowCount()) $log->execute(['line', (int)$it['line_id'], "📦 SIM remise en stock — bon {$bon['numero']} signé par $signerName", $agentId]);
+                            }
+                        } else {
+                            // Bon migré sans contenu enregistré : restitution complète (ancien comportement)
+                            foreach ($pdo->query("SELECT id FROM devices WHERE agent_id=$agentId AND archived=0")->fetchAll() as $dr) {
+                                $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$dr['id']]);
+                                $log->execute(['device', (int)$dr['id'], "📦 Retour en stock — bon {$bon['numero']} signé par $signerName", $agentId]);
+                            }
+                            foreach ($pdo->query("SELECT id, device_id FROM mobile_lines WHERE agent_id=$agentId AND archived=0")->fetchAll() as $lr) {
+                                if ($lr['device_id']) {
+                                    $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=? AND archived=0")->execute([$lr['device_id']]);
+                                    $log->execute(['device', (int)$lr['device_id'], "📦 Retour en stock via ligne — bon {$bon['numero']} signé par $signerName", $agentId]);
+                                }
+                                $log->execute(['line', (int)$lr['id'], "📦 SIM remise en stock — bon {$bon['numero']} signé par $signerName", $agentId]);
+                            }
+                            $pdo->prepare("UPDATE mobile_lines SET agent_id=NULL, service_id=NULL, device_id=NULL, status='Stock' WHERE agent_id=? AND archived=0")->execute([$agentId]);
+                        }
+                    }
+                    $justSigned = true;
                 }
-            }
+                $pdo->commit();
+            } catch (Exception $e) { $pdo->rollBack(); }
         }
+        if ($justSigned) {
         ?><!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
         <style>
         *{box-sizing:border-box;margin:0;padding:0}
@@ -158,28 +178,38 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
         </script>
         </body></html>
         <?php exit;
+        }
+        // Double soumission ou données invalides → réafficher l'état réel du bon
+        $st = $pdo->prepare("SELECT * FROM bons WHERE token=?"); $st->execute([$token]); $bon = $st->fetch();
     }
 
-    $agt = $tok ? $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=".(int)$tok['agent_id'])->fetch() : null;
-    $alreadySigned = false;
+    $agt = $bon ? $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=".(int)$bon['agent_id'])->fetch() : null;
+    $alreadySigned = $bon && $bon['status'] === 'signed';
+    $isCancelled   = $bon && $bon['status'] === 'cancelled';
+    $isExpired     = $bon && $bon['status'] === 'pending' && $bon['expires_at'] && strtotime($bon['expires_at']) < time();
+    $canSign       = $bon && $bon['status'] === 'pending' && !$isExpired;
+    $bonItems      = ($bon && $bon['items']) ? json_decode($bon['items'], true) : null;
+
+    // Bloquer la restitution tant que le bon de remise n'est pas signé
     $remiseNotSigned = false;
-    if ($tok) {
-        $st2 = $pdo->prepare("SELECT id FROM signatures WHERE token=?");
-        $st2->execute([$token]); $alreadySigned = (bool)$st2->fetchColumn();
-        // Bloquer restitution si remise pas encore signée (avec un token valide)
-        if (!$alreadySigned && $tok['bon_type'] === 'restitution') {
-            $remiseSigned = $pdo->prepare("SELECT COUNT(*) FROM signatures s JOIN sign_tokens t ON s.token=t.token WHERE t.agent_id=? AND t.bon_type='remise' AND s.superseded=0");
-            $remiseSigned->execute([$tok['agent_id']]);
-            $remiseNotSigned = ($remiseSigned->fetchColumn() == 0);
+    if ($canSign && $bon['type'] === 'restitution') {
+        if ($bon['parent_id']) {
+            $p = $pdo->prepare("SELECT status FROM bons WHERE id=?");
+            $p->execute([$bon['parent_id']]);
+            $remiseNotSigned = ($p->fetchColumn() !== 'signed');
+        } else {
+            $p = $pdo->prepare("SELECT COUNT(*) FROM bons WHERE agent_id=? AND type='remise' AND status='signed'");
+            $p->execute([$bon['agent_id']]);
+            $remiseNotSigned = ($p->fetchColumn() == 0);
         }
     }
     // Chercher un motif d'archivage récent (perte/casse) pour afficher en rouge sur la restitution
     $archiveAlertMsg = '';
-    if ($tok && $tok['bon_type'] === 'restitution' && !$alreadySigned && !$remiseNotSigned) {
+    if ($canSign && $bon['type'] === 'restitution' && !$remiseNotSigned) {
         $archiveAlert = $pdo->prepare("SELECT action_desc FROM history_logs
             WHERE agent_id=? AND (action_desc LIKE '%Archivé%' OR action_desc LIKE '%archivé%' OR action_desc LIKE '%Perdu%' OR action_desc LIKE '%Volé%' OR action_desc LIKE '%Cassé%')
             ORDER BY action_date DESC LIMIT 1");
-        $archiveAlert->execute([$tok['agent_id']]);
+        $archiveAlert->execute([$bon['agent_id']]);
         $archiveAlertRow = $archiveAlert->fetch();
         if ($archiveAlertRow) $archiveAlertMsg = $archiveAlertRow['action_desc'];
     }
@@ -210,10 +240,24 @@ canvas{display:block;width:100%;border-radius:8px;}
 </style>
 </head><body>
 <div class="card">
-<?php if(!$tok): ?>
-    <div class="error">⛔ Ce lien de signature est invalide ou a expiré.</div>
+<?php if(!$bon): ?>
+    <div class="error">⛔ Ce lien de signature est invalide.</div>
 <?php elseif($alreadySigned): ?>
-    <div class="success-box"><div class="icon">✅</div><h2>Déjà signé</h2><p style="color:#64748b;">Ce bon a déjà été signé.</p></div>
+    <div class="success-box"><div class="icon">✅</div><h2>Déjà signé</h2><p style="color:#64748b;">Le bon <strong><?=htmlspecialchars($bon['numero']?:'')?></strong> a déjà été signé<?php if($bon['signer_name']): ?> par <strong><?=htmlspecialchars($bon['signer_name'])?></strong> le <?=date('d/m/Y à H:i', strtotime($bon['signed_at']))?><?php endif; ?>.</p></div>
+<?php elseif($isCancelled): ?>
+    <div class="error" style="background:#f8fafc;border-color:#e2e8f0;color:#475569;">
+        <div style="font-size:1.5rem;margin-bottom:.5rem;">🚫</div>
+        <strong>Bon annulé</strong><br><br>
+        Ce bon n'est plus valide<?php if($bon['cancel_reason']): ?> : <?=htmlspecialchars($bon['cancel_reason'])?><?php endif; ?>.<br><br>
+        <span style="font-size:.85rem;">Demandez à votre DSI de générer un nouveau bon.</span>
+    </div>
+<?php elseif($isExpired): ?>
+    <div class="error" style="background:#fff7ed;border-color:#fed7aa;color:#c2410c;">
+        <div style="font-size:1.5rem;margin-bottom:.5rem;">⏰</div>
+        <strong>Lien expiré</strong><br><br>
+        Ce lien de signature a expiré.<br><br>
+        <span style="font-size:.85rem;">Demandez à votre DSI de générer un nouveau bon.</span>
+    </div>
 <?php elseif($remiseNotSigned): ?>
     <div class="error" style="background:#fff7ed;border-color:#fed7aa;color:#c2410c;">
         <div style="font-size:1.5rem;margin-bottom:.5rem;">🔒</div>
@@ -223,7 +267,7 @@ canvas{display:block;width:100%;border-radius:8px;}
     </div>
 <?php else: ?>
     <h2>✍️ Signature électronique</h2>
-    <div class="sub">Bon de <?=$tok['bon_type']==='remise'?'remise de matériel':'restitution de matériel'?></div>
+    <div class="sub">Bon de <?=$bon['type']==='remise'?'remise de matériel':'restitution de matériel'?> — <strong><?=htmlspecialchars($bon['numero']?:'')?></strong></div>
     <?php if($archiveAlertMsg): ?>
     <div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:1rem 1.25rem;margin-bottom:1.25rem;color:#dc2626;">
         <div style="font-size:1.4rem;margin-bottom:.35rem;">⚠️</div>
@@ -234,6 +278,17 @@ canvas{display:block;width:100%;border-radius:8px;}
     <div class="info">
         <strong><?=htmlspecialchars($agt['first_name'].' '.$agt['last_name'])?></strong>
         <?=htmlspecialchars($agt['service_name']?:'')?>
+        <?php if($bonItems && (!empty($bonItems['devices']) || !empty($bonItems['lines']))): ?>
+        <div style="margin-top:.75rem;padding-top:.75rem;border-top:1px solid #e2e8f0;font-size:.85rem;">
+            <div style="font-weight:600;color:#64748b;text-transform:uppercase;font-size:.72rem;margin-bottom:.4rem;"><?=$bon['type']==='remise'?'Équipements remis':'Équipements à restituer'?></div>
+            <?php foreach(($bonItems['devices'] ?? []) as $it): ?>
+            <div style="margin-bottom:.25rem;">📱 <?=htmlspecialchars(trim(($it['brand']??'').' '.($it['name']??'')))?> <span style="color:#94a3b8;">— IMEI <?=htmlspecialchars($it['imei']??'')?></span></div>
+            <?php endforeach; ?>
+            <?php foreach(($bonItems['lines'] ?? []) as $it): ?>
+            <div style="margin-bottom:.25rem;">📞 <?=htmlspecialchars(formatPhone($it['phone_number']??''))?><?php if(!empty($it['esim'])): ?> <span style="background:#ede9fe;color:#6d28d9;padding:0 4px;border-radius:3px;font-size:.72rem;">eSIM</span><?php endif; ?><?php if(!empty($it['personal_device'])): ?> <span style="color:#94a3b8;font-size:.78rem;">(appareil personnel)</span><?php endif; ?></div>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
     </div>
     <form method="post" id="sigForm">
         <label>Votre nom complet</label>
@@ -308,86 +363,214 @@ function baseUrl($pdo = null) {
     return $proto . '://' . $host . $dir . '/index.php';
 }
 
-// Invalide tous les tokens de signature d'un agent et archive ses signatures
-function invalidateAgentSignatures($pdo, $agentId, $reason = 'Changement d\'équipement') {
+// ─── Helpers bons de remise / restitution ─────────────────────
+// Numéro séquentiel : BR-2026-0042 (remise) / BT-2026-0042 (restitution)
+function bonNumero($pdo, $type) {
+    $prefix = ($type === 'remise' ? 'BR' : 'BT') . '-' . date('Y') . '-';
+    $st = $pdo->prepare("SELECT MAX(CAST(SUBSTRING(numero, ?) AS UNSIGNED)) FROM bons WHERE numero LIKE ?");
+    $st->execute([strlen($prefix) + 1, $prefix . '%']);
+    return $prefix . str_pad((string)((int)$st->fetchColumn() + 1), 4, '0', STR_PAD_LEFT);
+}
+
+// Photographie la dotation actuelle d'un agent — contenu figé du bon
+function bonSnapshotItems($pdo, $agentId) {
+    $agentId = (int)$agentId;
+    $agt = $pdo->query("SELECT a.first_name, a.last_name, a.email, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=$agentId")->fetch() ?: [];
+    $lines = $pdo->query("SELECT l.id as line_id, l.phone_number, l.iccid, l.eid, l.activation_code, p.name as plan_name, COALESCE(l.personal_device,0) as personal_device, COALESCE(l.esim,0) as esim FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.agent_id=$agentId AND l.archived=0 ORDER BY l.id")->fetchAll();
+    $devices = $pdo->query("SELECT DISTINCT d.id as device_id, d.imei, d.serial_number, d.inventory_label, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$agentId OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$agentId AND device_id IS NOT NULL)) AND d.archived=0 ORDER BY d.id")->fetchAll();
+    return [
+        'agent'   => ['name' => trim(($agt['first_name'] ?? '') . ' ' . ($agt['last_name'] ?? '')), 'service' => $agt['service_name'] ?? '', 'email' => $agt['email'] ?? ''],
+        'devices' => $devices,
+        'lines'   => $lines,
+    ];
+}
+
+// Crée un bon en attente de signature (token valable 30 jours)
+function createBon($pdo, $type, $agentId, $items, $parentId = null) {
+    $token   = bin2hex(random_bytes(32));
+    $expires = date('Y-m-d H:i:s', strtotime('+30 days'));
+    $dsiName = $_SESSION['admin_fullname'] ?? $_SESSION['username'] ?? 'DSI';
+    $pdo->prepare("INSERT INTO bons (numero, type, agent_id, parent_id, items, status, token, expires_at, created_by, dsi_name) VALUES (?,?,?,?,?,'pending',?,?,?,?)")
+        ->execute([bonNumero($pdo, $type), $type, (int)$agentId, $parentId, json_encode($items, JSON_UNESCAPED_UNICODE), $token, $expires, $_SESSION['username'] ?? 'admin', $dsiName]);
+    return (int)$pdo->lastInsertId();
+}
+
+// Annule les bons non signés d'un agent (la dotation a changé, ils ne
+// correspondent plus à la réalité). Les bons signés ne sont jamais touchés.
+function cancelPendingBons($pdo, $agentId, $reason = 'Dotation modifiée') {
     if (!$agentId) return;
-    // Expirer les tokens actifs
-    $pdo->prepare("UPDATE sign_tokens SET expires_at=NOW() WHERE agent_id=? AND (expires_at IS NULL OR expires_at > NOW())")
-        ->execute([$agentId]);
-    // Marquer les signatures comme superseded (conservées en historique mais plus actives)
-    $pdo->prepare("UPDATE signatures SET superseded=1 WHERE agent_id=? AND superseded=0")
-        ->execute([$agentId]);
-    // Log dans l'historique
-    $author = $_SESSION['username'] ?? 'Système';
-    $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('agent', ?, ?, ?)")
-        ->execute([$agentId, "⚠️ Nouveau bon requis — $reason. Les signatures précédentes sont conservées en historique, un nouveau bon doit être généré et signé.", $author]);
+    $st = $pdo->prepare("UPDATE bons SET status='cancelled', cancel_reason=? WHERE agent_id=? AND status='pending'");
+    $st->execute([$reason, $agentId]);
+    if ($st->rowCount() > 0) {
+        $author = $_SESSION['username'] ?? 'Système';
+        $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('agent', ?, ?, ?)")
+            ->execute([$agentId, "🚫 Bon(s) en attente annulé(s) — $reason. Générez un nouveau bon si nécessaire.", $author]);
+    }
 }
 
 if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
     if (!isset($_SESSION['user_id'])) die("Accès refusé.");
-    $id = (int)$_GET['agent_id'];
-    $agt = $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=$id")->fetch();
-    $lines = $pdo->query("SELECT l.phone_number, l.iccid, l.eid, l.activation_code, p.name as plan_name, COALESCE(l.personal_device,0) as personal_device, COALESCE(l.esim,0) as esim FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.agent_id=$id AND l.archived=0")->fetchAll();
-    $devices = $pdo->query("SELECT DISTINCT d.imei, d.serial_number, d.inventory_label, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
+    if (empty($_SESSION['csrf_token'])) $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
     $pdfLogo = getSetting($pdo, 'pdf_logo_path', '');
 
-    // Générer ou réutiliser un token de signature (valable 30 jours)
-    $tokRemise = null; $tokRestitution = null;
-    foreach (['remise','restitution'] as $btype) {
-        $existing = $pdo->prepare("SELECT token FROM sign_tokens WHERE agent_id=? AND bon_type=? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 1");
-        $existing->execute([$id, $btype]);
-        $row = $existing->fetchColumn();
-        if (!$row) {
-            $row = bin2hex(random_bytes(32));
-            $expires = date('Y-m-d H:i:s', strtotime('+30 days'));
-            $dsiName = $_SESSION['admin_fullname'] ?? $_SESSION['username'] ?? 'DSI';
-            $pdo->prepare("INSERT INTO sign_tokens (token, agent_id, bon_type, created_by, dsi_name, expires_at) VALUES (?,?,?,?,?,?)")
-                ->execute([$row, $id, $btype, $_SESSION['username'] ?? 'admin', $dsiName, $expires]);
+    // ── Résolution des bons à afficher — lecture seule, AUCUN effet de bord ──
+    $bonRemise = null; $bonRestitution = null; $agentId = 0;
+    if (!empty($_GET['bon_id'])) {
+        $st = $pdo->prepare("SELECT * FROM bons WHERE id=?");
+        $st->execute([(int)$_GET['bon_id']]);
+        if ($b = $st->fetch()) {
+            $agentId = (int)$b['agent_id'];
+            if ($b['type'] === 'remise') {
+                $bonRemise = $b;
+                $st = $pdo->prepare("SELECT * FROM bons WHERE parent_id=? AND type='restitution' AND status!='cancelled' ORDER BY created_at DESC, id DESC LIMIT 1");
+                $st->execute([$b['id']]);
+                $bonRestitution = $st->fetch() ?: null;
+            } else {
+                $bonRestitution = $b;
+                if ($b['parent_id']) {
+                    $st = $pdo->prepare("SELECT * FROM bons WHERE id=?");
+                    $st->execute([$b['parent_id']]);
+                    $bonRemise = $st->fetch() ?: null;
+                }
+            }
         }
-        if ($btype === 'remise')      $tokRemise      = $row;
-        if ($btype === 'restitution') $tokRestitution = $row;
+    } elseif (!empty($_GET['agent_id'])) {
+        // Lien par agent : dernier cycle (dernier bon de remise non annulé)
+        $agentId = (int)$_GET['agent_id'];
+        $st = $pdo->prepare("SELECT * FROM bons WHERE agent_id=? AND type='remise' AND status!='cancelled' ORDER BY created_at DESC, id DESC LIMIT 1");
+        $st->execute([$agentId]);
+        $bonRemise = $st->fetch() ?: null;
+        if ($bonRemise) {
+            $st = $pdo->prepare("SELECT * FROM bons WHERE parent_id=? AND type='restitution' AND status!='cancelled' ORDER BY created_at DESC, id DESC LIMIT 1");
+            $st->execute([$bonRemise['id']]);
+            $bonRestitution = $st->fetch() ?: null;
+        }
     }
 
-    // Récupérer les signatures existantes + noms DSI figés
-    $sigRemise = $pdo->prepare("SELECT s.signature_data, s.signer_name, s.signed_at, t.dsi_name FROM signatures s JOIN sign_tokens t ON s.token=t.token WHERE s.agent_id=? AND s.bon_type='remise' AND s.superseded=0 ORDER BY s.signed_at DESC LIMIT 1");
-    $sigRemise->execute([$id]); $sigRemise = $sigRemise->fetch();
-    $sigRestitution = $pdo->prepare("SELECT s.signature_data, s.signer_name, s.signed_at, t.dsi_name FROM signatures s JOIN sign_tokens t ON s.token=t.token WHERE s.agent_id=? AND s.bon_type='restitution' AND s.superseded=0 ORDER BY s.signed_at DESC LIMIT 1");
-    $sigRestitution->execute([$id]); $sigRestitution = $sigRestitution->fetch();
-    // Noms DSI : chaque bon conserve le nom de l'admin qui l'a généré, indépendamment
-    $currentAdmin       = $_SESSION['admin_fullname'] ?? $_SESSION['username'] ?? '';
-    $dsiNameRemise      = $sigRemise['dsi_name']      ?? $tokRemiseRow['dsi_name']      ?? $currentAdmin;
-    $dsiNameRestitution = $sigRestitution['dsi_name'] ?? $tokRestRow['dsi_name']         ?? $currentAdmin;
+    $agt = $agentId ? $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=$agentId")->fetch() : null;
+    $agtName = $agt ? trim($agt['first_name'].' '.$agt['last_name']) : 'Agent inconnu';
 
-    $urlRemise      = baseUrl($pdo) . '?page=sign&token=' . $tokRemise;
-    $urlRestitution = baseUrl($pdo) . '?page=sign&token=' . $tokRestitution;
-    // QR codes générés côté client via qrcode.js (pas de dépendance externe)
+    // ── Aucun bon à afficher : écran d'information + génération ──
+    if (!$bonRemise && !$bonRestitution) {
+        $dotation = $agt ? bonSnapshotItems($pdo, $agentId) : null;
+        $hasDotation = $dotation && (!empty($dotation['devices']) || !empty($dotation['lines']));
+        ?>
+        <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Bon de remise — <?=h($agtName)?></title>
+        <style>
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem;margin:0;}
+        .card{background:#fff;border-radius:14px;padding:2rem;max-width:480px;width:100%;box-shadow:0 4px 20px rgba(0,0,0,.08);text-align:center;}
+        h2{font-size:1.2rem;color:#1e293b;margin:0 0 1rem;}
+        p{color:#475569;font-size:.92rem;line-height:1.6;}
+        .btn{display:inline-block;margin-top:1rem;padding:.75rem 1.75rem;background:#4361ee;color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:600;cursor:pointer;}
+        </style></head><body>
+        <div class="card">
+            <h2>📄 Bon de remise — <?=h($agtName)?></h2>
+            <?php if (!$agt): ?>
+                <p>⛔ Agent introuvable.</p>
+            <?php elseif (!$hasDotation): ?>
+                <p>ℹ️ Aucun bon n'existe pour cet agent et aucun équipement ne lui est attribué.<br>Attribuez d'abord une ligne ou un matériel, puis générez le bon de remise.</p>
+            <?php else: ?>
+                <p>Aucun bon n'a encore été généré pour cet agent.<br>Sa dotation actuelle : <strong><?=count($dotation['devices'])?> matériel(s)</strong> et <strong><?=count($dotation['lines'])?> ligne(s)</strong>.</p>
+                <form method="post" action="index.php">
+                    <?=csrf_field()?>
+                    <input type="hidden" name="_entity" value="bon">
+                    <input type="hidden" name="_action" value="generate_remise">
+                    <input type="hidden" name="agent_id" value="<?=$agentId?>">
+                    <button type="submit" class="btn">📄 Générer le bon de remise</button>
+                </form>
+            <?php endif; ?>
+        </div>
+        </body></html>
+        <?php exit;
+    }
 
-    // Construire le tableau des équipements (réutilisé 2 fois)
-    function equipTable($devices, $lines) {
+    // Libellé de statut affiché à la place du QR code quand la signature n'est plus possible
+    function bonStatusLabel($bon) {
+        if ($bon['status'] === 'signed')    return '✅ Signé le '.date('d/m/Y H:i', strtotime($bon['signed_at']));
+        if ($bon['status'] === 'cancelled') return '🚫 Annulé';
+        if ($bon['expires_at'] && strtotime($bon['expires_at']) < time()) return '⏰ Lien de signature expiré';
+        return '⏳ En attente de signature';
+    }
+
+    // Tableau des équipements depuis le snapshot figé du bon
+    function equipTable($items) {
+        $devices = $items['devices'] ?? []; $lines = $items['lines'] ?? [];
         $html = '<table><thead><tr><th>Type</th><th>Détails</th><th>Identifiant</th></tr></thead><tbody>';
         foreach($devices as $d) {
-            $devId = htmlspecialchars($d['inventory_label'] ? 'Inv: '.$d['inventory_label'].' | S/N: '.($d['serial_number']?:$d['imei']) : 'IMEI: '.$d['imei'].($d['serial_number']?' | S/N: '.$d['serial_number']:''));
-            $html .= '<tr><td>Matériel</td><td>'.htmlspecialchars($d['brand'].' '.$d['name']).'</td><td>'.$devId.'</td></tr>';
+            $devId = htmlspecialchars(!empty($d['inventory_label']) ? 'Inv: '.$d['inventory_label'].' | S/N: '.($d['serial_number']?:$d['imei']) : 'IMEI: '.$d['imei'].(!empty($d['serial_number'])?' | S/N: '.$d['serial_number']:''));
+            $html .= '<tr><td>Matériel</td><td>'.htmlspecialchars(($d['brand']??'').' '.($d['name']??'')).'</td><td>'.$devId.'</td></tr>';
         }
         foreach($lines as $l) {
             if(!empty($l['personal_device'])) {
                 $html .= '<tr><td>Tél. perso<br><small>(BYOD)</small></td><td>'.htmlspecialchars($l['plan_name']?:'Forfait inconnu').'</td><td>📲 Appareil personnel<br><small>N° : '.formatPhone($l['phone_number']).'</small></td></tr>';
             } elseif(!empty($l['esim'])) {
                 $detail = 'N° : '.formatPhone($l['phone_number']);
-                if($l['iccid']) $detail .= '<br><small>ICCID : '.htmlspecialchars($l['iccid']).'</small>';
-                if($l['eid'])   $detail .= '<br><small>EID : '.htmlspecialchars($l['eid']).'</small>';
+                if(!empty($l['iccid'])) $detail .= '<br><small>ICCID : '.htmlspecialchars($l['iccid']).'</small>';
+                if(!empty($l['eid']))   $detail .= '<br><small>EID : '.htmlspecialchars($l['eid']).'</small>';
                 $html .= '<tr><td>Abonnement<br><small style="background:#ede9fe;color:#6d28d9;padding:1px 4px;border-radius:3px;">eSIM</small></td><td>'.htmlspecialchars($l['plan_name']?:'Forfait inconnu').'</td><td>'.$detail.'</td></tr>';
             } else {
                 $detail = 'N° : '.formatPhone($l['phone_number']);
-                if($l['iccid']) $detail .= '<br><small>ICCID : '.htmlspecialchars($l['iccid']).'</small>';
+                if(!empty($l['iccid'])) $detail .= '<br><small>ICCID : '.htmlspecialchars($l['iccid']).'</small>';
                 $html .= '<tr><td>Abonnement<br><small style="background:#e0f2fe;color:#0369a1;padding:1px 4px;border-radius:3px;">SIM</small></td><td>'.htmlspecialchars($l['plan_name']?:'Forfait inconnu').'</td><td>'.$detail.'</td></tr>';
             }
         }
-        if (!$devices && !$lines) $html .= '<tr><td colspan="3" style="text-align:center;font-style:italic;color:#999;">Aucun équipement</td></tr>';
+        if ($items === null) $html .= '<tr><td colspan="3" style="text-align:center;font-style:italic;color:#999;">Contenu non enregistré (bon issu de l\'ancien système)</td></tr>';
+        elseif (!$devices && !$lines) $html .= '<tr><td colspan="3" style="text-align:center;font-style:italic;color:#999;">Aucun équipement</td></tr>';
         return $html . '</tbody></table>';
     }
+
+    // Rendu complet d'un bon (en-tête, bénéficiaire, équipements, signatures)
+    function renderBonSection($pdo, $bon, $agt) {
+        global $pdfLogo;
+        $type  = $bon['type'];
+        $items = $bon['items'] ? json_decode($bon['items'], true) : null;
+        $isPending = $bon['status'] === 'pending' && (!$bon['expires_at'] || strtotime($bon['expires_at']) >= time());
+        $title = $type === 'remise' ? 'BON DE REMISE DE MATÉRIEL' : 'BON DE RESTITUTION DE MATÉRIEL';
+        $benefName    = ($items['agent']['name'] ?? '')    ?: ($agt ? trim($agt['first_name'].' '.$agt['last_name']) : 'Agent inconnu');
+        $benefService = ($items['agent']['service'] ?? '') ?: ($agt['service_name'] ?? '');
+        $benefEmail   = ($items['agent']['email'] ?? '')   ?: ($agt['email'] ?? '');
+
+        echo '<div class="header">
+            <div>'.($pdfLogo && file_exists($pdfLogo) ? '<img src="'.htmlspecialchars($pdfLogo).'" class="header-logo" alt="Logo">' : '').'</div>
+            <div class="header-text"><h1>'.$title.'</h1>
+                <p style="margin:.25rem 0 0;font-size:.85rem;font-weight:700;">N° '.htmlspecialchars($bon['numero']?:'—').'</p>
+                <p style="margin:.15rem 0 0;font-size:.75rem;color:#555;">Généré le '.date('d/m/Y', strtotime($bon['created_at'])).'</p></div>
+            <div class="qr-wrap">';
+        if ($isPending) {
+            $url = baseUrl($pdo).'?page=sign&token='.$bon['token'];
+            echo '<div id="qr-'.(int)$bon['id'].'"></div>
+                  <a href="'.htmlspecialchars($url).'" style="display:block;margin-top:3px;font-size:.75rem;color:#4361ee;text-decoration:none;">Signer en ligne</a>';
+        } else {
+            echo '<div style="font-size:.8rem;font-weight:600;">'.bonStatusLabel($bon).'</div>';
+        }
+        echo '</div></div>';
+
+        if ($bon['status'] === 'cancelled') {
+            echo '<div style="border:2px solid #dc2626;color:#dc2626;padding:.5rem .75rem;margin-bottom:1rem;font-weight:700;">🚫 BON ANNULÉ'.($bon['cancel_reason'] ? ' — '.htmlspecialchars($bon['cancel_reason']) : '').'</div>';
+        }
+
+        echo '<div class="section"><h3>👤 Bénéficiaire</h3><p><strong>'.htmlspecialchars($benefName).'</strong><br>Service : '.htmlspecialchars($benefService?:'Non assigné').' | Email : '.htmlspecialchars($benefEmail?:'Non renseigné').'</p></div>';
+        echo '<div class="section"><h3>📱 '.($type==='remise' ? 'Équipements confiés' : ($bon['status']==='signed' ? 'Équipements restitués' : 'Équipements à restituer')).'</h3>'.equipTable($items).'</div>';
+        echo '<p class="mention">'.($type==='remise'
+            ? 'Je soussigné(e) reconnais avoir reçu le matériel et/ou les abonnements désignés ci-dessus et m\'engage à en faire un usage professionnel et à les restituer sur demande.'
+            : 'Je soussigné(e) certifie avoir restitué le matériel et/ou les abonnements désignés ci-dessus en bon état de fonctionnement.').'</p>';
+        echo '<div class="sig-row">';
+        echo '<div class="sig-box">Signature de l\'Agent :'
+            . ($bon['status']==='signed' && $bon['signature_data'] ? '<img class="sig-image" src="'.htmlspecialchars($bon['signature_data']).'" alt="signature"><div class="sig-name">'.htmlspecialchars($bon['signer_name']).' — '.date('d/m/Y H:i', strtotime($bon['signed_at'])).'</div>' : '<br><br><br>')
+            . '</div>';
+        echo '<div class="sig-box">Visa de la DSI :<div class="sig-name">'.htmlspecialchars($bon['dsi_name'] ?: ($bon['created_by'] ?: '')).'</div></div>';
+        echo '</div>';
+    }
+
+    // QR codes à générer côté client (uniquement pour les bons signables)
+    $qrTargets = [];
+    foreach ([$bonRemise, $bonRestitution] as $b) {
+        if ($b && $b['status'] === 'pending' && (!$b['expires_at'] || strtotime($b['expires_at']) >= time())) {
+            $qrTargets['qr-'.(int)$b['id']] = baseUrl($pdo).'?page=sign&token='.$b['token'];
+        }
+    }
     ?>
-    <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Bon de Remise/Restitution - <?=htmlspecialchars($agt['first_name'].' '.$agt['last_name'])?></title>
+    <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Bons <?=h(($bonRemise['numero'] ?? $bonRestitution['numero'] ?? ''))?> - <?=h($agtName)?></title>
     <style>
         *{box-sizing:border-box;}
         body{font-family:sans-serif;padding:1.5rem;font-size:13px;}
@@ -411,10 +594,16 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .qr-wrap{text-align:right;font-size:.65rem;color:#777;line-height:1.4;}
         .qr-wrap canvas, .qr-wrap img{display:block;margin-left:auto;margin-bottom:2px;}
         .qr-url{font-size:.6rem;word-break:break-all;color:#555;max-width:130px;display:block;margin-top:3px;}
+        .toolbar{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:.75rem 1rem;margin-bottom:1.25rem;}
+        .toolbar .tb-status{font-size:.8rem;color:#475569;}
+        .toolbar form{display:inline;margin:0;}
+        .toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
+        .toolbar button.tb-primary{background:#4361ee;border-color:#4361ee;color:#fff;}
         @media print {
             @page { margin: 1cm; }
             body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             a[href]::after { content: none !important; }
+            .no-print { display: none !important; }
         }
     </style>
     <?php
@@ -424,13 +613,13 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         if(file_exists(__DIR__.'/'.$p)) { $qrJsPath = $p; break; }
     }
     ?>
-    <?php if($qrJsPath): ?>
+    <?php if($qrJsPath && $qrTargets): ?>
     <script src="<?=htmlspecialchars($qrJsPath)?>"></script>
     <script>
     window.addEventListener('load', function() {
-        <?php foreach(['remise'=>$urlRemise,'restitution'=>$urlRestitution] as $type=>$url): ?>
+        <?php foreach($qrTargets as $elId=>$url): ?>
         try {
-            new QRCode(document.getElementById('qr-<?=$type?>'), {
+            new QRCode(document.getElementById(<?=json_encode($elId)?>), {
                 text: <?=json_encode($url)?>,
                 width: 90, height: 90,
                 colorDark:'#000', colorLight:'#fff',
@@ -440,50 +629,34 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         <?php endforeach; ?>
     });
     </script>
-    <?php else: ?>
-    <script>/* QR code non disponible — pas d'impression automatique */</script>
     <?php endif; ?>
     </head><body>
 
-    <?php
-    // ── HEADER commun ──────────────────────────────────────────
-    $headerHtml = '<div class="header">
-        <div>'.($pdfLogo && file_exists($pdfLogo) ? '<img src="'.htmlspecialchars($pdfLogo).'" class="header-logo" alt="Logo">' : '').'</div>
-        <div class="header-text"><h1>%BON_TITLE%</h1><p style="margin:.2rem 0 0;font-size:.8rem;">Édité le '.date('d/m/Y').'</p></div>
-        <div class="qr-wrap">
-            <div id="%QR_ID%"></div>
-            <a href="%QR_URL%" style="display:block;margin-top:3px;font-size:.75rem;color:#4361ee;text-decoration:none;">Signer en ligne</a>
+    <!-- Barre d'outils écran (masquée à l'impression) -->
+    <div class="toolbar no-print">
+        <div class="tb-status">
+            <strong>👤 <?=h($agtName)?></strong>
+            <?php if($bonRemise): ?> &nbsp;·&nbsp; 📥 <?=h($bonRemise['numero'])?> : <?=bonStatusLabel($bonRemise)?><?php endif; ?>
+            <?php if($bonRestitution): ?> &nbsp;·&nbsp; 📤 <?=h($bonRestitution['numero'])?> : <?=bonStatusLabel($bonRestitution)?><?php endif; ?>
         </div>
-    </div>';
+        <div style="display:flex;gap:.5rem;align-items:center;">
+            <?php if($agt && empty($agt['archived'])): ?>
+            <form method="post" action="index.php" onsubmit="return confirm('Générer un nouveau bon de remise à partir de la dotation actuelle ?\nLe bon en attente (s\'il existe et diffère) sera annulé.')">
+                <?=csrf_field()?>
+                <input type="hidden" name="_entity" value="bon">
+                <input type="hidden" name="_action" value="generate_remise">
+                <input type="hidden" name="agent_id" value="<?=$agentId?>">
+                <button type="submit">📄 Générer un nouveau bon</button>
+            </form>
+            <?php endif; ?>
+            <button type="button" class="tb-primary" onclick="window.print()">🖨️ Imprimer</button>
+        </div>
+    </div>
 
-    $beneficiaireHtml = '<div class="section"><h3>👤 Bénéficiaire</h3><p><strong>'.htmlspecialchars($agt['first_name'].' '.$agt['last_name']).'</strong><br>Service : '.htmlspecialchars($agt['service_name']?:'Non assigné').' | Email : '.htmlspecialchars($agt['email']?:'Non renseigné').'</p></div>';
-
-    // ── BON DE REMISE ──────────────────────────────────────────
-    echo str_replace(['%BON_TITLE%','%QR_ID%','%QR_URL%'], ['BON DE REMISE DE MATÉRIEL', 'qr-remise', htmlspecialchars($urlRemise)], $headerHtml);
-    echo $beneficiaireHtml;
-    echo '<div class="section"><h3>📱 Équipements confiés</h3>'.equipTable($devices, $lines).'</div>';
-    echo '<p class="mention">Je soussigné(e) reconnais avoir reçu le matériel et/ou les abonnements désignés ci-dessus et m\'engage à en faire un usage professionnel et à les restituer sur demande.</p>';
-    echo '<div class="sig-row">';
-    echo '<div class="sig-box">Signature de l\'Agent :'
-        . ($sigRemise ? '<img class="sig-image" src="'.htmlspecialchars($sigRemise['signature_data']).'" alt="signature"><div class="sig-name">'.htmlspecialchars($sigRemise['signer_name']).' — '.date('d/m/Y H:i', strtotime($sigRemise['signed_at'])).'</div>' : '<br><br><br>')
-        . '</div>';
-    echo '<div class="sig-box">Visa de la DSI :<div class="sig-name">'.htmlspecialchars($dsiNameRemise).'</div></div>';
-    echo '</div>';
-
-    // ── SÉPARATEUR / SAUT DE PAGE ──────────────────────────────
-    echo '<hr class="divider">';
-
-    // ── BON DE RESTITUTION ─────────────────────────────────────
-    echo str_replace(['%BON_TITLE%','%QR_ID%','%QR_URL%'], ['BON DE RESTITUTION DE MATÉRIEL', 'qr-restitution', htmlspecialchars($urlRestitution)], $headerHtml);
-    echo $beneficiaireHtml;
-    echo '<div class="section"><h3>📱 Équipements à restituer</h3>'.equipTable($devices, $lines).'</div>';
-    echo '<p class="mention">Je soussigné(e) certifie avoir restitué le matériel et/ou les abonnements désignés ci-dessus en bon état de fonctionnement.</p>';
-    echo '<div class="sig-row">';
-    echo '<div class="sig-box">Signature de l\'Agent :'
-        . ($sigRestitution ? '<img class="sig-image" src="'.htmlspecialchars($sigRestitution['signature_data']).'" alt="signature"><div class="sig-name">'.htmlspecialchars($sigRestitution['signer_name']).' — '.date('d/m/Y H:i', strtotime($sigRestitution['signed_at'])).'</div>' : '<br><br><br>')
-        . '</div>';
-    echo '<div class="sig-box">Visa de la DSI :<div class="sig-name">'.htmlspecialchars($dsiNameRestitution).'</div></div>';
-    echo '</div>';
+    <?php
+    if ($bonRemise) renderBonSection($pdo, $bonRemise, $agt);
+    if ($bonRemise && $bonRestitution) echo '<hr class="divider">';
+    if ($bonRestitution) renderBonSection($pdo, $bonRestitution, $agt);
     ?>
     </body></html>
     <?php exit;
@@ -803,34 +976,54 @@ if (isset($_GET['ajax_agent_details'])) {
     $histSt->execute([$id, $nameStr, "%$nameStr%", $id, $id, $id]);
     $history = $histSt->fetchAll();
     
-    // BOUTON PDF BON DE REMISE + STATUT SIGNATURES
-    $sigStatus = $pdo->prepare("SELECT bon_type, signed_at, signer_name FROM signatures WHERE agent_id=? AND superseded=0 ORDER BY signed_at DESC");
-    $sigStatus->execute([$id]);
-    $sigs = []; foreach($sigStatus->fetchAll() as $s) { if(!isset($sigs[$s['bon_type']])) $sigs[$s['bon_type']] = $s; }
-    $hasActiveToken = $pdo->prepare("SELECT COUNT(*) FROM sign_tokens WHERE agent_id=? AND used_at IS NULL AND (expires_at IS NULL OR expires_at > NOW())");
-    $hasActiveToken->execute([$id]); $hasActiveToken = $hasActiveToken->fetchColumn();
+    // ── BONS : statut du dernier cycle + actions ──────────────────
+    $lastRemise = $pdo->prepare("SELECT * FROM bons WHERE agent_id=? AND type='remise' AND status!='cancelled' ORDER BY created_at DESC, id DESC LIMIT 1");
+    $lastRemise->execute([$id]); $lastRemise = $lastRemise->fetch();
+    $lastRestit = null;
+    if ($lastRemise) {
+        $st = $pdo->prepare("SELECT * FROM bons WHERE parent_id=? AND type='restitution' AND status!='cancelled' ORDER BY created_at DESC, id DESC LIMIT 1");
+        $st->execute([$lastRemise['id']]); $lastRestit = $st->fetch();
+    }
+    $hasPendingBons = (int)$pdo->query("SELECT COUNT(*) FROM bons WHERE agent_id=$id AND status='pending'")->fetchColumn();
 
     echo "<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:.75rem;'>";
-    echo "<a href='?page=pdf_bon&agent_id=$id' target='_blank' class='btn-primary' style='text-decoration:none; display:inline-flex; align-items:center; gap:5px; box-shadow: 0 4px 10px rgba(67, 97, 238, 0.3);'>📄 Générer Bon de Remise PDF</a>";
-    // Statut des signatures
+    echo "<div style='display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;'>";
+    echo "<form method='post' action='index.php' target='_blank' style='display:inline;padding:0;margin:0;'>
+        <input type='hidden' name='_entity' value='bon'>
+        <input type='hidden' name='_action' value='generate_remise'>
+        <input type='hidden' name='agent_id' value='$id'>
+        <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
+        <button type='submit' class='btn-primary' style='display:inline-flex; align-items:center; gap:5px; box-shadow: 0 4px 10px rgba(67, 97, 238, 0.3);'>📄 Générer le bon de remise</button>
+    </form>";
+    if ($lastRemise) {
+        echo "<a href='?page=pdf_bon&bon_id={$lastRemise['id']}' target='_blank' class='btn-secondary' style='text-decoration:none;display:inline-flex;align-items:center;gap:5px;'>🖨️ Voir le bon actuel</a>";
+    }
+    echo "</div>";
+    // Statut des bons du dernier cycle
     echo "<div style='display:flex;flex-direction:column;gap:4px;font-size:.8rem;'>";
-    foreach(['remise'=>'Remise','restitution'=>'Restitution'] as $bt=>$lbl) {
-        if(isset($sigs[$bt])) {
-            $dt = date('d/m/Y H:i', strtotime($sigs[$bt]['signed_at']));
-            echo "<span style='color:var(--success);'>✅ Bon de $lbl signé — ".h($sigs[$bt]['signer_name'])." le $dt</span>";
+    foreach ([['📥 Remise', $lastRemise], ['📤 Restitution', $lastRestit]] as [$lbl, $b]) {
+        if ($b && $b['status'] === 'signed') {
+            $dt = date('d/m/Y H:i', strtotime($b['signed_at']));
+            echo "<span style='color:var(--success);'>✅ $lbl " . h($b['numero']) . " signé — " . h($b['signer_name']) . " le $dt</span>";
+        } elseif ($b && $b['status'] === 'pending' && (!$b['expires_at'] || strtotime($b['expires_at']) >= time())) {
+            echo "<span style='color:var(--warning);'>⏳ $lbl " . h($b['numero']) . " — en attente de signature</span>";
+        } elseif ($b) {
+            echo "<span style='color:var(--text3);'>⏰ $lbl " . h($b['numero']) . " — lien de signature expiré</span>";
         } else {
-            echo "<span style='color:var(--warning);'>⏳ Bon de $lbl — en attente de signature</span>";
+            echo "<span style='color:var(--text3);'>— $lbl : aucun bon</span>";
         }
     }
     echo "</div>";
-    // Bouton reset manuel
-    echo "<form method='post' action='index.php?page=refs&tab=agents' onsubmit=\"return confirm('Réinitialiser les signatures ? L\\'agent devra re-signer un nouveau bon.')\" style='display:inline;'>
-        <input type='hidden' name='_entity' value='reset_signatures'>
-        <input type='hidden' name='_action' value='reset'>
-        <input type='hidden' name='agent_id' value='$id'>
-        <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
-        <button type='submit' class='btn-secondary' style='font-size:.82rem;padding:.45rem .9rem;color:var(--warning);border-color:rgba(245,158,11,.3);' title='Invalider les signatures existantes et forcer une nouvelle signature'>🔄 Réinitialiser les signatures</button>
-    </form>";
+    // Annulation manuelle des bons en attente
+    if ($hasPendingBons) {
+        echo "<form method='post' action='index.php?page=refs&tab=agents' onsubmit=\"return confirm('Annuler les bons en attente ? Un nouveau bon devra être généré et signé.')\" style='display:inline;'>
+            <input type='hidden' name='_entity' value='bon'>
+            <input type='hidden' name='_action' value='cancel_pending'>
+            <input type='hidden' name='agent_id' value='$id'>
+            <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
+            <button type='submit' class='btn-secondary' style='font-size:.82rem;padding:.45rem .9rem;color:var(--warning);border-color:rgba(245,158,11,.3);' title='Annuler les bons non signés (les bons signés sont conservés)'>🚫 Annuler les bons en attente</button>
+        </form>";
+    }
     echo "</div>";
           
     echo "<div style='display:flex; gap:2rem; flex-wrap:wrap;'>";
@@ -888,47 +1081,59 @@ if (isset($_GET['ajax_agent_details'])) {
         } echo "</ul>";
     } echo "</div></div>";
 
-    // ── Section Bons de remise / restitution ──────────────────────────────────
-    $bonsAgent = $pdo->query("
-        SELECT t.id, t.bon_type, t.token,
-               DATE_FORMAT(t.created_at, '%d/%m/%Y %H:%i') as created_at,
-               t.expires_at, t.created_by, t.dsi_name,
-               (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=0) as active_sigs,
-               (SELECT DATE_FORMAT(MAX(signed_at), '%d/%m/%Y %H:%i') FROM signatures WHERE token=t.token AND superseded=0) as signed_at,
-               (SELECT signer_name FROM signatures WHERE token=t.token AND superseded=0 ORDER BY signed_at DESC LIMIT 1) as signer_name
-        FROM sign_tokens t
-        WHERE t.agent_id = $id
-        ORDER BY t.created_at DESC
-        LIMIT 30
-    ")->fetchAll();
+    // ── Restitution : génération avec sélection des équipements ──────────────
+    $signedRemise = $pdo->prepare("SELECT id, numero FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
+    $signedRemise->execute([$id]); $signedRemise = $signedRemise->fetch();
+    $dotation = bonSnapshotItems($pdo, $id);
+    $hasDotation = !empty($dotation['devices']) || !empty($dotation['lines']);
+    if ($signedRemise && $hasDotation && empty($agt['archived'])) {
+        echo "<div style='margin-top:1.5rem;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:1rem;'>";
+        echo "<h4 style='color:var(--warning); margin-bottom:.75rem;'>📤 Générer un bon de restitution</h4>";
+        echo "<div class='muted' style='font-size:.8rem;margin-bottom:.75rem;'>Cochez les équipements restitués (restitution partielle possible). Le bon sera lié au bon de remise " . h($signedRemise['numero']) . ". À la signature, les équipements cochés retournent automatiquement en stock.</div>";
+        echo "<form method='post' action='index.php' target='_blank' style='padding:0;margin:0;'>
+            <input type='hidden' name='_entity' value='bon'>
+            <input type='hidden' name='_action' value='generate_restitution'>
+            <input type='hidden' name='agent_id' value='$id'>
+            <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>";
+        foreach ($dotation['devices'] as $it) {
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem;font-size:.88rem;cursor:pointer;'>
+                <input type='checkbox' name='ret_devices[]' value='" . (int)$it['device_id'] . "' checked>
+                📱 " . h(trim(($it['brand'] ?? '') . ' ' . ($it['name'] ?? ''))) . " <span class='muted' style='font-size:.75rem;'>IMEI " . h($it['imei']) . "</span></label>";
+        }
+        foreach ($dotation['lines'] as $it) {
+            $tag = !empty($it['esim']) ? ' (eSIM)' : (!empty($it['personal_device']) ? ' (BYOD)' : '');
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem;font-size:.88rem;cursor:pointer;'>
+                <input type='checkbox' name='ret_lines[]' value='" . (int)$it['line_id'] . "' checked>
+                📞 " . formatPhone($it['phone_number']) . "$tag <span class='muted' style='font-size:.75rem;'>" . h($it['plan_name'] ?: '') . "</span></label>";
+        }
+        echo "<button type='submit' class='btn-secondary' style='margin-top:.5rem;color:var(--warning);border-color:rgba(245,158,11,.4);font-weight:600;'>📤 Générer le bon de restitution</button>
+        </form></div>";
+    }
+
+    // ── Historique des bons (appariement structurel par parent_id) ────────────
+    $bonsAgent = $pdo->prepare("SELECT *, DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') as created_fmt, DATE_FORMAT(signed_at, '%d/%m/%Y %H:%i') as signed_fmt FROM bons WHERE agent_id=? ORDER BY created_at DESC, id DESC LIMIT 40");
+    $bonsAgent->execute([$id]); $bonsAgent = $bonsAgent->fetchAll();
 
     if ($bonsAgent) {
         echo "<div style='margin-top:1.5rem;'>";
         echo "<h4 style='color:var(--primary); margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:5px;'>📋 Historique des bons de remise / restitution</h4>";
 
-        // Grouper les bons par paires (remise + restitution proches dans le temps)
-        $pairs = []; $usedIds = [];
-        $bonsById = [];
-        foreach ($bonsAgent as $b) $bonsById[$b['id']] = $b;
-
-        // Appariement : pour chaque remise, chercher la restitution la plus proche après
-        $remises = array_filter($bonsAgent, fn($b) => $b['bon_type'] === 'remise');
-        $restitutions = array_filter($bonsAgent, fn($b) => $b['bon_type'] === 'restitution');
-        foreach ($remises as $r) {
-            $pair = ['remise' => $r, 'restitution' => null];
-            foreach ($restitutions as $rt) {
-                if (!in_array($rt['id'], $usedIds) && strtotime(str_replace('/', '-', $rt['created_at'])) >= strtotime(str_replace('/', '-', $r['created_at']))) {
-                    $pair['restitution'] = $rt;
-                    $usedIds[] = $rt['id'];
-                    break;
-                }
-            }
-            $usedIds[] = $r['id'];
-            $pairs[] = $pair;
+        // Restitutions rattachées à leur bon de remise (la non-annulée en priorité)
+        $childByParent = [];
+        foreach ($bonsAgent as $b) {
+            if ($b['type'] === 'restitution' && $b['parent_id']) $childByParent[$b['parent_id']][] = $b;
         }
-        // Ajouter les restitutions non appariées
-        foreach ($restitutions as $rt) {
-            if (!in_array($rt['id'], $usedIds)) { $pairs[] = ['remise' => null, 'restitution' => $rt]; $usedIds[] = $rt['id']; }
+        $pairs = [];
+        foreach ($bonsAgent as $b) {
+            if ($b['type'] === 'remise') {
+                $child = null;
+                foreach (($childByParent[$b['id']] ?? []) as $c) { if ($c['status'] !== 'cancelled') { $child = $c; break; } }
+                if (!$child && !empty($childByParent[$b['id']])) $child = $childByParent[$b['id']][0];
+                $pairs[] = ['remise' => $b, 'restitution' => $child];
+            } elseif (!$b['parent_id']) {
+                // Restitution orpheline (migration ancien système)
+                $pairs[] = ['remise' => null, 'restitution' => $b];
+            }
         }
 
         $pairColors = ['rgba(16,185,129,.06)', 'rgba(99,102,241,.05)', 'rgba(245,158,11,.05)', 'rgba(236,72,153,.05)'];
@@ -940,19 +1145,25 @@ if (isset($_GET['ajax_agent_details'])) {
                 $b = $pair[$type];
                 if (!$b) continue;
                 $isExpired = $b['expires_at'] && strtotime($b['expires_at']) < $now;
-                if ($b['active_sigs'] > 0) {
+                if ($b['status'] === 'signed') {
                     $badge = "<span style='background:rgba(16,185,129,.15);color:var(--success);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>✅ Signé</span>";
+                } elseif ($b['status'] === 'cancelled') {
+                    $badge = "<span style='background:rgba(148,163,184,.12);color:var(--text3);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;' title='" . h($b['cancel_reason'] ?: '') . "'>🚫 Annulé</span>";
                 } elseif ($isExpired) {
                     $badge = "<span style='background:rgba(245,158,11,.15);color:var(--warning);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>⏰ Expiré</span>";
                 } else {
                     $badge = "<span style='background:rgba(56,189,248,.15);color:var(--info);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>⏳ En attente</span>";
                 }
                 echo "<div style='display:flex;align-items:baseline;gap:.75rem;margin-bottom:.35rem;'>";
-                echo "<span style='font-weight:700;color:$color;font-size:.9rem;'>$icon $label</span> $badge";
-                echo "<span style='font-size:.78rem;color:var(--text3);margin-left:auto;'>Créé le {$b['created_at']} — par " . h($b['dsi_name'] ?: $b['created_by'] ?: '—') . "</span>";
+                echo "<span style='font-weight:700;color:$color;font-size:.9rem;'>$icon $label <span style='font-weight:600;font-size:.78rem;'>" . h($b['numero'] ?: '') . "</span></span> $badge";
+                echo "<span style='font-size:.78rem;color:var(--text3);margin-left:auto;'>Créé le {$b['created_fmt']} — par " . h($b['dsi_name'] ?: $b['created_by'] ?: '—') . "</span>";
+                echo "<a href='?page=pdf_bon&bon_id={$b['id']}' target='_blank' title='Voir / imprimer ce bon' style='text-decoration:none;font-size:.85rem;'>🖨️</a>";
                 echo "</div>";
-                if ($b['active_sigs'] > 0 && $b['signer_name']) {
-                    echo "<div style='font-size:.78rem;color:var(--success);margin-left:1.5rem;'>✍️ " . h($b['signer_name']) . " — le {$b['signed_at']}</div>";
+                if ($b['status'] === 'signed' && $b['signer_name']) {
+                    echo "<div style='font-size:.78rem;color:var(--success);margin-left:1.5rem;'>✍️ " . h($b['signer_name']) . " — le {$b['signed_fmt']}</div>";
+                }
+                if ($b['status'] === 'cancelled' && $b['cancel_reason']) {
+                    echo "<div style='font-size:.72rem;color:var(--text3);margin-left:1.5rem;'>Motif : " . h($b['cancel_reason']) . "</div>";
                 }
             endforeach;
             echo "</div>";
@@ -975,6 +1186,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $ent = $_POST['_entity'] ?? ''; $act = $_POST['_action'] ?? ''; $id = (int)($_POST['_id'] ?? 0); $d = $_POST;
     try {
+        // Toutes les écritures d'une action sont atomiques : une erreur à
+        // mi-parcours annule tout (pas d'état incohérent en base).
+        $pdo->beginTransaction();
         // Traitement de la pièce jointe
         if ($ent === 'attachment') {
             $agentId = (int)($d['agent_id'] ?? 0);
@@ -1068,6 +1282,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $oldAgt = $pdo->query("SELECT agent_id FROM mobile_lines WHERE id=$bid")->fetchColumn();
                             $pdo->prepare("UPDATE mobile_lines SET archived=1, status='Resiliated', device_id=NULL, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$bid]);
                             logHistory($pdo, 'line', $bid, "Archivage en masse", $oldAgt);
+                            if ($oldAgt) cancelPendingBons($pdo, $oldAgt, "Ligne archivée en masse");
                             if ($devId) { $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]); logHistory($pdo,'device',$devId,"Retour stock auto (archivage masse ligne)"); }
                         } elseif ($bulkAction === 'restore') {
                             $pdo->prepare("UPDATE mobile_lines SET archived=0, status='Stock', agent_id=NULL WHERE id=?")->execute([$bid]);
@@ -1078,6 +1293,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             $oldAgt = $pdo->query("SELECT agent_id FROM devices WHERE id=$bid")->fetchColumn();
                             $pdo->prepare("UPDATE devices SET archived=1, status='HS', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$bid]);
                             logHistory($pdo, 'device', $bid, "Archivage en masse", $oldAgt);
+                            if ($oldAgt) cancelPendingBons($pdo, $oldAgt, "Matériel archivé en masse");
                             $pdo->prepare("UPDATE mobile_lines SET device_id=NULL WHERE device_id=?")->execute([$bid]);
                         } elseif ($bulkAction === 'restore') {
                             $pdo->prepare("UPDATE devices SET archived=0, status='Stock', agent_id=NULL WHERE id=?")->execute([$bid]);
@@ -1088,19 +1304,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 flash('success', "$done élément(s) traité(s) avec succès.");
             }
-        } elseif ($ent === 'reset_signatures') {
+        } elseif ($ent === 'bon') {
             $agentId = (int)($d['agent_id'] ?? 0);
-            if ($agentId) {
-                invalidateAgentSignatures($pdo, $agentId, "Réinitialisation manuelle par l'administrateur");
+            if ($act === 'generate_remise') {
+                $agentRow = $agentId ? $pdo->query("SELECT id, archived FROM agents WHERE id=$agentId")->fetch() : null;
+                if (!$agentRow || $agentRow['archived']) {
+                    flash('error', 'Agent introuvable ou archivé.');
+                } else {
+                    $items = bonSnapshotItems($pdo, $agentId);
+                    if (empty($items['devices']) && empty($items['lines'])) {
+                        flash('error', 'Aucun équipement attribué à cet agent — rien à remettre.');
+                        $pdo->commit();
+                        header('Location: index.php?page=pdf_bon&agent_id=' . $agentId); exit;
+                    }
+                    $itemsJson = json_encode($items, JSON_UNESCAPED_UNICODE);
+                    // Un bon en attente identique à la dotation actuelle ? On le réutilise.
+                    $st = $pdo->prepare("SELECT id, items FROM bons WHERE agent_id=? AND type='remise' AND status='pending' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC, id DESC LIMIT 1");
+                    $st->execute([$agentId]);
+                    $pending = $st->fetch();
+                    if ($pending && $pending['items'] === $itemsJson) {
+                        $pdo->commit();
+                        header('Location: index.php?page=pdf_bon&bon_id=' . (int)$pending['id']); exit;
+                    }
+                    // Sinon : les bons en attente ne reflètent plus la réalité → annulés
+                    cancelPendingBons($pdo, $agentId, 'Nouveau bon de remise généré');
+                    $bonId  = createBon($pdo, 'remise', $agentId, $items);
+                    $numero = $pdo->query("SELECT numero FROM bons WHERE id=$bonId")->fetchColumn();
+                    logHistory($pdo, 'agent', $agentId, "📄 Bon de remise $numero généré", $agentId);
+                    $pdo->commit();
+                    header('Location: index.php?page=pdf_bon&bon_id=' . $bonId); exit;
+                }
+            } elseif ($act === 'generate_restitution') {
+                // Parent : dernier bon de remise signé de l'agent
+                $st = $pdo->prepare("SELECT id FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
+                $st->execute([$agentId]);
+                $parentId = (int)$st->fetchColumn();
+                if (!$agentId || !$parentId) {
+                    flash('error', 'Impossible : aucun bon de remise signé pour cet agent.');
+                } else {
+                    $full    = bonSnapshotItems($pdo, $agentId);
+                    $selDev  = array_map('intval', (array)($d['ret_devices'] ?? []));
+                    $selLine = array_map('intval', (array)($d['ret_lines'] ?? []));
+                    $items = [
+                        'agent'   => $full['agent'],
+                        'devices' => array_values(array_filter($full['devices'], fn($x) => in_array((int)$x['device_id'], $selDev, true))),
+                        'lines'   => array_values(array_filter($full['lines'],   fn($x) => in_array((int)$x['line_id'],   $selLine, true))),
+                    ];
+                    if (empty($items['devices']) && empty($items['lines'])) {
+                        flash('error', 'Sélectionnez au moins un équipement à restituer.');
+                    } else {
+                        // Une restitution en attente est remplacée par celle-ci
+                        $pdo->prepare("UPDATE bons SET status='cancelled', cancel_reason='Remplacé par un nouveau bon de restitution' WHERE agent_id=? AND type='restitution' AND status='pending'")
+                            ->execute([$agentId]);
+                        $bonId  = createBon($pdo, 'restitution', $agentId, $items, $parentId);
+                        $numero = $pdo->query("SELECT numero FROM bons WHERE id=$bonId")->fetchColumn();
+                        logHistory($pdo, 'agent', $agentId, "📤 Bon de restitution $numero généré (" . count($items['devices']) . " matériel(s), " . count($items['lines']) . " ligne(s))", $agentId);
+                        $pdo->commit();
+                        header('Location: index.php?page=pdf_bon&bon_id=' . $bonId); exit;
+                    }
+                }
+            } elseif ($act === 'cancel_pending') {
+                if ($agentId) cancelPendingBons($pdo, $agentId, "Annulation manuelle par l'administrateur");
+                flash('success', 'Bons en attente annulés. Générez un nouveau bon si nécessaire.');
             }
-            flash('success', 'Signatures réinitialisées. Un nouveau bon devra être signé.');
         } elseif ($ent === 'db_reset') {
             // Réinitialisation complète — super-admin uniquement
             if (empty($_SESSION['is_admin'])) { flash('error', 'Accès refusé.'); }
             elseif (($d['confirm_word'] ?? '') !== 'SUPPRIMER') { flash('error', 'Mot de confirmation incorrect.'); }
             else {
+                // Le DROP TABLE (DDL) commite implicitement : on sort proprement de la transaction
+                if ($pdo->inTransaction()) $pdo->commit();
                 $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-                $pdo->exec("DROP TABLE IF EXISTS `signatures`,`sign_tokens`,`sim_history`,`attachments`,`mobile_lines`,`devices`,`history_logs`,`agents`,`billing_accounts`,`plan_types`,`operators`,`models`,`services`,`settings`,`users`");
+                $pdo->exec("DROP TABLE IF EXISTS `bons`,`signatures`,`sign_tokens`,`sim_history`,`attachments`,`mobile_lines`,`devices`,`history_logs`,`agents`,`billing_accounts`,`plan_types`,`operators`,`models`,`services`,`settings`,`users`");
                 $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
                 session_destroy();
                 header('Location: install.php'); exit;
@@ -1188,8 +1463,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $agtName = trim(($agtRow['first_name']??'').' '.($agtRow['last_name']??''));
                 $pdo->prepare("UPDATE agents SET archived=1 WHERE id=?")->execute([$id]);
                 logHistory($pdo, 'agent', $id, "Agent archivé (départ de la société)", $id);
-                // Invalider les signatures actives de l'agent
-                invalidateAgentSignatures($pdo, $id, "Agent archivé (départ de la société)");
+                // Annuler les bons en attente de l'agent (les bons signés restent en historique)
+                cancelPendingBons($pdo, $id, "Agent archivé (départ de la société)");
                 // Libérer tous les matériels de cet agent
                 $devIds = $pdo->query("SELECT id FROM devices WHERE agent_id=$id AND archived=0")->fetchAll(PDO::FETCH_COLUMN);
                 if ($devIds) {
@@ -1219,13 +1494,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($act === 'add') {
                 $pdo->prepare("INSERT INTO devices(imei,imei2,serial_number,inventory_label,model_id,status,agent_id,service_id,purchase_date,notes)VALUES(?,?,?,?,?,?,?,?,?,?)")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status','Stock'),$agt,$svc,$pd,S($d,'notes')]);
                 $newId = $pdo->lastInsertId();
-                if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $newId, "Matériel affecté à $agtName", $agt); }
+                if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $newId, "Matériel affecté à $agtName", $agt); cancelPendingBons($pdo, $agt, "Nouveau matériel affecté"); }
             } elseif ($act === 'edit') {
                 $old = $pdo->query("SELECT agent_id FROM devices WHERE id=$id")->fetchColumn();
                 $pdo->prepare("UPDATE devices SET imei=?,imei2=?,serial_number=?,inventory_label=?,model_id=?,status=?,agent_id=?,service_id=?,purchase_date=?,notes=? WHERE id=?")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status'),$agt,$svc,$pd,S($d,'notes'),$id]);
                 if ($old != $agt) {
-                    if ($old) { logHistory($pdo, 'device', $id, "Matériel retiré de la dotation", $old); invalidateAgentSignatures($pdo, $old, "Matériel retiré"); }
-                    if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $id, "Matériel affecté à $agtName", $agt); invalidateAgentSignatures($pdo, $agt, "Nouveau matériel affecté"); } 
+                    if ($old) { logHistory($pdo, 'device', $id, "Matériel retiré de la dotation", $old); cancelPendingBons($pdo, $old, "Matériel retiré"); }
+                    if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $id, "Matériel affecté à $agtName", $agt); cancelPendingBons($pdo, $agt, "Nouveau matériel affecté"); } 
                     else { logHistory($pdo, 'device', $id, "Matériel désattribué (retourné au stock)"); }
                 }
             } elseif ($act === 'archive') {
@@ -1237,7 +1512,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $logMsg = "Matériel Archivé — Motif : $archiveReason" . ($archiveComment ? " — Commentaire : $archiveComment" : "");
                 $pdo->prepare("UPDATE devices SET archived=1, status=?, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$archiveStatus, $id]);
                 logHistory($pdo, 'device', $id, $logMsg, $old);
-                if ($old) invalidateAgentSignatures($pdo, $old, "Matériel archivé — $archiveReason");
+                if ($old) cancelPendingBons($pdo, $old, "Matériel archivé — $archiveReason");
                 $linesAff = $pdo->query("SELECT id, agent_id FROM mobile_lines WHERE device_id=$id AND archived=0")->fetchAll();
                 $archiveAlsoLineId = !empty($d['archive_also_line']) && !empty($d['archive_also_line_id']) ? (int)$d['archive_also_line_id'] : 0;
                 foreach($linesAff as $la) {
@@ -1248,6 +1523,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $pdo->prepare("UPDATE mobile_lines SET device_id=NULL WHERE id=?")->execute([$la['id']]);
                         logHistory($pdo, 'line', $la['id'], "Matériel dissocié automatiquement (Terminal déclaré HS/Perdu/Archivé)", $la['agent_id']);
                     }
+                    // La dotation de l'agent de la ligne a changé (si différent de celui du matériel)
+                    if ($la['agent_id']) cancelPendingBons($pdo, $la['agent_id'], "Téléphone de la ligne archivé — $archiveReason");
                 }
             } elseif ($act === 'restore') {
                 $pdo->prepare("UPDATE devices SET archived=0, status='Stock', agent_id=NULL WHERE id=?")->execute([$id]); 
@@ -1283,9 +1560,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Détecter si c'est une migration eSIM pour régénérer le bon
             $isEsimSwap = (stripos($reason, 'esim') !== false || stripos($reason, 'eSIM') !== false || !empty($d['new_eid']) || !empty($d['new_activation_code']));
             if ($cur['agent_id']) {
-                invalidateAgentSignatures($pdo, $cur['agent_id'], "Changement de carte SIM ($reason)");
+                cancelPendingBons($pdo, $cur['agent_id'], "Changement de carte SIM ($reason)");
                 if ($isEsimSwap) {
-                    flash('success', "Migration eSIM enregistrée — un nouveau bon de remise doit être généré et signé. Imprimez-le via l'icône 🖨️ de la ligne.");
+                    flash('success', "Migration eSIM enregistrée — un nouveau bon de remise doit être généré et signé. Générez-le via l'icône 🖨️ de la ligne ou la fiche agent.");
                 } else {
                     flash('success', 'Changement de SIM enregistré. Un nouveau bon de remise doit être généré et signé.');
                 }
@@ -1303,7 +1580,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $statusVal = $simVierge ? 'Stock' : S($d,'status','Stock');
                 $pdo->prepare("INSERT INTO mobile_lines(phone_number,iccid,pin,puk,agent_id,billing_id,plan_id,service_id,device_id,activation_date,options_details,status,notes,personal_device,sim_vierge,esim,eid,activation_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")->execute([$phoneNum,S($d,'iccid'),S($d,'pin'),S($d,'puk'),$agt,$bil,$pln,$svc,$dev,NV($d,'activation_date'),S($d,'options_details'),$statusVal,S($d,'notes'),!empty($d['personal_device'])?1:0,$simVierge,$isEsim,NV($d,'eid'),NV($d,'activation_code')]);
                 $newId = $pdo->lastInsertId();
-                if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'line', $newId, "Ligne/SIM".($isEsim?" (eSIM)":" ")." attribuée à $agtName", $agt); }
+                if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'line', $newId, "Ligne/SIM".($isEsim?" (eSIM)":" ")." attribuée à $agtName", $agt); cancelPendingBons($pdo, $agt, "Nouvelle ligne attribuée"); }
                 if ($dev) {
                     $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agt, $svc, $dev]);
                     logHistory($pdo, 'device', $dev, "Déployé et associé à la ligne", $agt);
@@ -1319,8 +1596,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 if ($oldAgt != $agt) {
                     if ($oldAgt) logHistory($pdo, 'line', $id, "Ligne retirée de la dotation", $oldAgt);
-                    if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'line', $id, "Ligne/SIM attribuée à $agtName", $agt); } 
+                    if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'line', $id, "Ligne/SIM attribuée à $agtName", $agt); }
                     else { logHistory($pdo, 'line', $id, "Ligne désattribuée"); }
+                    // Changement d'utilisateur (avec ou sans téléphone) → bons en attente annulés des deux côtés
+                    if ($agt)    cancelPendingBons($pdo, $agt,    "Ligne transférée à cet agent");
+                    if ($oldAgt) cancelPendingBons($pdo, $oldAgt, "Ligne retirée de la dotation");
                 }
                 
                 if ($oldDev != $dev) {
@@ -1332,15 +1612,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agt, $svc, $dev]);
                         logHistory($pdo, 'device', $dev, "Associé à la ligne", $agt);
                     }
-                    // Téléphone changé → invalider les signatures de l'agent concerné
-                    if ($agt) invalidateAgentSignatures($pdo, $agt, "Téléphone associé modifié sur la ligne");
-                    if ($oldAgt && $oldAgt != $agt) invalidateAgentSignatures($pdo, $oldAgt, "Téléphone retiré de la ligne");
+                    // Téléphone changé → les bons en attente ne reflètent plus la dotation
+                    if ($agt) cancelPendingBons($pdo, $agt, "Téléphone associé modifié sur la ligne");
+                    if ($oldAgt && $oldAgt != $agt) cancelPendingBons($pdo, $oldAgt, "Téléphone retiré de la ligne");
                 } elseif ($dev && $oldAgt != $agt) {
+                    // (annulation des bons déjà traitée dans le bloc changement d'utilisateur ci-dessus)
                     $pdo->prepare("UPDATE devices SET agent_id=?, service_id=? WHERE id=?")->execute([$agt, $svc, $dev]);
                     logHistory($pdo, 'device', $dev, "Transféré suite au changement d'utilisateur sur la ligne", $agt);
-                    // Agent changé sur la ligne → invalider les deux agents
-                    if ($agt)    invalidateAgentSignatures($pdo, $agt,    "Ligne transférée à cet agent");
-                    if ($oldAgt) invalidateAgentSignatures($pdo, $oldAgt, "Ligne retirée (transférée à un autre agent)");
                 }
 
             } elseif ($act === 'archive') {
@@ -1351,6 +1629,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $logMsg = "Ligne Archivée — Motif : $archiveReason" . ($archiveComment ? " — Commentaire : $archiveComment" : "");
                 $pdo->prepare("UPDATE mobile_lines SET archived=1, status='Resiliated', device_id=NULL, agent_id=NULL, service_id=NULL WHERE id=?")->execute([$id]);
                 logHistory($pdo, 'line', $id, $logMsg, $old);
+                if ($old) cancelPendingBons($pdo, $old, "Ligne archivée — $archiveReason");
 
                 if ($devId) {
                     $archiveAlsoDev = !empty($d['archive_also_device']) && !empty($d['archive_also_device_id']) && (int)$d['archive_also_device_id'] === $devId;
@@ -1358,7 +1637,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $oldDevAgt = $pdo->query("SELECT agent_id FROM devices WHERE id=$devId")->fetchColumn();
                         $pdo->prepare("UPDATE devices SET archived=1, status='HS', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]);
                         logHistory($pdo, 'device', $devId, "Matériel archivé automatiquement — ligne associée archivée ($archiveReason)" . ($archiveComment ? " — $archiveComment" : ""));
-                        if ($oldDevAgt) invalidateAgentSignatures($pdo, $oldDevAgt, "Téléphone archivé avec la ligne");
+                        if ($oldDevAgt) cancelPendingBons($pdo, $oldDevAgt, "Téléphone archivé avec la ligne");
                     } else {
                         $pdo->prepare("UPDATE devices SET status='Stock', agent_id=NULL, service_id=NULL WHERE id=?")->execute([$devId]);
                         logHistory($pdo, 'device', $devId, "Retourné au stock automatiquement (La ligne a été résiliée/archivée)");
@@ -1371,9 +1650,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'reset_signatures', 'bulk', 'settings'])) flash('success', 'Opération réussie.');
-        
-    } catch (Exception $e) { flash('error', 'Erreur SQL : ' . $e->getMessage()); }
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings'])) flash('success', 'Opération réussie.');
+        if ($pdo->inTransaction()) $pdo->commit();
+
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        $detail = (defined('APP_DEBUG') && APP_DEBUG) ? ' — ' . $e->getMessage() : '';
+        flash('error', "L'opération a échoué et a été annulée (aucune donnée modifiée)$detail.");
+    }
     $redirect = 'index.php?page=' . ($_GET['page'] ?? 'dashboard'); if(isset($_GET['tab'])) $redirect .= '&tab='.$_GET['tab']; header('Location: ' . $redirect); exit;
 }
 
@@ -1662,7 +1946,7 @@ elseif ($page === 'lines') {
                 <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'>✏️</button>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
                 <?php if($l['agent_id']): ?>
-                <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Imprimer le bon de remise" style="text-decoration:none;">🖨️</a>
+                <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Voir / générer le bon de remise" style="text-decoration:none;">🖨️</a>
                 <?php endif; ?>
                 <button class="btn-icon" title="Changer la SIM (garder le numéro)" style="color:var(--warning)"
                     onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')">🔄</button>
@@ -2118,8 +2402,8 @@ elseif ($page === 'refs') {
           <input type="hidden" name="_action" value="save">
           <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
             Le logo apparaîtra en haut à gauche de chaque bon de remise imprimé.<br>
-            <strong>Formats acceptés :</strong> PNG, JPG, GIF, WEBP, SVG — <strong>Taille max : 1 Mo</strong>.<br>
-            Il sera affiché avec une hauteur maximale de 70 px sur le document.
+            <strong>Formats acceptés :</strong> PNG, JPG, GIF, WEBP — <strong>Taille max : 1 Mo</strong>.<br>
+            Il sera affiché avec une hauteur maximale de 60 px sur le document.
           </p>
           <?php if($currentLogo && file_exists($currentLogo)): ?>
           <div style="display:flex;align-items:center;gap:1.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;">
@@ -2406,81 +2690,70 @@ elseif ($page === 'refs') {
 // ==================================================================
 elseif ($page === 'history') {
     $bons = $pdo->query("
-        SELECT t.id, t.token, t.bon_type,
-               DATE_FORMAT(t.created_at, '%d/%m/%Y %H:%i') as created_at,
-               t.created_at as raw_created_at,
-               t.expires_at, t.created_by, t.dsi_name, t.agent_id,
+        SELECT b.*,
+               DATE_FORMAT(b.created_at, '%d/%m/%Y %H:%i') as created_fmt,
+               DATE_FORMAT(b.signed_at, '%d/%m/%Y %H:%i') as signed_fmt,
                CONCAT(IFNULL(a.first_name,''), ' ', IFNULL(a.last_name,'')) as agent_name,
                IFNULL(svc.name, '—') as service_name,
-               a.archived as agent_archived,
-               (SELECT GROUP_CONCAT(DISTINCT ml.phone_number ORDER BY ml.id SEPARATOR ' / ')
-                FROM mobile_lines ml
-                WHERE ml.agent_id = t.agent_id AND ml.archived=0 AND ml.sim_vierge=0
-               ) as phone_numbers,
-               (SELECT DATE_FORMAT(MAX(signed_at), '%d/%m/%Y %H:%i') FROM signatures WHERE token=t.token AND superseded=0) as signed_at,
-               (SELECT signer_name FROM signatures WHERE token=t.token AND superseded=0 ORDER BY signed_at DESC LIMIT 1) as signer_name,
-               (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=0) as active_sigs,
-               (SELECT COUNT(*) FROM signatures WHERE token=t.token AND superseded=1) as archived_sigs
-        FROM sign_tokens t
-        LEFT JOIN agents a ON t.agent_id = a.id
+               a.archived as agent_archived
+        FROM bons b
+        LEFT JOIN agents a ON b.agent_id = a.id
         LEFT JOIN services svc ON a.service_id = svc.id
-        ORDER BY t.agent_id, t.created_at DESC
+        ORDER BY b.created_at DESC, b.id DESC
     ")->fetchAll();
 
-    // ── Grouper les tokens en paires (remise + restitution) par agent ──
-    $grouped = [];
+    // Numéros de ligne actuels par agent (repli pour les bons migrés sans snapshot)
+    $currentPhones = [];
+    foreach ($pdo->query("SELECT agent_id, GROUP_CONCAT(DISTINCT phone_number ORDER BY id SEPARATOR ' / ') as pn FROM mobile_lines WHERE agent_id IS NOT NULL AND archived=0 AND sim_vierge=0 GROUP BY agent_id")->fetchAll() as $r) {
+        $currentPhones[(int)$r['agent_id']] = $r['pn'];
+    }
+
+    // Numéros de ligne du bon : depuis son snapshot figé, sinon dotation actuelle
+    $phonesOf = function($b) use ($currentPhones) {
+        if ($b && $b['items']) {
+            $items = json_decode($b['items'], true);
+            $nums = [];
+            foreach (($items['lines'] ?? []) as $l) if (!empty($l['phone_number'])) $nums[] = formatPhone($l['phone_number']);
+            return implode(' / ', $nums);
+        }
+        $pn = $b ? ($currentPhones[(int)$b['agent_id']] ?? '') : '';
+        return $pn ? implode(' / ', array_map('formatPhone', explode(' / ', $pn))) : '';
+    };
+
+    // ── Appariement structurel : chaque restitution référence sa remise (parent_id) ──
+    $childByParent = [];
     foreach ($bons as $b) {
-        $grouped[(int)$b['agent_id']][] = $b;
+        if ($b['type'] === 'restitution' && $b['parent_id']) $childByParent[$b['parent_id']][] = $b;
     }
 
     $pairs = [];
-    foreach ($grouped as $agentId => $agentBons) {
-        $remises     = array_values(array_filter($agentBons, fn($b) => $b['bon_type'] === 'remise'));
-        $restits     = array_values(array_filter($agentBons, fn($b) => $b['bon_type'] === 'restitution'));
-        $usedRestits = [];
-
-        foreach ($remises as $r) {
-            $pair = ['remise' => $r, 'restitution' => null,
-                     'agent_name' => $r['agent_name'], 'agent_id' => $r['agent_id'],
-                     'service_name' => $r['service_name'], 'agent_archived' => $r['agent_archived'],
-                     'phone_numbers' => $r['phone_numbers'],
-                     'sort_time' => strtotime($r['raw_created_at'])];
-            $rTime = strtotime($r['raw_created_at']);
-            // Chercher la restitution la plus proche (dans les 5 min) non encore utilisée
-            $bestDiff = PHP_INT_MAX; $bestIdx = -1;
-            foreach ($restits as $idx => $rt) {
-                if (in_array($idx, $usedRestits)) continue;
-                $diff = abs(strtotime($rt['raw_created_at']) - $rTime);
-                if ($diff < $bestDiff) { $bestDiff = $diff; $bestIdx = $idx; }
-            }
-            if ($bestIdx >= 0 && $bestDiff <= 300) {
-                $pair['restitution'] = $restits[$bestIdx];
-                $usedRestits[] = $bestIdx;
-            }
-            $pairs[] = $pair;
-        }
-        // Restitutions non appariées
-        foreach ($restits as $idx => $rt) {
-            if (!in_array($idx, $usedRestits)) {
-                $pairs[] = ['remise' => null, 'restitution' => $rt,
-                            'agent_name' => $rt['agent_name'], 'agent_id' => $rt['agent_id'],
-                            'service_name' => $rt['service_name'], 'agent_archived' => $rt['agent_archived'],
-                            'phone_numbers' => $rt['phone_numbers'],
-                            'sort_time' => strtotime($rt['raw_created_at'])];
-            }
+    foreach ($bons as $b) {
+        // Les bons annulés restent consultables depuis la fiche agent, pas ici
+        if ($b['status'] === 'cancelled') continue;
+        if ($b['type'] === 'remise') {
+            $child = null;
+            foreach (($childByParent[$b['id']] ?? []) as $c) { if ($c['status'] !== 'cancelled') { $child = $c; break; } }
+            $pairs[] = ['remise' => $b, 'restitution' => $child,
+                        'agent_name' => $b['agent_name'], 'agent_id' => $b['agent_id'],
+                        'service_name' => $b['service_name'], 'agent_archived' => $b['agent_archived'],
+                        'phone_numbers' => $phonesOf($b)];
+        } elseif (!$b['parent_id']) {
+            // Restitution orpheline (migration ancien système)
+            $pairs[] = ['remise' => null, 'restitution' => $b,
+                        'agent_name' => $b['agent_name'], 'agent_id' => $b['agent_id'],
+                        'service_name' => $b['service_name'], 'agent_archived' => $b['agent_archived'],
+                        'phone_numbers' => $phonesOf($b)];
         }
     }
-    usort($pairs, fn($a, $b) => $b['sort_time'] - $a['sort_time']);
 
     // ── Couleurs de cycle pour les paires ──
     $pairBorderColors = ['#10b981','#4361ee','#f59e0b','#8b5cf6','#ec4899','#38bdf8'];
 
     $now = time();
     function bonStatusHtml(array $b, int $now): string {
-        $isExpired = $b['expires_at'] && strtotime($b['expires_at']) < $now;
-        if ($b['active_sigs'] > 0)   return '<span style="background:rgba(16,185,129,.15);color:#10b981;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">✅ Signé</span>';
-        if ($b['archived_sigs'] > 0) return '<span style="background:rgba(148,163,184,.1);color:#94a3b8;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">🗄️ Archivé</span>';
-        if ($isExpired)              return '<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏰ Expiré</span>';
+        if ($b['status'] === 'signed')    return '<span style="background:rgba(16,185,129,.15);color:#10b981;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">✅ Signé</span>';
+        if ($b['status'] === 'cancelled') return '<span style="background:rgba(148,163,184,.1);color:#94a3b8;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">🚫 Annulé</span>';
+        if ($b['expires_at'] && strtotime($b['expires_at']) < $now) return '<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏰ Expiré</span>';
         return '<span style="background:rgba(56,189,248,.15);color:#38bdf8;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏳ En attente</span>';
     }
     ?>
@@ -2503,7 +2776,7 @@ elseif ($page === 'history') {
         $borderColor = $pairBorderColors[$pi % count($pairBorderColors)];
         $agentName = trim($pair['agent_name']);
     ?>
-    <div class="history-pair-card" data-search="<?=h(strtolower($agentName.' '.$pair['service_name'].' '.($pair['phone_numbers']??'').' '.($pair['remise']['dsi_name']??'').' '.($pair['restitution']['dsi_name']??'')))?>" style="background:var(--card);border:1px solid var(--border);border-left:4px solid <?=$borderColor?>;border-radius:var(--radius);margin-bottom:1rem;overflow:hidden;">
+    <div class="history-pair-card" data-search="<?=h(strtolower($agentName.' '.$pair['service_name'].' '.($pair['phone_numbers']??'').' '.($pair['remise']['dsi_name']??'').' '.($pair['restitution']['dsi_name']??'').' '.($pair['remise']['numero']??'').' '.($pair['restitution']['numero']??'')))?>" style="background:var(--card);border:1px solid var(--border);border-left:4px solid <?=$borderColor?>;border-radius:var(--radius);margin-bottom:1rem;overflow:hidden;">
       <!-- En-tête : Agent + Ligne -->
       <div style="padding:.75rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;background:var(--card2);">
         <div style="display:flex;align-items:center;gap:.75rem;">
@@ -2519,8 +2792,8 @@ elseif ($page === 'history') {
         <div style="font-family:var(--font-mono);font-size:.85rem;color:var(--primary);font-weight:600;">
           📞 <?=h(implode(' / ', array_map('formatPhone', explode(' / ', $pair['phone_numbers']))))?></div>
         <?php endif; ?>
-        <?php if($pair['agent_id']): ?>
-        <a href="index.php?page=pdf_bon&agent_id=<?=$pair['agent_id']?>" target="_blank" class="btn-icon" title="Imprimer le bon actuel" style="text-decoration:none;font-size:.8rem;">🖨️</a>
+        <?php $printBon = $pair['remise'] ?: $pair['restitution']; if($printBon): ?>
+        <a href="index.php?page=pdf_bon&bon_id=<?=$printBon['id']?>" target="_blank" class="btn-icon" title="Voir / imprimer ce bon" style="text-decoration:none;font-size:.8rem;">🖨️</a>
         <?php endif; ?>
       </div>
       <!-- Bons : deux colonnes côte à côte -->
@@ -2531,23 +2804,21 @@ elseif ($page === 'history') {
         <div style="padding:1rem 1.25rem;border-right:<?=$btype==='remise'?'1px solid var(--border)':'none'?>;background:<?=$b?$bg:'var(--bg3)'?>;">
           <?php if($b): ?>
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:.5rem;flex-wrap:wrap;">
-              <span style="font-weight:700;color:<?=$color?>;font-size:.9rem;"><?=$icon?> <?=$label?></span>
-              <?=bonStatusHtml($b,$now)?>
+              <span style="font-weight:700;color:<?=$color?>;font-size:.9rem;"><?=$icon?> <?=$label?> <span style="font-weight:600;font-size:.75rem;"><?=h($b['numero']?:'')?></span></span>
+              <span style="display:flex;align-items:center;gap:.4rem;"><?=bonStatusHtml($b,$now)?>
+              <a href="index.php?page=pdf_bon&bon_id=<?=$b['id']?>" target="_blank" title="Voir / imprimer ce bon" style="text-decoration:none;font-size:.85rem;">🖨️</a></span>
             </div>
             <div style="font-size:.78rem;color:var(--text3);margin-bottom:.3rem;">
-              Créé le <strong style="color:var(--text2);"><?=h($b['created_at'])?></strong>
+              Créé le <strong style="color:var(--text2);"><?=h($b['created_fmt'])?></strong>
               <?php if($b['dsi_name']||$b['created_by']): ?>— par <?=h($b['dsi_name']?:$b['created_by'])?><?php endif; ?>
             </div>
-            <?php if($b['active_sigs'] > 0 && $b['signed_at']): ?>
+            <?php if($b['status'] === 'signed' && $b['signed_fmt']): ?>
             <div style="font-size:.78rem;color:<?=$color?>;margin-top:.3rem;">
-              ✍️ <?=h($b['signer_name'])?> <span style="color:var(--text3);">— le <?=h($b['signed_at'])?></span>
+              ✍️ <?=h($b['signer_name'])?> <span style="color:var(--text3);">— le <?=h($b['signed_fmt'])?></span>
             </div>
             <?php endif; ?>
-            <?php if($b['archived_sigs'] > 0): ?>
-            <div style="font-size:.7rem;color:var(--text3);margin-top:.2rem;"><?=$b['archived_sigs']?> version(s) archivée(s)</div>
-            <?php endif; ?>
           <?php else: ?>
-            <div style="color:var(--text3);font-size:.82rem;font-style:italic;"><?=$icon?> <?=$label?><br><span style="font-size:.75rem;">Non généré</span></div>
+            <div style="color:var(--text3);font-size:.82rem;font-style:italic;"><?=$icon?> <?=$label?><br><span style="font-size:.75rem;"><?=$btype==='restitution'?'Pas encore générée — matériel toujours en dotation':'Non généré'?></span></div>
           <?php endif; ?>
         </div>
         <?php endforeach; ?>
@@ -2687,7 +2958,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
         <button class="btn-theme" onclick="toggleTheme()">🌙 Sombre</button>
     </div>
   </div>
-  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): ?><div style="padding:.85rem;border-radius:8px;margin-bottom:1rem;background:var(--success-dim);color:#10b981;border:1px solid rgba(16,185,129,.3)"><?=h($f['msg'])?></div><?php endforeach; ?></div><?php endif; ?>
+  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): ?><div style="padding:.85rem;border-radius:8px;margin-bottom:1rem;<?=($f['type']??'')==='error' ? 'background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3)' : 'background:var(--success-dim);color:#10b981;border:1px solid rgba(16,185,129,.3)'?>"><?=(($f['type']??'')==='error'?'⚠️ ':'')?><?=h($f['msg'])?></div><?php endforeach; ?></div><?php endif; ?>
   <div class="content"><?=$content?></div>
 </main>
 </div>

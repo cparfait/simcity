@@ -181,6 +181,31 @@ function simcity_apply_schema(PDO $pdo): void
         superseded     TINYINT(1) DEFAULT 0
     ) ENGINE=InnoDB;");
 
+    // ── Bons de remise / restitution ─────────────────────────
+    // Le bon est un document immuable : son contenu (items) est figé
+    // à la génération et ne change jamais après signature.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS bons (
+        id             INT AUTO_INCREMENT PRIMARY KEY,
+        numero         VARCHAR(20) UNIQUE,
+        type           VARCHAR(20) NOT NULL DEFAULT 'remise',
+        agent_id       INT NOT NULL,
+        parent_id      INT NULL,
+        items          MEDIUMTEXT NULL,
+        status         VARCHAR(20) NOT NULL DEFAULT 'pending',
+        cancel_reason  VARCHAR(255) NULL,
+        token          VARCHAR(64) UNIQUE,
+        expires_at     DATETIME NULL,
+        created_by     VARCHAR(100) NULL,
+        dsi_name       VARCHAR(200) NULL,
+        created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
+        signed_at      DATETIME NULL,
+        signer_name    VARCHAR(200) NULL,
+        signature_data MEDIUMTEXT NULL,
+        ip             VARCHAR(45) NULL,
+        INDEX idx_bons_agent (agent_id),
+        INDEX idx_bons_parent (parent_id)
+    ) ENGINE=InnoDB;");
+
     // ── Comptes administrateurs ──────────────────────────────
     $pdo->exec("CREATE TABLE IF NOT EXISTS users (
         id         INT AUTO_INCREMENT PRIMARY KEY,
@@ -255,6 +280,55 @@ function simcity_apply_schema(PDO $pdo): void
         $pdo->exec("ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0 AFTER active");
         // Le compte admin initial devient super-admin
         $pdo->exec("UPDATE users SET is_admin=1 WHERE username='admin'");
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // MIGRATION UNIQUE : sign_tokens / signatures → bons
+    // Reprend l'historique de l'ancien système. Les tokens copiés
+    // restent valides : les QR codes déjà imprimés fonctionnent.
+    // Les anciennes tables sont conservées (archives) mais plus utilisées.
+    // ─────────────────────────────────────────────────────────
+    $bonsCount = (int)$pdo->query("SELECT COUNT(*) FROM bons")->fetchColumn();
+    $tokCount  = (int)$pdo->query("SELECT COUNT(*) FROM sign_tokens")->fetchColumn();
+    if ($bonsCount === 0 && $tokCount > 0) {
+        $pdo->beginTransaction();
+        try {
+            // remise avant restitution à date égale (créés ensemble dans l'ancien système)
+            $tokens = $pdo->query("SELECT * FROM sign_tokens ORDER BY agent_id, created_at, bon_type")->fetchAll();
+            $ins = $pdo->prepare("INSERT INTO bons (numero, type, agent_id, parent_id, items, status, cancel_reason, token, expires_at, created_by, dsi_name, created_at, signed_at, signer_name, signature_data, ip)
+                                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+            $sigSt = $pdo->prepare("SELECT * FROM signatures WHERE token=? ORDER BY superseded ASC, signed_at DESC LIMIT 1");
+            $seq = []; $lastRemiseBon = [];
+            foreach ($tokens as $t) {
+                $sigSt->execute([$t['token']]);
+                $sig = $sigSt->fetch();
+                $isExpired = $t['expires_at'] && strtotime($t['expires_at']) < time();
+                if ($sig && empty($sig['superseded'])) {
+                    $status = 'signed'; $reason = null;
+                } elseif ($sig) {
+                    $status = 'cancelled'; $reason = 'Remplacé (migration ancien système)';
+                } elseif ($isExpired) {
+                    $status = 'cancelled'; $reason = 'Expiré (migration ancien système)';
+                } else {
+                    $status = 'pending'; $reason = null;
+                }
+                $year   = substr($t['created_at'], 0, 4);
+                $prefix = ($t['bon_type'] === 'remise' ? 'BR' : 'BT') . "-$year-";
+                $seq[$prefix] = ($seq[$prefix] ?? 0) + 1;
+                $numero = $prefix . str_pad((string)$seq[$prefix], 4, '0', STR_PAD_LEFT);
+                $parentId = ($t['bon_type'] === 'restitution') ? ($lastRemiseBon[$t['agent_id']] ?? null) : null;
+                $ins->execute([
+                    $numero, $t['bon_type'], $t['agent_id'], $parentId, null, $status, $reason,
+                    $t['token'], $t['expires_at'], $t['created_by'], $t['dsi_name'] ?? null, $t['created_at'],
+                    $sig['signed_at'] ?? null, $sig['signer_name'] ?? null, $sig['signature_data'] ?? null, $sig['ip'] ?? null,
+                ]);
+                if ($t['bon_type'] === 'remise') $lastRemiseBon[$t['agent_id']] = (int)$pdo->lastInsertId();
+            }
+            $pdo->commit();
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
     }
 
     // ─────────────────────────────────────────────────────────

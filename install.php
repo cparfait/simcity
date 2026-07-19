@@ -39,7 +39,7 @@ try {
     // ── Affichage du résultat ───────────────────────────────────
     $tables = ['models','services','operators','plan_types','billing_accounts',
                'agents','history_logs','devices','mobile_lines','attachments',
-               'sim_history','sign_tokens','signatures','users','settings'];
+               'sim_history','sign_tokens','signatures','bons','users','settings'];
     foreach ($tables as $t) {
         echo "<p style='color:#059669;'>✅ Table <b>$t</b></p>";
     }

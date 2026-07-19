@@ -60,7 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 goto render;
             }
             $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-            $pdo->exec("DROP TABLE IF EXISTS signatures, sign_tokens, sim_history, attachments, mobile_lines, devices, history_logs, agents, billing_accounts, plan_types, operators, models, services, settings");
+            $pdo->exec("DROP TABLE IF EXISTS bons, signatures, sign_tokens, sim_history, attachments, mobile_lines, devices, history_logs, agents, billing_accounts, plan_types, operators, models, services, settings");
             $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
             createTables($pdo);
             $message .= "<p style='color:#059669;font-weight:bold;'>✅ Base purgée et structure V5.0 recréée.</p>";
