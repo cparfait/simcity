@@ -21,7 +21,10 @@ session_name(SESSION_NAME);
 ini_set('session.cookie_httponly', 1);   // Inaccessible au JS
 ini_set('session.cookie_samesite', 'Strict');
 ini_set('session.use_strict_mode', 1);
-// Décommenter si HTTPS : ini_set('session.cookie_secure', 1);
+// Cookie sécurisé activé automatiquement dès que le site est servi en HTTPS
+if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+    ini_set('session.cookie_secure', 1);
+}
 session_start();
 
 // Renouveler l'ID de session à chaque connexion (anti-fixation)
@@ -385,14 +388,80 @@ function bonSnapshotItems($pdo, $agentId) {
     ];
 }
 
-// Crée un bon en attente de signature (token valable 30 jours)
+// Crée un bon en attente de signature (token valable 30 jours).
+// Le visa DSI (signature de l'admin connecté) est copié dans le bon : le
+// document reste immuable même si l'admin change sa signature plus tard.
 function createBon($pdo, $type, $agentId, $items, $parentId = null) {
     $token   = bin2hex(random_bytes(32));
     $expires = date('Y-m-d H:i:s', strtotime('+30 days'));
     $dsiName = $_SESSION['admin_fullname'] ?? $_SESSION['username'] ?? 'DSI';
-    $pdo->prepare("INSERT INTO bons (numero, type, agent_id, parent_id, items, status, token, expires_at, created_by, dsi_name) VALUES (?,?,?,?,?,'pending',?,?,?,?)")
-        ->execute([bonNumero($pdo, $type), $type, (int)$agentId, $parentId, json_encode($items, JSON_UNESCAPED_UNICODE), $token, $expires, $_SESSION['username'] ?? 'admin', $dsiName]);
+    $dsiSig  = null;
+    if (!empty($_SESSION['user_id'])) {
+        $st = $pdo->prepare("SELECT signature_data FROM users WHERE id=?");
+        $st->execute([(int)$_SESSION['user_id']]);
+        $dsiSig = $st->fetchColumn() ?: null;
+    }
+    $pdo->prepare("INSERT INTO bons (numero, type, agent_id, parent_id, items, status, token, expires_at, created_by, dsi_name, dsi_signature_data) VALUES (?,?,?,?,?,'pending',?,?,?,?,?)")
+        ->execute([bonNumero($pdo, $type), $type, (int)$agentId, $parentId, json_encode($items, JSON_UNESCAPED_UNICODE), $token, $expires, $_SESSION['username'] ?? 'admin', $dsiName, $dsiSig]);
     return (int)$pdo->lastInsertId();
+}
+
+// ─── Envoi d'e-mail via SMTP (aucune dépendance externe) ──────
+// Retourne true en cas de succès, sinon un message d'erreur lisible.
+function smtpSendMail($pdo, $to, $subject, $htmlBody) {
+    $host     = trim(getSetting($pdo, 'smtp_host', ''));
+    $port     = (int)getSetting($pdo, 'smtp_port', 587);
+    $secure   = strtolower(trim(getSetting($pdo, 'smtp_secure', 'tls')));   // tls | ssl | none
+    $user     = getSetting($pdo, 'smtp_user', '');
+    $pass     = getSetting($pdo, 'smtp_pass', '');
+    $from     = trim(getSetting($pdo, 'smtp_from', '')) ?: $user;
+    $fromName = getSetting($pdo, 'smtp_from_name', 'SimCity');
+    if (!$host || !$from) return "SMTP non configuré — renseignez Paramètres → Envoi d'e-mails.";
+    if (!filter_var($to, FILTER_VALIDATE_EMAIL)) return "Adresse destinataire invalide : $to";
+
+    $errno = 0; $errstr = '';
+    $fp = @stream_socket_client(($secure === 'ssl' ? "ssl://$host" : $host) . ":$port", $errno, $errstr, 10);
+    if (!$fp) return "Connexion SMTP impossible ($host:$port) : $errstr";
+    stream_set_timeout($fp, 10);
+
+    $read = function() use ($fp) {
+        $data = '';
+        while ($line = fgets($fp, 1024)) { $data .= $line; if (isset($line[3]) && $line[3] === ' ') break; }
+        return $data;
+    };
+    $cmd    = function($c) use ($fp, $read) { fwrite($fp, $c . "\r\n"); return $read(); };
+    $expect = function($resp, $codes) { return in_array((int)substr($resp, 0, 3), (array)$codes, true); };
+
+    try {
+        if (!$expect($read(), 220)) return "Réponse SMTP inattendue à la connexion.";
+        $ehloHost = $_SERVER['SERVER_NAME'] ?? 'localhost';
+        if (!$expect($cmd("EHLO $ehloHost"), 250)) return "EHLO refusé par le serveur.";
+        if ($secure === 'tls') {
+            if (!$expect($cmd("STARTTLS"), 220)) return "STARTTLS refusé par le serveur.";
+            if (!stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) return "Échec de la négociation TLS.";
+            if (!$expect($cmd("EHLO $ehloHost"), 250)) return "EHLO (après TLS) refusé.";
+        }
+        if ($user !== '') {
+            if (!$expect($cmd("AUTH LOGIN"), 334)) return "AUTH LOGIN refusé.";
+            if (!$expect($cmd(base64_encode($user)), 334)) return "Identifiant SMTP refusé.";
+            if (!$expect($cmd(base64_encode($pass)), 235)) return "Authentification SMTP échouée (mot de passe ?).";
+        }
+        if (!$expect($cmd("MAIL FROM:<$from>"), 250)) return "Expéditeur refusé : $from";
+        if (!$expect($cmd("RCPT TO:<$to>"), [250, 251])) return "Destinataire refusé : $to";
+        if (!$expect($cmd("DATA"), 354)) return "Commande DATA refusée.";
+        $headers = "From: =?UTF-8?B?" . base64_encode($fromName) . "?= <$from>\r\n"
+                 . "To: <$to>\r\n"
+                 . "Subject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n"
+                 . "MIME-Version: 1.0\r\n"
+                 . "Content-Type: text/html; charset=UTF-8\r\n"
+                 . "Content-Transfer-Encoding: base64\r\n"
+                 . "Date: " . date('r') . "\r\n";
+        if (!$expect($cmd($headers . "\r\n" . chunk_split(base64_encode($htmlBody)) . "."), 250)) return "Message refusé par le serveur.";
+        $cmd("QUIT");
+        return true;
+    } finally {
+        fclose($fp);
+    }
 }
 
 // Annule les bons non signés d'un agent (la dotation a changé, ils ne
@@ -558,7 +627,9 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         echo '<div class="sig-box">Signature de l\'Agent :'
             . ($bon['status']==='signed' && $bon['signature_data'] ? '<img class="sig-image" src="'.htmlspecialchars($bon['signature_data']).'" alt="signature"><div class="sig-name">'.htmlspecialchars($bon['signer_name']).' — '.date('d/m/Y H:i', strtotime($bon['signed_at'])).'</div>' : '<br><br><br>')
             . '</div>';
-        echo '<div class="sig-box">Visa de la DSI :<div class="sig-name">'.htmlspecialchars($bon['dsi_name'] ?: ($bon['created_by'] ?: '')).'</div></div>';
+        echo '<div class="sig-box">Visa de la DSI :'
+            . (!empty($bon['dsi_signature_data']) ? '<img class="sig-image" src="'.htmlspecialchars($bon['dsi_signature_data']).'" alt="visa DSI">' : '')
+            . '<div class="sig-name">'.htmlspecialchars($bon['dsi_name'] ?: ($bon['created_by'] ?: '')).'</div></div>';
         echo '</div>';
     }
 
@@ -630,7 +701,25 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
     });
     </script>
     <?php endif; ?>
+    <script>
+    function copySignLink(btn, url) {
+        function fallback() { window.prompt('Copiez le lien de signature :', url); }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(function() {
+                var t = btn.textContent; btn.textContent = '✅ Lien copié';
+                setTimeout(function(){ btn.textContent = t; }, 1800);
+            }, fallback);
+        } else { fallback(); }
+    }
+    </script>
     </head><body>
+
+    <!-- Messages (masqués à l'impression) -->
+    <?php foreach(getFlashes() as $f): ?>
+    <div class="no-print" style="padding:.75rem 1rem;border-radius:8px;margin-bottom:1rem;font-size:.9rem;<?=($f['type']??'')==='error' ? 'background:#fef2f2;color:#dc2626;border:1px solid #fecaca;' : 'background:#f0fdf4;color:#059669;border:1px solid #bbf7d0;'?>">
+        <?=(($f['type']??'')==='error'?'⚠️ ':'✅ ')?><?=h($f['msg'])?>
+    </div>
+    <?php endforeach; ?>
 
     <!-- Barre d'outils écran (masquée à l'impression) -->
     <div class="toolbar no-print">
@@ -639,7 +728,23 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
             <?php if($bonRemise): ?> &nbsp;·&nbsp; 📥 <?=h($bonRemise['numero'])?> : <?=bonStatusLabel($bonRemise)?><?php endif; ?>
             <?php if($bonRestitution): ?> &nbsp;·&nbsp; 📤 <?=h($bonRestitution['numero'])?> : <?=bonStatusLabel($bonRestitution)?><?php endif; ?>
         </div>
-        <div style="display:flex;gap:.5rem;align-items:center;">
+        <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+            <?php // Pour chaque bon encore signable : copier le lien (toujours), e-mail (si SMTP configuré)
+            $smtpConfigured = trim(getSetting($pdo, 'smtp_host', '')) !== '';
+            foreach ([$bonRemise, $bonRestitution] as $tb):
+                if (!$tb || $tb['status'] !== 'pending' || ($tb['expires_at'] && strtotime($tb['expires_at']) < time())) continue;
+                $signUrl = baseUrl($pdo) . '?page=sign&token=' . $tb['token']; ?>
+            <button type="button" title="Copier le lien de signature du bon <?=h($tb['numero'])?>" onclick="copySignLink(this, '<?=h($signUrl)?>')">🔗 Copier le lien <?=h($tb['numero'])?></button>
+            <?php if ($smtpConfigured && $agt && !empty($agt['email'])): ?>
+            <form method="post" action="index.php">
+                <?=csrf_field()?>
+                <input type="hidden" name="_entity" value="bon">
+                <input type="hidden" name="_action" value="send_mail">
+                <input type="hidden" name="bon_id" value="<?=(int)$tb['id']?>">
+                <button type="submit" title="Envoyer le lien de signature à <?=h($agt['email'])?>">📧 Envoyer <?=h($tb['numero'])?></button>
+            </form>
+            <?php endif; ?>
+            <?php endforeach; ?>
             <?php if($agt && empty($agt['archived'])): ?>
             <form method="post" action="index.php" onsubmit="return confirm('Générer un nouveau bon de remise à partir de la dotation actuelle ?\nLe bon en attente (s\'il existe et diffère) sera annulé.')">
                 <?=csrf_field()?>
@@ -662,6 +767,36 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
     <?php exit;
 }
 
+// ─── 3b. EXPORT SQL DE LA BASE (sauvegarde téléchargeable) ────
+// Génère un fichier .sql complet (structure + données) à copier sur
+// une clé USB ou un partage réseau. Réservé aux super-admins.
+if (isset($_GET['page']) && $_GET['page'] === 'backup_sql') {
+    if (!isset($_SESSION['user_id']) || empty($_SESSION['is_admin'])) die("Accès refusé — réservé aux super-administrateurs.");
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: application/sql; charset=utf-8');
+    header('Content-Disposition: attachment; filename="simcity_sauvegarde_' . date('Y-m-d_His') . '.sql"');
+    echo "-- ============================================================\n";
+    echo "-- SimCity v" . (defined('APP_VERSION') ? APP_VERSION : '1.0') . " — Sauvegarde de la base `" . DB_NAME . "`\n";
+    echo "-- Générée le " . date('d/m/Y à H:i:s') . " par " . ($_SESSION['username'] ?? '?') . "\n";
+    echo "-- Restauration : mysql -u root -p " . DB_NAME . " < ce_fichier.sql\n";
+    echo "-- ============================================================\n\n";
+    echo "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n\n";
+    foreach ($pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN) as $table) {
+        $create = $pdo->query("SHOW CREATE TABLE `$table`")->fetch();
+        echo "-- ── Table `$table` ──\n";
+        echo "DROP TABLE IF EXISTS `$table`;\n" . $create['Create Table'] . ";\n\n";
+        $rows = $pdo->query("SELECT * FROM `$table`");
+        while ($row = $rows->fetch(PDO::FETCH_ASSOC)) {
+            $cols = '`' . implode('`,`', array_keys($row)) . '`';
+            $vals = implode(',', array_map(fn($v) => $v === null ? 'NULL' : $pdo->quote((string)$v), array_values($row)));
+            echo "INSERT INTO `$table` ($cols) VALUES ($vals);\n";
+        }
+        echo "\n";
+    }
+    echo "SET FOREIGN_KEY_CHECKS=1;\n-- Fin de la sauvegarde\n";
+    exit;
+}
+
 // ─── 4. SECURITE & AUTHENTIFICATION ───────────────────────────
 
 // ── Déconnexion ───────────────────────────────────────────────
@@ -675,19 +810,24 @@ if (isset($_GET['action']) && $_GET['action'] === 'logout') {
     header('Location: index.php'); exit;
 }
 
-// ── Connexion avec protection anti-brute-force (session) ──────
+// ── Connexion avec protection anti-brute-force (en base) ──────
+// Le compteur est stocké en base (par compte ET par IP) : impossible de le
+// contourner en jetant son cookie de session.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
-    // Initialiser le compteur d'échecs
-    if (!isset($_SESSION['login_attempts'])) $_SESSION['login_attempts'] = 0;
-    if (!isset($_SESSION['login_locked_until'])) $_SESSION['login_locked_until'] = 0;
+    $loginUser = trim($_POST['username'] ?? '');
+    $loginIp   = $_SERVER['REMOTE_ADDR'] ?? '';
 
-    // Vérifier si le compte est verrouillé
-    if (time() < (int)$_SESSION['login_locked_until']) {
-        $waitSec = (int)$_SESSION['login_locked_until'] - time();
-        $login_error = "Trop de tentatives. Réessayez dans $waitSec seconde(s).";
+    // Purge des tentatives anciennes (> 24 h)
+    $pdo->exec("DELETE FROM login_attempts WHERE attempted_at < DATE_SUB(NOW(), INTERVAL 1 DAY)");
+
+    // Verrouillage : 5 échecs sur le même compte ou la même IP en 15 minutes
+    $st = $pdo->prepare("SELECT COUNT(*) FROM login_attempts WHERE (username=? OR ip=?) AND attempted_at > DATE_SUB(NOW(), INTERVAL 15 MINUTE)");
+    $st->execute([$loginUser, $loginIp]);
+    if ($st->fetchColumn() >= 5) {
+        $login_error = "Trop de tentatives échouées. Réessayez dans quelques minutes.";
     } else {
         $st = $pdo->prepare("SELECT id, username, password, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name, IFNULL(is_admin,0) as is_admin FROM users WHERE username=?");
-        $st->execute([trim($_POST['username'] ?? '')]);
+        $st->execute([$loginUser]);
         $u = $st->fetch();
         if ($u && password_verify($_POST['password'] ?? '', $u['password'])) {
             // Compte désactivé
@@ -696,8 +836,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
             } else {
                 // Connexion réussie : régénérer l'ID de session (anti-fixation)
                 session_regenerate_id(true);
-                $_SESSION['login_attempts'] = 0;
-                $_SESSION['login_locked_until'] = 0;
+                $pdo->prepare("DELETE FROM login_attempts WHERE username=? OR ip=?")->execute([$loginUser, $loginIp]);
                 $_SESSION['user_id'] = $u['id'];
                 $_SESSION['username'] = $u['username'];
                 $_SESSION['is_admin'] = !empty($u['is_admin']);
@@ -706,17 +845,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                 header('Location: index.php'); exit;
             }
         } else {
-            // Échec : incrémenter le compteur
-            $_SESSION['login_attempts']++;
-            if ($_SESSION['login_attempts'] >= 5) {
-                $_SESSION['login_locked_until'] = time() + 30; // blocage 30 secondes
-                $_SESSION['login_attempts'] = 0;
-                $login_error = "Trop de tentatives échouées. Compte temporairement bloqué (30 s).";
-            } else {
-                $login_error = "Identifiants incorrects.";
-            }
+            // Échec : enregistrer la tentative
+            $pdo->prepare("INSERT INTO login_attempts (username, ip) VALUES (?,?)")->execute([$loginUser, $loginIp]);
+            $login_error = "Identifiants incorrects.";
         }
-    } // fin else (pas verrouillé)
+    }
 } // fin if POST login
 
 // ── Page de login ─────────────────────────────────────────────
@@ -977,6 +1110,7 @@ if (isset($_GET['ajax_agent_details'])) {
     $history = $histSt->fetchAll();
     
     // ── BONS : statut du dernier cycle + actions ──────────────────
+    $smtpConfigured = trim(getSetting($pdo, 'smtp_host', '')) !== '';
     $lastRemise = $pdo->prepare("SELECT * FROM bons WHERE agent_id=? AND type='remise' AND status!='cancelled' ORDER BY created_at DESC, id DESC LIMIT 1");
     $lastRemise->execute([$id]); $lastRemise = $lastRemise->fetch();
     $lastRestit = null;
@@ -1025,6 +1159,35 @@ if (isset($_GET['ajax_agent_details'])) {
         </form>";
     }
     echo "</div>";
+
+    // ── Remise partielle : sélection des équipements du bon (optionnel) ──────
+    $dotation = bonSnapshotItems($pdo, $id);
+    $hasDotation = !empty($dotation['devices']) || !empty($dotation['lines']);
+    $nbItems = count($dotation['devices']) + count($dotation['lines']);
+    if (empty($agt['archived']) && $nbItems > 1) {
+        echo "<details style='margin-bottom:1.25rem;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;'>
+            <summary style='cursor:pointer;font-size:.85rem;color:var(--text2);font-weight:600;'>📄 Remise partielle — choisir les équipements du bon</summary>
+            <div class='muted' style='font-size:.78rem;margin:.6rem 0;'>Par défaut, le bouton « Générer le bon de remise » couvre toute la dotation. Ici, vous pouvez générer un bon ne listant que certains équipements (ex. : nouvel appareil remis séparément).</div>
+            <form method='post' action='index.php' target='_blank' style='padding:0;margin:0;'>
+                <input type='hidden' name='_entity' value='bon'>
+                <input type='hidden' name='_action' value='generate_remise'>
+                <input type='hidden' name='items_selection' value='1'>
+                <input type='hidden' name='agent_id' value='$id'>
+                <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>";
+        foreach ($dotation['devices'] as $it) {
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.85rem;cursor:pointer;'>
+                <input type='checkbox' name='ret_devices[]' value='" . (int)$it['device_id'] . "' checked>
+                📱 " . h(trim(($it['brand'] ?? '') . ' ' . ($it['name'] ?? ''))) . " <span class='muted' style='font-size:.72rem;'>IMEI " . h($it['imei']) . "</span></label>";
+        }
+        foreach ($dotation['lines'] as $it) {
+            $tag = !empty($it['esim']) ? ' (eSIM)' : (!empty($it['personal_device']) ? ' (BYOD)' : '');
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.85rem;cursor:pointer;'>
+                <input type='checkbox' name='ret_lines[]' value='" . (int)$it['line_id'] . "' checked>
+                📞 " . formatPhone($it['phone_number']) . "$tag <span class='muted' style='font-size:.72rem;'>" . h($it['plan_name'] ?: '') . "</span></label>";
+        }
+        echo "<button type='submit' class='btn-secondary' style='margin-top:.4rem;font-size:.82rem;'>📄 Générer le bon avec la sélection</button>
+            </form></details>";
+    }
           
     echo "<div style='display:flex; gap:2rem; flex-wrap:wrap;'>";
     
@@ -1082,10 +1245,9 @@ if (isset($_GET['ajax_agent_details'])) {
     } echo "</div></div>";
 
     // ── Restitution : génération avec sélection des équipements ──────────────
+    // ($dotation et $hasDotation calculés plus haut, avant le bloc remise partielle)
     $signedRemise = $pdo->prepare("SELECT id, numero FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
     $signedRemise->execute([$id]); $signedRemise = $signedRemise->fetch();
-    $dotation = bonSnapshotItems($pdo, $id);
-    $hasDotation = !empty($dotation['devices']) || !empty($dotation['lines']);
     if ($signedRemise && $hasDotation && empty($agt['archived'])) {
         echo "<div style='margin-top:1.5rem;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:1rem;'>";
         echo "<h4 style='color:var(--warning); margin-bottom:.75rem;'>📤 Générer un bon de restitution</h4>";
@@ -1158,6 +1320,19 @@ if (isset($_GET['ajax_agent_details'])) {
                 echo "<span style='font-weight:700;color:$color;font-size:.9rem;'>$icon $label <span style='font-weight:600;font-size:.78rem;'>" . h($b['numero'] ?: '') . "</span></span> $badge";
                 echo "<span style='font-size:.78rem;color:var(--text3);margin-left:auto;'>Créé le {$b['created_fmt']} — par " . h($b['dsi_name'] ?: $b['created_by'] ?: '—') . "</span>";
                 echo "<a href='?page=pdf_bon&bon_id={$b['id']}' target='_blank' title='Voir / imprimer ce bon' style='text-decoration:none;font-size:.85rem;'>🖨️</a>";
+                if ($b['status'] === 'pending' && !$isExpired) {
+                    $signUrl = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
+                    echo "<button type='button' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Copier le lien de signature' onclick=\"copySignLink(this, '" . h($signUrl) . "')\">🔗</button>";
+                    if ($smtpConfigured && !empty($agt['email'])) {
+                        echo "<form method='post' action='index.php' target='_blank' style='display:inline;margin:0;padding:0;'>
+                            <input type='hidden' name='_entity' value='bon'>
+                            <input type='hidden' name='_action' value='send_mail'>
+                            <input type='hidden' name='bon_id' value='{$b['id']}'>
+                            <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
+                            <button type='submit' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Envoyer le lien de signature à " . h($agt['email']) . "'>📧</button>
+                        </form>";
+                    }
+                }
                 echo "</div>";
                 if ($b['status'] === 'signed' && $b['signer_name']) {
                     echo "<div style='font-size:.78rem;color:var(--success);margin-left:1.5rem;'>✍️ " . h($b['signer_name']) . " — le {$b['signed_fmt']}</div>";
@@ -1237,6 +1412,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $url = rtrim($url, '/');
                 $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='site_url'")->execute([$url]);
             }
+            // Configuration SMTP (envoi des liens de signature)
+            if (isset($d['smtp_host'])) {
+                foreach (['smtp_host','smtp_port','smtp_user','smtp_from','smtp_from_name'] as $key) {
+                    $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?")->execute([trim($d[$key] ?? ''), $key]);
+                }
+                $sec = in_array($d['smtp_secure'] ?? '', ['tls','ssl','none'], true) ? $d['smtp_secure'] : 'tls';
+                $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='smtp_secure'")->execute([$sec]);
+                // Mot de passe : conservé si le champ est laissé vide
+                if (($d['smtp_pass'] ?? '') !== '') {
+                    $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='smtp_pass'")->execute([$d['smtp_pass']]);
+                }
+            }
             // Suppression du logo
             if (!empty($d['delete_logo'])) {
                 $oldLogo = getSetting($pdo, 'pdf_logo_path', '');
@@ -1266,6 +1453,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             flash('success', 'Paramètres enregistrés.');
+        } elseif ($ent === 'admin_signature') {
+            // Signature manuscrite de l'admin connecté (visa DSI sur les bons)
+            $sig = $d['signature_data'] ?? '';
+            if (!empty($d['delete_signature'])) {
+                $pdo->prepare("UPDATE users SET signature_data=NULL WHERE id=?")->execute([(int)$_SESSION['user_id']]);
+                flash('success', 'Signature supprimée.');
+            } elseif (strpos($sig, 'data:image/png;base64,') === 0) {
+                $pdo->prepare("UPDATE users SET signature_data=? WHERE id=?")->execute([$sig, (int)$_SESSION['user_id']]);
+                flash('success', 'Signature enregistrée — elle sera apposée en visa DSI sur les prochains bons que vous générerez.');
+            } else {
+                flash('error', "Signature invalide — dessinez dans le cadre avant d'enregistrer.");
+            }
         } elseif ($ent === 'bulk') {
             // Actions en masse (bulk)
             $bulkAction = $d['bulk_action'] ?? '';
@@ -1312,6 +1511,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash('error', 'Agent introuvable ou archivé.');
                 } else {
                     $items = bonSnapshotItems($pdo, $agentId);
+                    // Remise partielle : si le formulaire fournit une sélection, ne garder
+                    // que les équipements cochés (par défaut : toute la dotation)
+                    if (!empty($d['items_selection'])) {
+                        $selDev  = array_map('intval', (array)($d['ret_devices'] ?? []));
+                        $selLine = array_map('intval', (array)($d['ret_lines'] ?? []));
+                        $items['devices'] = array_values(array_filter($items['devices'], fn($x) => in_array((int)$x['device_id'], $selDev, true)));
+                        $items['lines']   = array_values(array_filter($items['lines'],   fn($x) => in_array((int)$x['line_id'],   $selLine, true)));
+                        if (empty($items['devices']) && empty($items['lines'])) {
+                            flash('error', 'Sélectionnez au moins un équipement à remettre.');
+                            $pdo->commit();
+                            header('Location: index.php?page=refs&tab=agents'); exit;
+                        }
+                    }
                     if (empty($items['devices']) && empty($items['lines'])) {
                         flash('error', 'Aucun équipement attribué à cet agent — rien à remettre.');
                         $pdo->commit();
@@ -1366,6 +1578,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($act === 'cancel_pending') {
                 if ($agentId) cancelPendingBons($pdo, $agentId, "Annulation manuelle par l'administrateur");
                 flash('success', 'Bons en attente annulés. Générez un nouveau bon si nécessaire.');
+            } elseif ($act === 'send_mail') {
+                // Envoi du lien de signature à l'agent par e-mail
+                $bonId = (int)($d['bon_id'] ?? 0);
+                $st = $pdo->prepare("SELECT b.*, a.email, a.first_name, a.last_name FROM bons b JOIN agents a ON b.agent_id=a.id WHERE b.id=?");
+                $st->execute([$bonId]);
+                $b = $st->fetch();
+                $isSignable = $b && $b['status'] === 'pending' && (!$b['expires_at'] || strtotime($b['expires_at']) >= time());
+                if (!$b) {
+                    flash('error', 'Bon introuvable.');
+                } elseif (!$isSignable) {
+                    flash('error', "Ce bon n'est plus signable (signé, annulé ou expiré) — rien à envoyer.");
+                } elseif (empty($b['email'])) {
+                    flash('error', "Cet agent n'a pas d'adresse e-mail. Renseignez-la dans sa fiche.");
+                } else {
+                    $typeLbl = $b['type'] === 'remise' ? 'remise' : 'restitution';
+                    $url     = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
+                    $expFmt  = $b['expires_at'] ? date('d/m/Y', strtotime($b['expires_at'])) : null;
+                    $html = '<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">'
+                          . '<h2 style="color:#4361ee;">📱 SimCity — Signature requise</h2>'
+                          . '<p>Bonjour ' . h($b['first_name']) . ',</p>'
+                          . '<p>Le bon de <strong>' . $typeLbl . ' de matériel</strong> n° <strong>' . h($b['numero']) . '</strong> vous attend pour signature électronique.</p>'
+                          . '<p style="margin:28px 0;text-align:center;"><a href="' . h($url) . '" style="background:#4361ee;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">✍️ Signer le bon</a></p>'
+                          . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '">' . h($url) . '</a></p>'
+                          . ($expFmt ? '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . $expFmt . '</strong>.</p>' : '')
+                          . '<hr style="border:0;border-top:1px solid #eee;margin:24px 0;"><p style="font-size:12px;color:#999;">Message automatique — merci de ne pas répondre.</p></div>';
+                    $res = smtpSendMail($pdo, $b['email'], "Signature requise — Bon de $typeLbl {$b['numero']}", $html);
+                    if ($res === true) {
+                        logHistory($pdo, 'agent', (int)$b['agent_id'], "📧 Lien de signature du bon {$b['numero']} envoyé à {$b['email']}", (int)$b['agent_id']);
+                        flash('success', "Lien de signature envoyé à {$b['email']}.");
+                    } else {
+                        flash('error', "Échec de l'envoi : $res");
+                    }
+                }
+                $pdo->commit();
+                header('Location: index.php?page=pdf_bon&bon_id=' . $bonId); exit;
             }
         } elseif ($ent === 'db_reset') {
             // Réinitialisation complète — super-admin uniquement
@@ -1650,7 +1897,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin_signature'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -1689,6 +1936,19 @@ if ($page === 'dashboard') {
 
     $svcData = $pdo->query("SELECT s.name, COUNT(l.id) as c FROM mobile_lines l JOIN services s ON l.service_id=s.id WHERE l.archived=0 GROUP BY s.name ORDER BY c DESC LIMIT 5")->fetchAll();
     $svcs = []; $sCounts = []; foreach($svcData as $s) { $svcs[] = $s['name'] ?: 'Non assigné'; $sCounts[] = $s['c']; }
+
+    // Bons en attente de signature (avec expiration proche ou dépassée)
+    $pendingBons = $pdo->query("SELECT b.id, b.numero, b.type, b.expires_at, b.agent_id,
+            DATE_FORMAT(b.created_at, '%d/%m/%Y') as created_fmt,
+            CONCAT(IFNULL(a.first_name,''), ' ', IFNULL(a.last_name,'')) as agent_name
+        FROM bons b JOIN agents a ON b.agent_id = a.id
+        WHERE b.status = 'pending'
+        ORDER BY b.expires_at ASC, b.created_at ASC LIMIT 12")->fetchAll();
+    $bonsExpSoon = 0; $bonsExpired = 0;
+    foreach ($pendingBons as $pb) {
+        if ($pb['expires_at'] && strtotime($pb['expires_at']) < time()) $bonsExpired++;
+        elseif ($pb['expires_at'] && strtotime($pb['expires_at']) < time() + 7*86400) $bonsExpSoon++;
+    }
     ?>
     <div class="dashboard-grid">
         
@@ -1707,7 +1967,7 @@ if ($page === 'dashboard') {
         <a href="?page=refs&tab=agents" class="shortcut-btn shortcut-resa"><span class="shortcut-icon">👤</span><span class="shortcut-label">Nouvel Utilisateur</span><span class="shortcut-sub">Créer un agent pour attribution</span></a>
       </div>
 
-      <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0): ?>
+      <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $bonsExpired > 0 || $bonsExpSoon > 0): ?>
       <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);padding:1.25rem;border-radius:var(--radius);margin-bottom:1.5rem;">
           <h4 style="color:var(--danger);margin-bottom:10px;display:flex;align-items:center;gap:8px;">⚠️ Points d'attention immédiats</h4>
           <ul style="color:var(--text);margin:0;padding-left:1.5rem;font-size:0.9rem;line-height:1.8;">
@@ -1719,6 +1979,12 @@ if ($page === 'dashboard') {
               <?php endif; ?>
               <?php if($alertSuspended > 0): ?>
               <li><strong>Lignes Suspendues :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$alertSuspended?></span> ligne(s) hors service (pensez à les résilier si inactives).</li>
+              <?php endif; ?>
+              <?php if($bonsExpired > 0): ?>
+              <li><strong>Bons expirés :</strong> <span style="color:var(--danger);font-weight:bold;"><?=$bonsExpired?></span> bon(s) en attente dont le lien de signature a expiré — regénérez-les depuis la fiche agent.</li>
+              <?php endif; ?>
+              <?php if($bonsExpSoon > 0): ?>
+              <li><strong>Bons à relancer :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$bonsExpSoon?></span> bon(s) en attente expirent sous 7 jours — relancez les agents (bouton 📧).</li>
               <?php endif; ?>
           </ul>
       </div>
@@ -1737,6 +2003,37 @@ if ($page === 'dashboard') {
           <div class="kpi-icon">🏢</div><div class="kpi-info"><span class="kpi-val"><?=$pdo->query("SELECT COUNT(*) FROM agents WHERE archived=0")->fetchColumn()?></span><span class="kpi-label">Utilisateurs</span></div>
         </a>
       </div>
+
+      <?php if($pendingBons): ?>
+      <div class="card">
+        <div class="card-header"><span class="card-title">✍️ Bons en attente de signature (<?=count($pendingBons)?>)</span>
+          <a href="?page=history" style="font-size:.8rem;color:var(--primary);text-decoration:none;">Voir tout l'historique →</a></div>
+        <table class="data-table">
+          <thead><tr><th>Bon</th><th>Utilisateur</th><th>Généré le</th><th>Expire le</th><th>Actions</th></tr></thead>
+          <tbody>
+          <?php foreach($pendingBons as $pb):
+              $expTs   = $pb['expires_at'] ? strtotime($pb['expires_at']) : null;
+              $expired = $expTs && $expTs < time();
+              $soon    = !$expired && $expTs && $expTs < time() + 7*86400;
+              [$icon, $lbl] = $pb['type'] === 'remise' ? ['📥','Remise'] : ['📤','Restitution'];
+          ?>
+          <tr>
+            <td><?=$icon?> <strong style="font-family:var(--font-mono);font-size:.85rem;"><?=h($pb['numero'])?></strong> <span class="muted" style="font-size:.78rem;"><?=$lbl?></span></td>
+            <td><strong style="cursor:pointer;border-bottom:1px dashed var(--border2);" onclick="viewAgent(<?=$pb['agent_id']?>, '<?=h(trim($pb['agent_name']))?>')" title="Voir la fiche"><?=h(trim($pb['agent_name']))?></strong></td>
+            <td><?=h($pb['created_fmt'])?></td>
+            <td>
+              <?php if($expired): ?><span style="color:var(--danger);font-weight:600;">⏰ Expiré</span>
+              <?php elseif($soon): ?><span style="color:var(--warning);font-weight:600;"><?=date('d/m/Y', $expTs)?> ⚠️</span>
+              <?php else: ?><span class="muted"><?=$expTs ? date('d/m/Y', $expTs) : '—'?></span>
+              <?php endif; ?>
+            </td>
+            <td><a href="?page=pdf_bon&bon_id=<?=$pb['id']?>" target="_blank" class="btn-icon" title="Voir / imprimer / envoyer" style="text-decoration:none;">🖨️</a></td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <?php endif; ?>
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem; margin-top:1rem; margin-bottom:1rem;">
           <div class="card" style="margin-bottom:0;">
@@ -2465,6 +2762,38 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
+      <!-- Bloc SMTP -->
+      <div class="card">
+        <div class="card-header">📧 Envoi d'e-mails (liens de signature)</div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="settings">
+          <input type="hidden" name="_action" value="save">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+            Permet d'envoyer le lien de signature d'un bon directement à l'agent (bouton 📧).<br>
+            Laissez le serveur vide pour désactiver l'envoi d'e-mails.
+          </p>
+          <div class="form-grid">
+            <div class="form-group"><label>Serveur SMTP</label><input type="text" name="smtp_host" value="<?=h(getSetting($pdo,'smtp_host',''))?>" placeholder="smtp.monentreprise.fr"></div>
+            <div class="form-group"><label>Port</label><input type="number" name="smtp_port" value="<?=h(getSetting($pdo,'smtp_port','587'))?>" min="1" max="65535"></div>
+            <div class="form-group"><label>Chiffrement</label>
+              <?php $smtpSec = getSetting($pdo,'smtp_secure','tls'); ?>
+              <select name="smtp_secure">
+                <option value="tls" <?=$smtpSec==='tls'?'selected':''?>>STARTTLS (port 587)</option>
+                <option value="ssl" <?=$smtpSec==='ssl'?'selected':''?>>SSL/TLS (port 465)</option>
+                <option value="none" <?=$smtpSec==='none'?'selected':''?>>Aucun (interne uniquement)</option>
+              </select>
+            </div>
+            <div class="form-group"><label>Identifiant</label><input type="text" name="smtp_user" value="<?=h(getSetting($pdo,'smtp_user',''))?>" autocomplete="off" placeholder="Vide si serveur sans authentification"></div>
+            <div class="form-group"><label>Mot de passe <span style="font-weight:400;text-transform:none;">(vide = inchangé)</span></label><input type="password" name="smtp_pass" value="" autocomplete="new-password"></div>
+            <div class="form-group"><label>Adresse expéditrice</label><input type="email" name="smtp_from" value="<?=h(getSetting($pdo,'smtp_from',''))?>" placeholder="dsi@monentreprise.fr"></div>
+            <div class="form-group form-full"><label>Nom de l'expéditeur</label><input type="text" name="smtp_from_name" value="<?=h(getSetting($pdo,'smtp_from_name','SimCity — DSI'))?>"></div>
+          </div>
+          <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
+            <button type="submit" class="btn-primary">💾 Enregistrer</button>
+          </div>
+        </form>
+      </div>
+
       </div><!-- fin colonne gauche -->
 
       <!-- Bloc seuils — colonne droite -->
@@ -2477,7 +2806,7 @@ elseif ($page === 'refs') {
             Quand le stock descend <strong>en-dessous ou à égalité</strong> du seuil configuré, une alerte s'affiche sur le tableau de bord.
           </p>
           <?php foreach($allSettings as $s):
-              if(in_array($s['setting_key'], ['pdf_logo_path', 'site_url'])) continue; ?>
+              if(!in_array($s['setting_key'], ['sim_stock_alert', 'device_stock_alert'])) continue; ?>
           <div class="form-group form-full" style="margin-bottom:1.25rem;">
             <label><?=h($s['label'])?></label>
             <div style="display:flex;align-items:center;gap:1rem;">
@@ -2492,9 +2821,91 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
+      <!-- Bloc signature DSI -->
+      <?php
+      $mySig = $pdo->prepare("SELECT signature_data FROM users WHERE id=?");
+      $mySig->execute([(int)$_SESSION['user_id']]);
+      $mySig = $mySig->fetchColumn();
+      ?>
+      <div class="card" style="grid-column:2;">
+        <div class="card-header">✍️ Ma signature (visa DSI)</div>
+        <form method="post" id="dsi-sig-form" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="admin_signature">
+          <input type="hidden" name="_action" value="save">
+          <input type="hidden" name="signature_data" id="dsi-sig-data">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+            Cette signature est apposée dans le cadre <strong>« Visa de la DSI »</strong> des bons que <strong>vous</strong> générez.
+            Elle est copiée dans chaque bon au moment de la génération (un bon déjà émis ne change jamais).
+          </p>
+          <?php if($mySig): ?>
+          <div style="display:flex;align-items:center;gap:1.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;">
+            <img src="<?=h($mySig)?>" alt="Ma signature" style="max-height:70px;max-width:220px;object-fit:contain;background:#fff;border-radius:4px;padding:4px;">
+            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;color:var(--danger);font-size:.85rem;">
+              <input type="checkbox" name="delete_signature" value="1" style="accent-color:var(--danger);width:14px;height:14px;" onchange="if(this.checked){document.getElementById('dsi-sig-form').submit();}">
+              Supprimer ma signature
+            </label>
+          </div>
+          <?php endif; ?>
+          <label style="margin-bottom:.4rem;"><?=$mySig?'Remplacer ma signature':'Dessiner ma signature'?></label>
+          <div style="border:2px dashed var(--border2);border-radius:8px;background:#fff;touch-action:none;">
+            <canvas id="dsiSigCanvas" height="140" style="display:block;width:100%;border-radius:8px;"></canvas>
+          </div>
+          <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center;">
+            <button type="button" class="btn-secondary" style="font-size:.82rem;padding:.4rem .9rem;" onclick="dsiSigClear()">🗑️ Effacer</button>
+            <button type="submit" class="btn-primary" id="dsi-sig-save" disabled>💾 Enregistrer ma signature</button>
+          </div>
+        </form>
+      </div>
+      <script>
+      (function(){
+        const canvas = document.getElementById('dsiSigCanvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        let drawing = false, hasSig = false;
+        function resize() {
+          const w = canvas.parentElement.clientWidth;
+          canvas.width = w * devicePixelRatio; canvas.height = 140 * devicePixelRatio;
+          canvas.style.width = w + 'px'; canvas.style.height = '140px';
+          ctx.scale(devicePixelRatio, devicePixelRatio);
+          ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        }
+        resize();
+        function pos(e) { const r = canvas.getBoundingClientRect(); const s = e.touches ? e.touches[0] : e; return {x: s.clientX - r.left, y: s.clientY - r.top}; }
+        function start(e) { e.preventDefault(); drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+        function move(e)  { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); hasSig = true; document.getElementById('dsi-sig-save').disabled = false; }
+        function stop(e)  { e.preventDefault(); drawing = false; }
+        window.dsiSigClear = function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasSig = false; document.getElementById('dsi-sig-save').disabled = true; };
+        canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); canvas.addEventListener('mouseup', stop);
+        canvas.addEventListener('touchstart', start, {passive:false}); canvas.addEventListener('touchmove', move, {passive:false}); canvas.addEventListener('touchend', stop, {passive:false});
+        document.getElementById('dsi-sig-form').addEventListener('submit', function(e) {
+          const del = this.querySelector('input[name=delete_signature]');
+          if (del && del.checked) return;
+          if (!hasSig) { e.preventDefault(); alert('Dessinez votre signature dans le cadre.'); return; }
+          document.getElementById('dsi-sig-data').value = canvas.toDataURL('image/png');
+        });
+      })();
+      </script>
+
     </div><!-- fin grille paramètres -->
 
     <?php if(!empty($_SESSION['is_admin'])): ?>
+    <!-- Bloc sauvegarde — super-admin uniquement -->
+    <div class="card" style="margin-top:1.5rem;">
+      <div class="card-header">💾 Sauvegarde de la base de données</div>
+      <div style="padding:1.5rem;">
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+          Télécharge un fichier <strong>.sql</strong> complet (structure + toutes les données : lignes, matériels, agents, bons signés, historique…)
+          à copier sur une <strong>clé USB</strong> ou un partage réseau.<br>
+          <strong>Restauration :</strong> <code style="font-family:var(--font-mono);font-size:.8rem;">mysql -u root -p simcity_db &lt; simcity_sauvegarde_XXXX.sql</code>
+          (ou via phpMyAdmin → Importer).
+        </p>
+        <a href="?page=backup_sql" class="btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;">💾 Télécharger la sauvegarde (.sql)</a>
+        <p style="font-size:.78rem;color:var(--text3);margin-top:.9rem;">
+          💡 Pensez-y avant chaque mise à jour de l'application, et régulièrement (le fichier contient aussi les signatures électroniques).
+        </p>
+      </div>
+    </div>
+
     <!-- Bloc reset — super-admin uniquement -->
     <div class="card" style="margin-top:1.5rem;border-color:var(--danger);border-width:1px;">
       <div class="card-header" style="color:var(--danger);">⚠️ Zone dangereuse</div>
@@ -2921,7 +3332,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-logo">
     <span class="logo-icon">📱</span>
-    <div><div class="logo-text">SimCity</div><div class="logo-ver">v5.0</div></div>
+    <div><div class="logo-text">SimCity</div><div class="logo-ver">v<?=defined('APP_VERSION') ? APP_VERSION : '1.0'?></div></div>
   </div>
   <nav class="sidebar-nav">
     <div class="sidebar-section">Principal</div>
@@ -3017,6 +3428,17 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 function applyTheme(t){ document.documentElement.setAttribute('data-theme',t==='light'?'light':''); localStorage.setItem('pm_theme',t); }
 function toggleTheme(){ applyTheme((localStorage.getItem('pm_theme')||'dark')==='dark'?'light':'dark'); }
 applyTheme(localStorage.getItem('pm_theme')||'dark');
+
+// COPIE DU LIEN DE SIGNATURE D'UN BON
+function copySignLink(btn, url) {
+    function fallback() { window.prompt('Copiez le lien de signature :', url); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(url).then(function() {
+            var t = btn.textContent; btn.textContent = '✅';
+            setTimeout(function(){ btn.textContent = t; }, 1800);
+        }, fallback);
+    } else { fallback(); }
+}
 
 // CHARGEMENT FICHE UTILISATEUR AJAX
 async function viewAgent(id, name) {

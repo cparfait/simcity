@@ -1,4 +1,4 @@
-# 📱 SimCity v5.0
+# 📱 SimCity v1.0
 **Gestion du Parc Mobile — DSI**
 
 SimCity est une application web PHP de gestion de parc téléphonique : lignes mobiles, cartes SIM, terminaux, agents et attributions, avec signature électronique des bons de remise/restitution.
@@ -78,6 +78,10 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 - Le **bon de restitution** se génère au moment du retour, en cochant les équipements rendus (**restitution partielle possible**) ; à la signature, seuls les équipements du bon retournent en stock
 - Si la dotation change (changement de SIM, de téléphone, transfert…), les bons **en attente** sont annulés automatiquement et un nouveau bon doit être généré ; les bons **signés** ne sont jamais modifiés
 - La page **Historique des bons** montre chaque cycle remise/restitution (lié structurellement, pas par date) avec impression individuelle
+- **Lien de signature** : le bouton 🔗 copie le lien à transmettre par le canal de votre choix (Teams, SMS…) ; en option, configurez le SMTP (Paramètres → Envoi d'e-mails) pour faire apparaître un bouton 📧 d'envoi direct
+- **Remise partielle** : le bloc repliable de la fiche agent permet de générer un bon ne couvrant que certains équipements
+- **Visa DSI** : chaque admin peut dessiner sa signature dans Paramètres → Ma signature ; elle est apposée sur les bons qu'il génère
+- Le **tableau de bord** liste les bons en attente de signature et alerte quand un lien expire bientôt
 
 ### Changement de SIM
 
@@ -103,6 +107,40 @@ simcity/
 ├── js/
 │   └── qrcode.min.js # Génération QR codes (client-side)
 └── uploads/          # Pièces jointes — créé automatiquement
+```
+
+---
+
+## Sauvegarde
+
+**Depuis l'application** (recommandé) : Paramètres → **💾 Sauvegarde de la base de données** →
+« Télécharger la sauvegarde (.sql) ». Copiez le fichier sur une clé USB. Réservé aux super-admins.
+
+**En ligne de commande** (alternative) :
+
+```bash
+mysqldump -u root -p simcity_db > sauvegarde_simcity_$(date +%Y%m%d).sql
+```
+
+Restauration (dans les deux cas) :
+
+```bash
+mysql -u root -p simcity_db < simcity_sauvegarde_XXXX.sql
+```
+
+> 💡 Sous Windows/Laragon : `mysql`/`mysqldump` se trouvent dans `C:\laragon\bin\mysql\mysql-*\bin\`.
+> Pensez à sauvegarder **avant chaque mise à jour** de l'application.
+
+---
+
+## Test de recette
+
+Le script `tests/smoke.sh` rejoue le parcours complet en HTTP (connexion → attribution →
+génération du bon → signature → restitution → vérifications). À lancer **uniquement contre
+une instance de test** :
+
+```bash
+BASE_URL=http://localhost/simcity/index.php ADMIN_USER=admin ADMIN_PASS=admin bash tests/smoke.sh
 ```
 
 ---

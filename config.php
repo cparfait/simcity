@@ -6,6 +6,9 @@
 //      ou protégez-le via .htaccess (voir ci-dessous).
 // ============================================================
 
+// ─── Version de l'application ─────────────────────────────────
+define('APP_VERSION', '1.0');
+
 // ─── Connexion MySQL ──────────────────────────────────────────
 define('DB_HOST',    'simcity_db');
 define('DB_NAME',    'simcity_db');

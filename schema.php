@@ -201,22 +201,34 @@ function simcity_apply_schema(PDO $pdo): void
         signed_at      DATETIME NULL,
         signer_name    VARCHAR(200) NULL,
         signature_data MEDIUMTEXT NULL,
+        dsi_signature_data MEDIUMTEXT NULL,
         ip             VARCHAR(45) NULL,
         INDEX idx_bons_agent (agent_id),
         INDEX idx_bons_parent (parent_id)
     ) ENGINE=InnoDB;");
 
+    // ── Tentatives de connexion (anti-brute-force) ───────────
+    $pdo->exec("CREATE TABLE IF NOT EXISTS login_attempts (
+        id           INT AUTO_INCREMENT PRIMARY KEY,
+        username     VARCHAR(100),
+        ip           VARCHAR(45),
+        attempted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_login_user (username, attempted_at),
+        INDEX idx_login_ip   (ip, attempted_at)
+    ) ENGINE=InnoDB;");
+
     // ── Comptes administrateurs ──────────────────────────────
     $pdo->exec("CREATE TABLE IF NOT EXISTS users (
-        id         INT AUTO_INCREMENT PRIMARY KEY,
-        username   VARCHAR(50) UNIQUE,
-        password   VARCHAR(255),
-        first_name VARCHAR(100) NULL,
-        last_name  VARCHAR(100) NULL,
-        email      VARCHAR(150) NULL,
-        active     TINYINT(1) NOT NULL DEFAULT 1,
-        is_admin   TINYINT(1) NOT NULL DEFAULT 0,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        id             INT AUTO_INCREMENT PRIMARY KEY,
+        username       VARCHAR(50) UNIQUE,
+        password       VARCHAR(255),
+        first_name     VARCHAR(100) NULL,
+        last_name      VARCHAR(100) NULL,
+        email          VARCHAR(150) NULL,
+        active         TINYINT(1) NOT NULL DEFAULT 1,
+        is_admin       TINYINT(1) NOT NULL DEFAULT 0,
+        signature_data MEDIUMTEXT NULL,
+        created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB;");
 
     // ── Paramètres ───────────────────────────────────────────
@@ -282,6 +294,16 @@ function simcity_apply_schema(PDO $pdo): void
         $pdo->exec("UPDATE users SET is_admin=1 WHERE username='admin'");
     }
 
+    // users.signature_data (visa DSI apposé sur les bons)
+    if (empty($pdo->query("SHOW COLUMNS FROM users LIKE 'signature_data'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN signature_data MEDIUMTEXT NULL AFTER is_admin");
+    }
+
+    // bons.dsi_signature_data (copie du visa au moment de la génération — immuable)
+    if (empty($pdo->query("SHOW COLUMNS FROM bons LIKE 'dsi_signature_data'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE bons ADD COLUMN dsi_signature_data MEDIUMTEXT NULL AFTER signature_data");
+    }
+
     // ─────────────────────────────────────────────────────────
     // MIGRATION UNIQUE : sign_tokens / signatures → bons
     // Reprend l'historique de l'ancien système. Les tokens copiés
@@ -335,10 +357,17 @@ function simcity_apply_schema(PDO $pdo): void
     // DONNÉES PAR DÉFAUT
     // ─────────────────────────────────────────────────────────
 
-    // Compte admin initial (seulement si la table est vide)
+    // Compte admin initial (seulement si la table est vide) — super-admin d'office
     if ($pdo->query("SELECT COUNT(*) FROM users")->fetchColumn() == 0) {
-        $pdo->prepare("INSERT INTO users (username, password) VALUES ('admin', ?)")
+        $pdo->prepare("INSERT INTO users (username, password, is_admin) VALUES ('admin', ?, 1)")
             ->execute([password_hash('admin', PASSWORD_DEFAULT)]);
+    }
+
+    // Garde-fou : s'il n'existe aucun super-admin (bug des installations neuves
+    // antérieures), promouvoir le compte 'admin' pour ne pas verrouiller
+    // la zone dangereuse et la sauvegarde.
+    if ($pdo->query("SELECT COUNT(*) FROM users WHERE is_admin=1")->fetchColumn() == 0) {
+        $pdo->exec("UPDATE users SET is_admin=1 WHERE username='admin'");
     }
 
     // Paramètres par défaut
@@ -347,6 +376,13 @@ function simcity_apply_schema(PDO $pdo): void
         ['device_stock_alert', '3', "Seuil d'alerte Stock Smartphones (matériels disponibles)"],
         ['pdf_logo_path',      '',  "Logo affiché sur les bons de remise PDF"],
         ['site_url',           '',  "URL publique du site (base des QR codes de signature)"],
+        ['smtp_host',          '',    "Serveur SMTP (envoi des liens de signature)"],
+        ['smtp_port',          '587', "Port SMTP"],
+        ['smtp_secure',        'tls', "Chiffrement SMTP (tls, ssl ou none)"],
+        ['smtp_user',          '',    "Identifiant SMTP"],
+        ['smtp_pass',          '',    "Mot de passe SMTP"],
+        ['smtp_from',          '',    "Adresse e-mail expéditrice"],
+        ['smtp_from_name',     'SimCity — DSI', "Nom de l'expéditeur"],
     ] as [$k, $v, $l]) {
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);
