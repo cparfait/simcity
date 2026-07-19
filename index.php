@@ -372,6 +372,35 @@ function bonSnapshotItems($pdo, $agentId) {
     ];
 }
 
+// Identifiants d'équipements d'un bon ('d3', 'l5'…) depuis son snapshot figé.
+// null = bon migré de l'ancien système, sans contenu enregistré.
+function bonItemIds($b) {
+    if (empty($b['items'])) return null;
+    $it = json_decode($b['items'], true);
+    $ids = [];
+    foreach (($it['devices'] ?? []) as $d) if (!empty($d['device_id'])) $ids[] = 'd' . $d['device_id'];
+    foreach (($it['lines'] ?? []) as $l) if (!empty($l['line_id'])) $ids[] = 'l' . $l['line_id'];
+    return $ids;
+}
+
+// Un bon de remise signé est-il entièrement restitué ? Les restitutions
+// signées se cumulent (plusieurs restitutions partielles peuvent clôturer).
+function bonCycleClosed($pdo, $remise) {
+    $st = $pdo->prepare("SELECT * FROM bons WHERE parent_id=? AND type='restitution' AND status='signed'");
+    $st->execute([(int)$remise['id']]);
+    $restits = $st->fetchAll();
+    if (!$restits) return false;
+    $rIds = bonItemIds($remise);
+    if ($rIds === null) return true;   // bon migré sans snapshot : une restitution signée clôture
+    $returned = [];
+    foreach ($restits as $t) {
+        $ids = bonItemIds($t);
+        if ($ids === null) return true;
+        $returned = array_merge($returned, $ids);
+    }
+    return !array_diff($rIds, $returned);
+}
+
 // Crée un bon en attente de signature (token valable 30 jours).
 // Le visa DSI (signature de l'admin connecté) est copié dans le bon : le
 // document reste immuable même si l'admin change sa signature plus tard.
@@ -1130,23 +1159,9 @@ if (isset($_GET['ajax_agent_details'])) {
     }
     $hasPendingBons = (int)$pdo->query("SELECT COUNT(*) FROM bons WHERE agent_id=$id AND status='pending'")->fetchColumn();
 
-    // Cycle clôturé : la restitution signée couvre tous les équipements de la
-    // remise → il n'y a plus de « bon actuel », la paire vit dans l'historique.
-    $bonItemIdsF = function($b) {
-        if (empty($b['items'])) return null;
-        $it = json_decode($b['items'], true);
-        $ids = [];
-        foreach (($it['devices'] ?? []) as $d) if (!empty($d['device_id'])) $ids[] = 'd' . $d['device_id'];
-        foreach (($it['lines'] ?? []) as $l) if (!empty($l['line_id'])) $ids[] = 'l' . $l['line_id'];
-        return $ids;
-    };
-    $cycleClosed = false;
-    if ($lastRemise && $lastRestit && $lastRestit['status'] === 'signed') {
-        $rIds = $bonItemIdsF($lastRemise);
-        $tIds = $bonItemIdsF($lastRestit);
-        // Bons migrés sans snapshot : une restitution signée clôture le cycle
-        $cycleClosed = ($rIds === null || $tIds === null) ? true : !array_diff($rIds, $tIds);
-    }
+    // Cycle clôturé : les restitutions signées couvrent tous les équipements
+    // de la remise → plus de « bon actuel », la paire vit dans l'historique.
+    $cycleClosed = $lastRemise ? bonCycleClosed($pdo, $lastRemise) : false;
 
     echo "<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:.75rem;'>";
     echo "<div style='display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;'>";
@@ -1164,8 +1179,8 @@ if (isset($_GET['ajax_agent_details'])) {
     // Statut des bons du dernier cycle
     echo "<div style='display:flex;flex-direction:column;gap:4px;font-size:.8rem;'>";
     if ($cycleClosed) {
-        $dt = date('d/m/Y H:i', strtotime($lastRestit['signed_at']));
-        echo "<span style='color:var(--text3);'>📦 Matériel restitué — cycle " . h($lastRemise['numero']) . " clôturé le $dt</span>";
+        $dt = ($lastRestit && $lastRestit['signed_at']) ? ' le ' . date('d/m/Y H:i', strtotime($lastRestit['signed_at'])) : '';
+        echo "<span style='color:var(--text3);'>📦 Matériel restitué — cycle " . h($lastRemise['numero']) . " clôturé$dt</span>";
         echo "<span style='color:var(--text3);font-size:.75rem;'>Les bons signés restent consultables dans l'historique ci-dessous.</span>";
     } else {
         foreach ([['📥 Remise', $lastRemise], ['📤 Restitution', $lastRestit]] as [$lbl, $b]) {
@@ -1224,13 +1239,13 @@ if (isset($_GET['ajax_agent_details'])) {
     }
 
     // ── Restitution : génération avec sélection des équipements ──────────────
-    // Placée en tête de fiche, avec les autres actions sur les bons.
-    $signedRemise = $pdo->prepare("SELECT id, numero FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
-    $signedRemise->execute([$id]); $signedRemise = $signedRemise->fetch();
-    if ($signedRemise && $hasDotation && empty($agt['archived'])) {
+    // Proposée uniquement si la remise du cycle EN COURS est signée et pas
+    // encore entièrement restituée : un cycle clôturé exige d'abord un nouveau
+    // bon de remise signé pour la dotation actuelle.
+    if ($lastRemise && $lastRemise['status'] === 'signed' && !$cycleClosed && $hasDotation && empty($agt['archived'])) {
         echo "<details style='margin-bottom:1.25rem;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:.6rem .9rem;'>
             <summary style='cursor:pointer;font-size:.85rem;color:var(--warning);font-weight:600;'>📤 Générer un bon de restitution — choisir les équipements restitués</summary>
-            <div class='muted' style='font-size:.78rem;margin:.6rem 0;'>Cochez les équipements restitués (restitution partielle possible). Le bon sera lié au bon de remise " . h($signedRemise['numero']) . ". À la signature, les équipements cochés retournent automatiquement en stock.</div>
+            <div class='muted' style='font-size:.78rem;margin:.6rem 0;'>Cochez les équipements restitués (restitution partielle possible). Le bon sera lié au bon de remise " . h($lastRemise['numero']) . ". À la signature, les équipements cochés retournent automatiquement en stock.</div>
             <form method='post' action='index.php' target='_blank' style='padding:0;margin:0;'>
             <input type='hidden' name='_entity' value='bon'>
             <input type='hidden' name='_action' value='generate_restitution'>
@@ -1691,11 +1706,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } elseif ($act === 'generate_restitution') {
                 // Parent : dernier bon de remise signé de l'agent
-                $st = $pdo->prepare("SELECT id FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
+                $st = $pdo->prepare("SELECT * FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
                 $st->execute([$agentId]);
-                $parentId = (int)$st->fetchColumn();
+                $parentBon = $st->fetch();
+                $parentId  = $parentBon ? (int)$parentBon['id'] : 0;
                 if (!$agentId || !$parentId) {
                     flash('error', 'Impossible : aucun bon de remise signé pour cet agent.');
+                } elseif (bonCycleClosed($pdo, $parentBon)) {
+                    // Cycle déjà clôturé : la nouvelle dotation n'a pas fait l'objet
+                    // d'un bon de remise signé, il n'y a rien à restituer formellement.
+                    flash('error', 'Impossible : le bon de remise ' . $parentBon['numero'] . ' est déjà entièrement restitué. Générez et faites signer un bon de remise pour la dotation actuelle avant de créer une restitution.');
                 } else {
                     $full = bonSnapshotItems($pdo, $agentId);
                     if (!empty($d['ret_all'])) {
@@ -1893,7 +1913,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $qaError = "Utilisateur introuvable ou archivé.";
             } elseif (!empty($d['line_id'])) {
                 $lid = (int)$d['line_id'];
-                $line = $pdo->query("SELECT id, device_id FROM mobile_lines WHERE id=$lid AND archived=0 AND agent_id IS NULL AND sim_vierge=0")->fetch();
+                $line = $pdo->query("SELECT id, device_id, COALESCE(personal_device,0) as personal_device FROM mobile_lines WHERE id=$lid AND archived=0 AND agent_id IS NULL AND sim_vierge=0")->fetch();
                 if (!$line) { $qaError = "Cette ligne n'est plus disponible en stock."; }
                 else {
                     $pdo->prepare("UPDATE mobile_lines SET agent_id=?, service_id=?, status='Active' WHERE id=?")->execute([$agentId, $agtRow['service_id'], $lid]);
@@ -1902,6 +1922,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($line['device_id']) {
                         $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agentId, $agtRow['service_id'], $line['device_id']]);
                         logHistory($pdo, 'device', $line['device_id'], "Déployé et associé à la ligne", $agentId);
+                    } elseif (empty($line['personal_device'])) {
+                        // La ligne n'a pas de mobile : lier au mobile de l'agent
+                        // qui n'est encore associé à aucune ligne active
+                        $st = $pdo->prepare("SELECT d.id, d.imei FROM devices d WHERE d.agent_id=? AND d.archived=0
+                            AND d.id NOT IN (SELECT device_id FROM mobile_lines WHERE device_id IS NOT NULL AND archived=0)
+                            ORDER BY d.id LIMIT 1");
+                        $st->execute([$agentId]);
+                        if ($freeDev = $st->fetch()) {
+                            $pdo->prepare("UPDATE mobile_lines SET device_id=? WHERE id=?")->execute([(int)$freeDev['id'], $lid]);
+                            $pdo->prepare("UPDATE devices SET status='Deployed' WHERE id=? AND status='Stock'")->execute([(int)$freeDev['id']]);
+                            logHistory($pdo, 'line', $lid, "Associée automatiquement au mobile en dotation (IMEI {$freeDev['imei']})", $agentId);
+                        }
                     }
                     cancelPendingBons($pdo, $agentId, "Nouvelle ligne attribuée");
                 }
@@ -1913,6 +1945,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agentId, $agtRow['service_id'], $did]);
                     $agtName = getAgentName($pdo, $agentId);
                     logHistory($pdo, 'device', $did, "Matériel affecté à $agtName", $agentId);
+                    // L'agent a une ligne « en attente de mobile » : l'associer à ce matériel
+                    $st = $pdo->prepare("SELECT id, phone_number FROM mobile_lines WHERE agent_id=? AND archived=0 AND sim_vierge=0
+                        AND COALESCE(personal_device,0)=0 AND device_id IS NULL ORDER BY id LIMIT 1");
+                    $st->execute([$agentId]);
+                    if ($freeLine = $st->fetch()) {
+                        $pdo->prepare("UPDATE mobile_lines SET device_id=? WHERE id=?")->execute([$did, (int)$freeLine['id']]);
+                        logHistory($pdo, 'device', $did, "Associé automatiquement à la ligne " . formatPhone($freeLine['phone_number']), $agentId);
+                    }
                     cancelPendingBons($pdo, $agentId, "Nouveau matériel affecté");
                 }
             } else {
