@@ -144,41 +144,25 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
             } catch (Exception $e) { $pdo->rollBack(); }
         }
         if ($justSigned) {
-        ?><!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        ?><!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Signature enregistrée – SimCity</title>
         <style>
         *{box-sizing:border-box;margin:0;padding:0}
-        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;background:#f0fdf4;display:flex;align-items:center;justify-content:center;}
-        .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:1rem;}
-        .box{text-align:center;padding:2.5rem 2rem;background:#fff;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.15);max-width:420px;width:100%;}
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;background:#f0fdf4;display:flex;align-items:center;justify-content:center;padding:1rem;}
+        .box{text-align:center;padding:2.5rem 2rem;background:#fff;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,.12);max-width:420px;width:100%;}
         .check{font-size:4rem;margin-bottom:.5rem;}
         h2{color:#10b981;font-size:1.4rem;margin-bottom:.75rem;}
         p{color:#555;line-height:1.5;}
         .ts{font-size:.8rem;color:#999;margin-top:.75rem;}
-        .btn{margin-top:1.75rem;padding:.75rem 2.5rem;background:#10b981;color:#fff;border:none;border-radius:10px;font-size:1rem;cursor:pointer;font-weight:600;letter-spacing:.02em;box-shadow:0 4px 12px rgba(16,185,129,.3);}
-        .btn:active{transform:scale(.97);}
-        .closed-msg{display:none;flex-direction:column;align-items:center;gap:.5rem;color:#64748b;font-size:1rem;}
+        .close-hint{margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid #f1f5f9;color:#94a3b8;font-size:.9rem;}
         </style></head>
         <body>
-        <div class="overlay" id="sig-overlay">
           <div class="box">
             <div class="check">✅</div>
             <h2>Signature enregistrée</h2>
             <p>Merci <strong><?=htmlspecialchars($signerName)?></strong>.<br>Votre signature a bien été prise en compte.</p>
             <p class="ts">Signé le <?=date('d/m/Y à H:i')?></p>
-            <button class="btn" onclick="closeSigModal()">Fermer</button>
+            <p class="close-hint">👍 Vous pouvez fermer cet onglet.</p>
           </div>
-        </div>
-        <div class="closed-msg" id="closed-msg">
-          <span style="font-size:2rem;">👍</span>
-          <p>Vous pouvez fermer cet onglet.</p>
-        </div>
-        <script>
-        function closeSigModal() {
-          document.getElementById('sig-overlay').style.display = 'none';
-          var m = document.getElementById('closed-msg');
-          m.style.display = 'flex';
-        }
-        </script>
         </body></html>
         <?php exit;
         }
@@ -754,6 +738,28 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
                 <button type="submit">📄 Générer un nouveau bon</button>
             </form>
             <?php endif; ?>
+            <?php
+            // Raccourci restitution : remise signée, pas de restitution en cours, dotation encore en place
+            $restitutionPossible = $bonRemise && $bonRemise['status'] === 'signed' && !$bonRestitution && $agt && empty($agt['archived']);
+            $canOfferRestitution = $restitutionPossible;
+            if ($canOfferRestitution) {
+                $dotationNow = bonSnapshotItems($pdo, $agentId);
+                $canOfferRestitution = !empty($dotationNow['devices']) || !empty($dotationNow['lines']);
+            }
+            ?>
+            <?php if($restitutionPossible && !$canOfferRestitution): ?>
+            <span style="font-size:.78rem;color:#94a3b8;" title="Les équipements de cet agent ne lui sont plus attribués (retour en stock ou réattribution manuelle) — un bon de restitution serait vide.">ℹ️ Rien à restituer — plus d'équipement en dotation</span>
+            <?php endif; ?>
+            <?php if($canOfferRestitution): ?>
+            <form method="post" action="index.php" onsubmit="return confirm('Générer le bon de restitution pour TOUTE la dotation actuelle ?\n(Pour une restitution partielle, passez par la fiche agent.)')">
+                <?=csrf_field()?>
+                <input type="hidden" name="_entity" value="bon">
+                <input type="hidden" name="_action" value="generate_restitution">
+                <input type="hidden" name="ret_all" value="1">
+                <input type="hidden" name="agent_id" value="<?=$agentId?>">
+                <button type="submit">📤 Générer le bon de restitution</button>
+            </form>
+            <?php endif; ?>
             <button type="button" class="tb-primary" onclick="window.print()">🖨️ Imprimer</button>
         </div>
     </div>
@@ -1100,6 +1106,10 @@ if (isset($_GET['ajax_agent_details'])) {
     $devices = $pdo->query("SELECT DISTINCT d.imei, m.brand, m.name, m.category, d.status FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
     // Lignes BYOD (téléphone perso, pas de device dans le parc)
     $byodLines = array_filter($lines, fn($l) => !empty($l['personal_device']));
+
+    // Stock disponible pour l'attribution rapide depuis la fiche
+    $stockLines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, p.name as plan_name, COALESCE(l.esim,0) as esim FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.archived=0 AND l.agent_id IS NULL AND l.sim_vierge=0 ORDER BY l.phone_number")->fetchAll();
+    $stockDevices = $pdo->query("SELECT d.id, d.imei, d.serial_number, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE d.archived=0 AND d.agent_id IS NULL AND d.status='Stock' AND d.id NOT IN (SELECT device_id FROM mobile_lines WHERE device_id IS NOT NULL AND archived=0) ORDER BY m.brand, m.name, d.id")->fetchAll();
     
     // NOUVEAU : Récupération des pièces jointes
     $att = $pdo->query("SELECT * FROM attachments WHERE entity_type='agent' AND entity_id=$id ORDER BY uploaded_at DESC")->fetchAll();
@@ -1120,6 +1130,24 @@ if (isset($_GET['ajax_agent_details'])) {
     }
     $hasPendingBons = (int)$pdo->query("SELECT COUNT(*) FROM bons WHERE agent_id=$id AND status='pending'")->fetchColumn();
 
+    // Cycle clôturé : la restitution signée couvre tous les équipements de la
+    // remise → il n'y a plus de « bon actuel », la paire vit dans l'historique.
+    $bonItemIdsF = function($b) {
+        if (empty($b['items'])) return null;
+        $it = json_decode($b['items'], true);
+        $ids = [];
+        foreach (($it['devices'] ?? []) as $d) if (!empty($d['device_id'])) $ids[] = 'd' . $d['device_id'];
+        foreach (($it['lines'] ?? []) as $l) if (!empty($l['line_id'])) $ids[] = 'l' . $l['line_id'];
+        return $ids;
+    };
+    $cycleClosed = false;
+    if ($lastRemise && $lastRestit && $lastRestit['status'] === 'signed') {
+        $rIds = $bonItemIdsF($lastRemise);
+        $tIds = $bonItemIdsF($lastRestit);
+        // Bons migrés sans snapshot : une restitution signée clôture le cycle
+        $cycleClosed = ($rIds === null || $tIds === null) ? true : !array_diff($rIds, $tIds);
+    }
+
     echo "<div style='display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem; flex-wrap:wrap; gap:.75rem;'>";
     echo "<div style='display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;'>";
     echo "<form method='post' action='index.php' target='_blank' style='display:inline;padding:0;margin:0;'>
@@ -1129,22 +1157,28 @@ if (isset($_GET['ajax_agent_details'])) {
         <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
         <button type='submit' class='btn-primary' style='display:inline-flex; align-items:center; gap:5px; box-shadow: 0 4px 10px rgba(67, 97, 238, 0.3);'>📄 Générer le bon de remise</button>
     </form>";
-    if ($lastRemise) {
+    if ($lastRemise && !$cycleClosed) {
         echo "<a href='?page=pdf_bon&bon_id={$lastRemise['id']}' target='_blank' class='btn-secondary' style='text-decoration:none;display:inline-flex;align-items:center;gap:5px;'>🖨️ Voir le bon actuel</a>";
     }
     echo "</div>";
     // Statut des bons du dernier cycle
     echo "<div style='display:flex;flex-direction:column;gap:4px;font-size:.8rem;'>";
-    foreach ([['📥 Remise', $lastRemise], ['📤 Restitution', $lastRestit]] as [$lbl, $b]) {
-        if ($b && $b['status'] === 'signed') {
-            $dt = date('d/m/Y H:i', strtotime($b['signed_at']));
-            echo "<span style='color:var(--success);'>✅ $lbl " . h($b['numero']) . " signé — " . h($b['signer_name']) . " le $dt</span>";
-        } elseif ($b && $b['status'] === 'pending' && (!$b['expires_at'] || strtotime($b['expires_at']) >= time())) {
-            echo "<span style='color:var(--warning);'>⏳ $lbl " . h($b['numero']) . " — en attente de signature</span>";
-        } elseif ($b) {
-            echo "<span style='color:var(--text3);'>⏰ $lbl " . h($b['numero']) . " — lien de signature expiré</span>";
-        } else {
-            echo "<span style='color:var(--text3);'>— $lbl : aucun bon</span>";
+    if ($cycleClosed) {
+        $dt = date('d/m/Y H:i', strtotime($lastRestit['signed_at']));
+        echo "<span style='color:var(--text3);'>📦 Matériel restitué — cycle " . h($lastRemise['numero']) . " clôturé le $dt</span>";
+        echo "<span style='color:var(--text3);font-size:.75rem;'>Les bons signés restent consultables dans l'historique ci-dessous.</span>";
+    } else {
+        foreach ([['📥 Remise', $lastRemise], ['📤 Restitution', $lastRestit]] as [$lbl, $b]) {
+            if ($b && $b['status'] === 'signed') {
+                $dt = date('d/m/Y H:i', strtotime($b['signed_at']));
+                echo "<span style='color:var(--success);'>✅ $lbl " . h($b['numero']) . " signé — " . h($b['signer_name']) . " le $dt</span>";
+            } elseif ($b && $b['status'] === 'pending' && (!$b['expires_at'] || strtotime($b['expires_at']) >= time())) {
+                echo "<span style='color:var(--warning);'>⏳ $lbl " . h($b['numero']) . " — en attente de signature</span>";
+            } elseif ($b) {
+                echo "<span style='color:var(--text3);'>⏰ $lbl " . h($b['numero']) . " — lien de signature expiré</span>";
+            } else {
+                echo "<span style='color:var(--text3);'>— $lbl : aucun bon</span>";
+            }
         }
     }
     echo "</div>";
@@ -1175,20 +1209,48 @@ if (isset($_GET['ajax_agent_details'])) {
                 <input type='hidden' name='agent_id' value='$id'>
                 <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>";
         foreach ($dotation['devices'] as $it) {
-            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.85rem;cursor:pointer;'>
-                <input type='checkbox' name='ret_devices[]' value='" . (int)$it['device_id'] . "' checked>
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.85rem;cursor:pointer;text-transform:none;font-weight:400;color:var(--text);'>
+                <input type='checkbox' name='ret_devices[]' value='" . (int)$it['device_id'] . "' checked style='width:15px;height:15px;accent-color:var(--primary);cursor:pointer;flex-shrink:0;'>
                 📱 " . h(trim(($it['brand'] ?? '') . ' ' . ($it['name'] ?? ''))) . " <span class='muted' style='font-size:.72rem;'>IMEI " . h($it['imei']) . "</span></label>";
         }
         foreach ($dotation['lines'] as $it) {
             $tag = !empty($it['esim']) ? ' (eSIM)' : (!empty($it['personal_device']) ? ' (BYOD)' : '');
-            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.85rem;cursor:pointer;'>
-                <input type='checkbox' name='ret_lines[]' value='" . (int)$it['line_id'] . "' checked>
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.85rem;cursor:pointer;text-transform:none;font-weight:400;color:var(--text);'>
+                <input type='checkbox' name='ret_lines[]' value='" . (int)$it['line_id'] . "' checked style='width:15px;height:15px;accent-color:var(--primary);cursor:pointer;flex-shrink:0;'>
                 📞 " . formatPhone($it['phone_number']) . "$tag <span class='muted' style='font-size:.72rem;'>" . h($it['plan_name'] ?: '') . "</span></label>";
         }
         echo "<button type='submit' class='btn-secondary' style='margin-top:.4rem;font-size:.82rem;'>📄 Générer le bon avec la sélection</button>
             </form></details>";
     }
-          
+
+    // ── Restitution : génération avec sélection des équipements ──────────────
+    // Placée en tête de fiche, avec les autres actions sur les bons.
+    $signedRemise = $pdo->prepare("SELECT id, numero FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
+    $signedRemise->execute([$id]); $signedRemise = $signedRemise->fetch();
+    if ($signedRemise && $hasDotation && empty($agt['archived'])) {
+        echo "<details style='margin-bottom:1.25rem;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:.6rem .9rem;'>
+            <summary style='cursor:pointer;font-size:.85rem;color:var(--warning);font-weight:600;'>📤 Générer un bon de restitution — choisir les équipements restitués</summary>
+            <div class='muted' style='font-size:.78rem;margin:.6rem 0;'>Cochez les équipements restitués (restitution partielle possible). Le bon sera lié au bon de remise " . h($signedRemise['numero']) . ". À la signature, les équipements cochés retournent automatiquement en stock.</div>
+            <form method='post' action='index.php' target='_blank' style='padding:0;margin:0;'>
+            <input type='hidden' name='_entity' value='bon'>
+            <input type='hidden' name='_action' value='generate_restitution'>
+            <input type='hidden' name='agent_id' value='$id'>
+            <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>";
+        foreach ($dotation['devices'] as $it) {
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem;font-size:.88rem;cursor:pointer;text-transform:none;font-weight:400;color:var(--text);'>
+                <input type='checkbox' name='ret_devices[]' value='" . (int)$it['device_id'] . "' checked style='width:15px;height:15px;accent-color:var(--warning);cursor:pointer;flex-shrink:0;'>
+                📱 " . h(trim(($it['brand'] ?? '') . ' ' . ($it['name'] ?? ''))) . " <span class='muted' style='font-size:.75rem;'>IMEI " . h($it['imei']) . "</span></label>";
+        }
+        foreach ($dotation['lines'] as $it) {
+            $tag = !empty($it['esim']) ? ' (eSIM)' : (!empty($it['personal_device']) ? ' (BYOD)' : '');
+            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem;font-size:.88rem;cursor:pointer;text-transform:none;font-weight:400;color:var(--text);'>
+                <input type='checkbox' name='ret_lines[]' value='" . (int)$it['line_id'] . "' checked style='width:15px;height:15px;accent-color:var(--warning);cursor:pointer;flex-shrink:0;'>
+                📞 " . formatPhone($it['phone_number']) . "$tag <span class='muted' style='font-size:.75rem;'>" . h($it['plan_name'] ?: '') . "</span></label>";
+        }
+        echo "<button type='submit' class='btn-secondary' style='margin-top:.5rem;color:var(--warning);border-color:rgba(245,158,11,.4);font-weight:600;'>📤 Générer le bon de restitution</button>
+        </form></details>";
+    }
+
     echo "<div style='display:flex; gap:2rem; flex-wrap:wrap;'>";
     
     // Colonne 1 : Infos & Parc actuel
@@ -1207,7 +1269,26 @@ if (isset($_GET['ajax_agent_details'])) {
         }
         echo "<div style='background:var(--card2); border:1px solid var(--border); padding:10px; border-radius:8px; margin-bottom:10px;'><strong style='font-size:1.1rem;'>".formatPhone($l['phone_number'])."</strong> ".statusBadge($l['status']).$byodBadge.$esimBadge."<br><span class='muted'>".h($l['plan_name']?:'Forfait inconnu')." (SIM: ".h($l['iccid']).")</span>".$esimExtra."</div>";
     }
-    
+    // Attribution rapide d'une ligne du stock
+    if (empty($agt['archived'])) {
+        if ($stockLines) {
+            echo "<form onsubmit='quickAssign(this); return false;' style='display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;padding:0;'>
+                <input type='hidden' name='_entity' value='quick_assign'>
+                <input type='hidden' name='_ajax' value='1'>
+                <input type='hidden' name='agent_id' value='$id'>
+                <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
+                <select name='line_id' required style='flex:1;min-width:0;font-size:.85rem;'>
+                    <option value=''>➕ Attribuer une ligne du stock (" . count($stockLines) . " disponible" . (count($stockLines) > 1 ? 's' : '') . ")…</option>";
+            foreach ($stockLines as $sl) {
+                $lbl = formatPhone($sl['phone_number']) . ($sl['esim'] ? ' (eSIM)' : '') . ($sl['plan_name'] ? ' — ' . $sl['plan_name'] : '') . ' — SIM ' . $sl['iccid'];
+                echo "<option value='{$sl['id']}'>" . h($lbl) . "</option>";
+            }
+            echo "</select><button type='submit' class='btn-primary' style='padding:.45rem .8rem;font-size:.82rem;white-space:nowrap;'>Attribuer</button></form>";
+        } else {
+            echo "<div class='muted' style='font-size:.75rem;margin-bottom:1rem;'>Aucune ligne disponible en stock pour attribution.</div>";
+        }
+    }
+
     echo "<h4 style='color:var(--primary); margin-bottom:10px; margin-top:1.5rem; border-bottom:1px solid var(--border); padding-bottom:5px;'>📱 Matériels attribués</h4>";
     $hasAnything = $devices || $byodLines;
     if(!$hasAnything) echo "<div class='muted'>Aucun matériel.</div>";
@@ -1217,6 +1298,26 @@ if (isset($_GET['ajax_agent_details'])) {
                 <strong style='color:var(--info);'>📲 Téléphone personnel (BYOD)</strong><br>
                 <span class='muted'>Ligne : ".formatPhone($l['phone_number'])." — l'agent utilise son propre appareil</span>
               </div>";
+    }
+    // Attribution rapide d'un matériel du stock
+    if (empty($agt['archived'])) {
+        if ($stockDevices) {
+            echo "<form onsubmit='quickAssign(this); return false;' style='display:flex;gap:.5rem;align-items:center;margin-bottom:1rem;padding:0;'>
+                <input type='hidden' name='_entity' value='quick_assign'>
+                <input type='hidden' name='_ajax' value='1'>
+                <input type='hidden' name='agent_id' value='$id'>
+                <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
+                <select name='device_id' required style='flex:1;min-width:0;font-size:.85rem;'>
+                    <option value=''>➕ Attribuer un matériel du stock (" . count($stockDevices) . " disponible" . (count($stockDevices) > 1 ? 's' : '') . ")…</option>";
+            foreach ($stockDevices as $sd) {
+                $lbl = trim(($sd['brand'] ?? '') . ' ' . ($sd['name'] ?? '')) ?: 'Modèle inconnu';
+                $lbl .= ' — ' . ($sd['serial_number'] ? 'S/N ' . $sd['serial_number'] : 'IMEI ' . $sd['imei']);
+                echo "<option value='{$sd['id']}'>" . h($lbl) . "</option>";
+            }
+            echo "</select><button type='submit' class='btn-primary' style='padding:.45rem .8rem;font-size:.82rem;white-space:nowrap;'>Attribuer</button></form>";
+        } else {
+            echo "<div class='muted' style='font-size:.75rem;margin-bottom:1rem;'>Aucun matériel disponible en stock pour attribution.</div>";
+        }
     }
     echo "</div>";
 
@@ -1234,43 +1335,23 @@ if (isset($_GET['ajax_agent_details'])) {
     echo "<h4 style='color:var(--text); margin-bottom:1rem;'>🕒 Journal des affectations</h4>";
     if(!$history) echo "<div class='muted'>Aucun historique pour cet utilisateur.</div>";
     else {
+        // Les entrées au-delà des 10 dernières sont masquées (bouton « Afficher plus »)
+        $histShown = 10; $histTotal = count($history);
         echo "<ul style='list-style:none; padding:0; margin:0;'>";
-        foreach($history as $h) {
+        foreach($history as $hi => $h) {
             $icon = $h['entity_type'] === 'line' ? '📞 Ligne' : ($h['entity_type'] === 'device' ? '📱 Matériel' : '👤 Utilisateur');
             $desc = trim($h['action_desc']); $agtName = trim($h['first_name'].' '.$h['last_name']);
             if (preg_match('/(attribué[e]? à|affecté[e]? à)\s*$/', $desc)) { $desc .= ' ' . ($agtName ?: 'Utilisateur inconnu'); }
-            echo "<li style='padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid var(--border)'>";
+            $hiddenStyle = $hi >= $histShown ? 'display:none;' : '';
+            $hiddenClass = $hi >= $histShown ? " class='agent-hist-more'" : '';
+            echo "<li$hiddenClass style='{$hiddenStyle}padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid var(--border)'>";
             echo "<strong style='color:var(--primary); font-size:.8rem;'>$icon - {$h['dt']}</strong><br><span style='font-size:.9rem;'>{$desc}</span><br><span style='font-size:.7rem; color:var(--text3);'>Par : " . h($h['author']?:'Système') . "</span></li>";
         } echo "</ul>";
+        if ($histTotal > $histShown) {
+            echo "<button type='button' class='btn-secondary' style='font-size:.78rem;padding:.4rem .9rem;margin-top:.25rem;'
+                onclick=\"this.closest('div').querySelectorAll('.agent-hist-more').forEach(function(el){el.style.display='';}); this.remove();\">⏬ Afficher les " . ($histTotal - $histShown) . " entrées plus anciennes</button>";
+        }
     } echo "</div></div>";
-
-    // ── Restitution : génération avec sélection des équipements ──────────────
-    // ($dotation et $hasDotation calculés plus haut, avant le bloc remise partielle)
-    $signedRemise = $pdo->prepare("SELECT id, numero FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
-    $signedRemise->execute([$id]); $signedRemise = $signedRemise->fetch();
-    if ($signedRemise && $hasDotation && empty($agt['archived'])) {
-        echo "<div style='margin-top:1.5rem;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:10px;padding:1rem;'>";
-        echo "<h4 style='color:var(--warning); margin-bottom:.75rem;'>📤 Générer un bon de restitution</h4>";
-        echo "<div class='muted' style='font-size:.8rem;margin-bottom:.75rem;'>Cochez les équipements restitués (restitution partielle possible). Le bon sera lié au bon de remise " . h($signedRemise['numero']) . ". À la signature, les équipements cochés retournent automatiquement en stock.</div>";
-        echo "<form method='post' action='index.php' target='_blank' style='padding:0;margin:0;'>
-            <input type='hidden' name='_entity' value='bon'>
-            <input type='hidden' name='_action' value='generate_restitution'>
-            <input type='hidden' name='agent_id' value='$id'>
-            <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>";
-        foreach ($dotation['devices'] as $it) {
-            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem;font-size:.88rem;cursor:pointer;'>
-                <input type='checkbox' name='ret_devices[]' value='" . (int)$it['device_id'] . "' checked>
-                📱 " . h(trim(($it['brand'] ?? '') . ' ' . ($it['name'] ?? ''))) . " <span class='muted' style='font-size:.75rem;'>IMEI " . h($it['imei']) . "</span></label>";
-        }
-        foreach ($dotation['lines'] as $it) {
-            $tag = !empty($it['esim']) ? ' (eSIM)' : (!empty($it['personal_device']) ? ' (BYOD)' : '');
-            echo "<label style='display:flex;align-items:center;gap:.5rem;margin-bottom:.4rem;font-size:.88rem;cursor:pointer;'>
-                <input type='checkbox' name='ret_lines[]' value='" . (int)$it['line_id'] . "' checked>
-                📞 " . formatPhone($it['phone_number']) . "$tag <span class='muted' style='font-size:.75rem;'>" . h($it['plan_name'] ?: '') . "</span></label>";
-        }
-        echo "<button type='submit' class='btn-secondary' style='margin-top:.5rem;color:var(--warning);border-color:rgba(245,158,11,.4);font-weight:600;'>📤 Générer le bon de restitution</button>
-        </form></div>";
-    }
 
     // ── Historique des bons (appariement structurel par parent_id) ────────────
     $bonsAgent = $pdo->prepare("SELECT *, DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') as created_fmt, DATE_FORMAT(signed_at, '%d/%m/%Y %H:%i') as signed_fmt FROM bons WHERE agent_id=? ORDER BY created_at DESC, id DESC LIMIT 40");
@@ -1300,9 +1381,13 @@ if (isset($_GET['ajax_agent_details'])) {
 
         $pairColors = ['rgba(16,185,129,.06)', 'rgba(99,102,241,.05)', 'rgba(245,158,11,.05)', 'rgba(236,72,153,.05)'];
         $now = time();
+        // Les cycles au-delà des 4 derniers sont masqués (bouton « Afficher plus »)
+        $pairsShown = 4;
         foreach ($pairs as $pi => $pair):
             $bg = $pairColors[$pi % count($pairColors)];
-            echo "<div style='background:$bg;border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:.75rem;'>";
+            $hiddenStyle = $pi >= $pairsShown ? 'display:none;' : '';
+            $hiddenClass = $pi >= $pairsShown ? " class='agent-bons-more'" : '';
+            echo "<div$hiddenClass style='{$hiddenStyle}background:$bg;border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:.75rem;'>";
             foreach (['remise' => ['📥','var(--success)','Bon de Remise'], 'restitution' => ['📤','var(--warning)','Bon de Restitution']] as $type => [$icon, $color, $label]):
                 $b = $pair[$type];
                 if (!$b) continue;
@@ -1343,6 +1428,10 @@ if (isset($_GET['ajax_agent_details'])) {
             endforeach;
             echo "</div>";
         endforeach;
+        if (count($pairs) > $pairsShown) {
+            echo "<button type='button' class='btn-secondary' style='font-size:.78rem;padding:.4rem .9rem;'
+                onclick=\"this.closest('div').querySelectorAll('.agent-bons-more').forEach(function(el){el.style.display='';}); this.remove();\">⏬ Afficher les " . (count($pairs) - $pairsShown) . " cycles précédents</button>";
+        }
         echo "</div>";
     }
     exit;
@@ -1454,14 +1543,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             flash('success', 'Paramètres enregistrés.');
         } elseif ($ent === 'admin_signature') {
-            // Signature manuscrite de l'admin connecté (visa DSI sur les bons)
-            $sig = $d['signature_data'] ?? '';
-            if (!empty($d['delete_signature'])) {
-                $pdo->prepare("UPDATE users SET signature_data=NULL WHERE id=?")->execute([(int)$_SESSION['user_id']]);
+            // Signature manuscrite (visa DSI) — une par compte admin.
+            // Chacun gère la sienne ; un super-admin peut gérer celles des autres.
+            $sig      = $d['signature_data'] ?? '';
+            $targetId = (int)($d['_id'] ?? 0) ?: (int)$_SESSION['user_id'];
+            if ($targetId !== (int)$_SESSION['user_id'] && empty($_SESSION['is_admin'])) {
+                flash('error', "Seul un super-administrateur peut modifier la signature d'un autre compte.");
+            } elseif (!empty($d['delete_signature'])) {
+                $pdo->prepare("UPDATE users SET signature_data=NULL WHERE id=?")->execute([$targetId]);
                 flash('success', 'Signature supprimée.');
             } elseif (strpos($sig, 'data:image/png;base64,') === 0) {
-                $pdo->prepare("UPDATE users SET signature_data=? WHERE id=?")->execute([$sig, (int)$_SESSION['user_id']]);
-                flash('success', 'Signature enregistrée — elle sera apposée en visa DSI sur les prochains bons que vous générerez.');
+                $pdo->prepare("UPDATE users SET signature_data=? WHERE id=?")->execute([$sig, $targetId]);
+                flash('success', 'Signature enregistrée — elle sera apposée en visa DSI sur les prochains bons générés par ce compte.');
             } else {
                 flash('error', "Signature invalide — dessinez dans le cadre avant d'enregistrer.");
             }
@@ -1529,6 +1622,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $pdo->commit();
                         header('Location: index.php?page=pdf_bon&agent_id=' . $agentId); exit;
                     }
+                    // ── Couverture existante : un équipement déjà listé sur un bon de remise
+                    // SIGNÉ (et non restitué depuis) est exclu du nouveau bon. On rejoue les
+                    // bons signés dans l'ordre chronologique : une remise couvre l'équipement,
+                    // une restitution signée lève la couverture.
+                    $coverage = [];
+                    $actifs = $pdo->prepare("SELECT numero, type, items FROM bons WHERE agent_id=? AND status='signed' ORDER BY signed_at ASC, id ASC");
+                    $actifs->execute([$agentId]);
+                    foreach ($actifs->fetchAll() as $ab) {
+                        $abItems = $ab['items'] ? json_decode($ab['items'], true) : null;
+                        if ($abItems === null) continue;
+                        foreach (['devices' => ['d', 'device_id'], 'lines' => ['l', 'line_id']] as $grp => [$prefix, $idk]) {
+                            foreach (($abItems[$grp] ?? []) as $it) {
+                                if (empty($it[$idk])) continue;
+                                $key = $prefix . (int)$it[$idk];
+                                if ($ab['type'] === 'remise') {
+                                    $coverage[$key] = ['json' => json_encode($it, JSON_UNESCAPED_UNICODE), 'numero' => $ab['numero']];
+                                } else {
+                                    unset($coverage[$key]);
+                                }
+                            }
+                        }
+                    }
+                    // Exclure les items dont le contenu est strictement identique à la couverture
+                    // (un contenu qui a changé — ex. nouvelle SIM — justifie un nouveau bon)
+                    $excluded = 0; $coveredBy = [];
+                    foreach (['devices' => ['d', 'device_id'], 'lines' => ['l', 'line_id']] as $grp => [$prefix, $idk]) {
+                        $keep = [];
+                        foreach ($items[$grp] as $it) {
+                            $key = $prefix . (int)($it[$idk] ?? 0);
+                            if (isset($coverage[$key]) && $coverage[$key]['json'] === json_encode($it, JSON_UNESCAPED_UNICODE)) {
+                                $excluded++;
+                                $coveredBy[$coverage[$key]['numero']] = true;
+                            } else {
+                                $keep[] = $it;
+                            }
+                        }
+                        $items[$grp] = $keep;
+                    }
+                    if (empty($items['devices']) && empty($items['lines'])) {
+                        $nums = implode(', ', array_keys($coveredBy));
+                        flash('success', "Toute la dotation est déjà couverte par le(s) bon(s) signé(s) $nums — aucun nouveau bon nécessaire.");
+                        $pdo->commit();
+                        $st = $pdo->prepare("SELECT id FROM bons WHERE agent_id=? AND type='remise' AND status='signed' ORDER BY signed_at DESC, id DESC LIMIT 1");
+                        $st->execute([$agentId]);
+                        $lastId = (int)$st->fetchColumn();
+                        header('Location: index.php?page=pdf_bon&' . ($lastId ? 'bon_id=' . $lastId : 'agent_id=' . $agentId)); exit;
+                    }
+                    if ($excluded > 0) {
+                        flash('success', "$excluded équipement(s) déjà couvert(s) par un bon signé (" . implode(', ', array_keys($coveredBy)) . ") — le nouveau bon ne liste que le reste.");
+                    }
                     $itemsJson = json_encode($items, JSON_UNESCAPED_UNICODE);
                     // Un bon en attente identique à la dotation actuelle ? On le réutilise.
                     $st = $pdo->prepare("SELECT id, items FROM bons WHERE agent_id=? AND type='remise' AND status='pending' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC, id DESC LIMIT 1");
@@ -1554,14 +1697,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!$agentId || !$parentId) {
                     flash('error', 'Impossible : aucun bon de remise signé pour cet agent.');
                 } else {
-                    $full    = bonSnapshotItems($pdo, $agentId);
-                    $selDev  = array_map('intval', (array)($d['ret_devices'] ?? []));
-                    $selLine = array_map('intval', (array)($d['ret_lines'] ?? []));
-                    $items = [
-                        'agent'   => $full['agent'],
-                        'devices' => array_values(array_filter($full['devices'], fn($x) => in_array((int)$x['device_id'], $selDev, true))),
-                        'lines'   => array_values(array_filter($full['lines'],   fn($x) => in_array((int)$x['line_id'],   $selLine, true))),
-                    ];
+                    $full = bonSnapshotItems($pdo, $agentId);
+                    if (!empty($d['ret_all'])) {
+                        // Restitution complète (raccourci depuis la page du bon)
+                        $items = $full;
+                    } else {
+                        $selDev  = array_map('intval', (array)($d['ret_devices'] ?? []));
+                        $selLine = array_map('intval', (array)($d['ret_lines'] ?? []));
+                        $items = [
+                            'agent'   => $full['agent'],
+                            'devices' => array_values(array_filter($full['devices'], fn($x) => in_array((int)$x['device_id'], $selDev, true))),
+                            'lines'   => array_values(array_filter($full['lines'],   fn($x) => in_array((int)$x['line_id'],   $selLine, true))),
+                        ];
+                    }
                     if (empty($items['devices']) && empty($items['lines'])) {
                         flash('error', 'Sélectionnez au moins un équipement à restituer.');
                     } else {
@@ -1736,6 +1884,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE agents SET archived=0 WHERE id=?")->execute([$id]);
                 logHistory($pdo, 'agent', $id, "Agent restauré (retour dans la société)", $id);
             }
+        } elseif ($ent === 'quick_assign') {
+            // Attribution rapide depuis la fiche utilisateur : ligne ou matériel pris dans le stock
+            $qaError = null;
+            $agentId = (int)($d['agent_id'] ?? 0);
+            $agtRow = $pdo->query("SELECT id, service_id, archived FROM agents WHERE id=$agentId")->fetch();
+            if (!$agtRow || $agtRow['archived']) {
+                $qaError = "Utilisateur introuvable ou archivé.";
+            } elseif (!empty($d['line_id'])) {
+                $lid = (int)$d['line_id'];
+                $line = $pdo->query("SELECT id, device_id FROM mobile_lines WHERE id=$lid AND archived=0 AND agent_id IS NULL AND sim_vierge=0")->fetch();
+                if (!$line) { $qaError = "Cette ligne n'est plus disponible en stock."; }
+                else {
+                    $pdo->prepare("UPDATE mobile_lines SET agent_id=?, service_id=?, status='Active' WHERE id=?")->execute([$agentId, $agtRow['service_id'], $lid]);
+                    $agtName = getAgentName($pdo, $agentId);
+                    logHistory($pdo, 'line', $lid, "Ligne/SIM attribuée à $agtName", $agentId);
+                    if ($line['device_id']) {
+                        $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agentId, $agtRow['service_id'], $line['device_id']]);
+                        logHistory($pdo, 'device', $line['device_id'], "Déployé et associé à la ligne", $agentId);
+                    }
+                    cancelPendingBons($pdo, $agentId, "Nouvelle ligne attribuée");
+                }
+            } elseif (!empty($d['device_id'])) {
+                $did = (int)$d['device_id'];
+                $devRow = $pdo->query("SELECT id FROM devices WHERE id=$did AND archived=0 AND agent_id IS NULL AND status='Stock'")->fetch();
+                if (!$devRow) { $qaError = "Ce matériel n'est plus disponible en stock."; }
+                else {
+                    $pdo->prepare("UPDATE devices SET status='Deployed', agent_id=?, service_id=? WHERE id=?")->execute([$agentId, $agtRow['service_id'], $did]);
+                    $agtName = getAgentName($pdo, $agentId);
+                    logHistory($pdo, 'device', $did, "Matériel affecté à $agtName", $agentId);
+                    cancelPendingBons($pdo, $agentId, "Nouveau matériel affecté");
+                }
+            } else {
+                $qaError = "Aucun élément sélectionné.";
+            }
+            if (empty($d['_ajax'])) { $qaError ? flash('error', $qaError) : flash('success', 'Attribution enregistrée.'); }
         } elseif ($ent === 'device') {
             $mod = IV($d,'model_id'); $agt = IV($d,'agent_id'); $svc = IV($d,'service_id'); $pd = NV($d,'purchase_date');
             if ($act === 'add') {
@@ -1896,8 +2079,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
         
+        // Réponse JSON pour l'attribution rapide (fiche utilisateur, sans rechargement)
+        if ($ent === 'quick_assign' && !empty($d['_ajax'])) {
+            if ($pdo->inTransaction()) $pdo->commit();
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => empty($qaError), 'error' => $qaError ?: null]);
+            exit;
+        }
+
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin_signature'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin_signature', 'quick_assign'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -2262,7 +2453,7 @@ elseif ($page === 'lines') {
     <?php foreach(['add'=>'Nouvelle Ligne / SIM', 'edit'=>'Modifier'] as $act => $title): ?>
     <div class="modal-overlay" id="modal-<?=$act?>-line">
       <div class="modal modal-lg"><div class="modal-header"><h3><?=$title?></h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-line')">✕</button></div>
-      <form method="post"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-line">'; ?>
+      <form method="post" onsubmit="return lineFormCheck('<?=$act?>')"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-line">'; ?>
       <div class="form-grid">
         <div class="form-group"><label>Numéro de Ligne</label>
           <div id="<?=$act?>-phone-wrapper"><input type="text" name="phone_number" id="<?=$act?>-phone_number" placeholder="06 xx xx xx xx"></div>
@@ -2668,6 +2859,8 @@ elseif ($page === 'refs') {
     } elseif ($tab === 'admins') {
         $data = $pdo->query("SELECT id, username, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name, IFNULL(email,'') as email, DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') as created_at FROM users ORDER BY active DESC, last_name, first_name, username")->fetchAll();
         $cols = ['Identifiant'=>'username', 'Nom'=>'last_name', 'Prénom'=>'first_name', 'Email'=>'email', 'Créé le'=>'created_at']; $ent = 'admin';
+        // Visa DSI de chaque compte (une signature par admin)
+        $sigMap = $pdo->query("SELECT id, signature_data FROM users WHERE signature_data IS NOT NULL AND signature_data != ''")->fetchAll(PDO::FETCH_KEY_PAIR);
     } elseif ($tab === 'settings') {
         $allSettings = $pdo->query("SELECT * FROM settings ORDER BY id")->fetchAll();
         $ent = 'settings';
@@ -2688,7 +2881,7 @@ elseif ($page === 'refs') {
         $currentLogo = getSetting($pdo, 'pdf_logo_path', '');
     ?>
     <!-- ── ONGLET PARAMÈTRES ───────────────────────────────────── -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto auto;gap:1.5rem;align-items:start;">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start;">
     <div style="display:flex;flex-direction:column;gap:1.5rem;">
 
       <!-- Bloc logo -->
@@ -2796,7 +2989,9 @@ elseif ($page === 'refs') {
 
       </div><!-- fin colonne gauche -->
 
-      <!-- Bloc seuils — colonne droite -->
+      <div style="display:flex;flex-direction:column;gap:1.5rem;"><!-- colonne droite -->
+
+      <!-- Bloc seuils -->
       <div class="card">
         <div class="card-header">🔔 Seuils d'alerte Stock</div>
         <form method="post" style="padding:1.5rem;">
@@ -2821,70 +3016,7 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
-      <!-- Bloc signature DSI -->
-      <?php
-      $mySig = $pdo->prepare("SELECT signature_data FROM users WHERE id=?");
-      $mySig->execute([(int)$_SESSION['user_id']]);
-      $mySig = $mySig->fetchColumn();
-      ?>
-      <div class="card" style="grid-column:2;">
-        <div class="card-header">✍️ Ma signature (visa DSI)</div>
-        <form method="post" id="dsi-sig-form" style="padding:1.5rem;">
-          <input type="hidden" name="_entity" value="admin_signature">
-          <input type="hidden" name="_action" value="save">
-          <input type="hidden" name="signature_data" id="dsi-sig-data">
-          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
-            Cette signature est apposée dans le cadre <strong>« Visa de la DSI »</strong> des bons que <strong>vous</strong> générez.
-            Elle est copiée dans chaque bon au moment de la génération (un bon déjà émis ne change jamais).
-          </p>
-          <?php if($mySig): ?>
-          <div style="display:flex;align-items:center;gap:1.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;">
-            <img src="<?=h($mySig)?>" alt="Ma signature" style="max-height:70px;max-width:220px;object-fit:contain;background:#fff;border-radius:4px;padding:4px;">
-            <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;color:var(--danger);font-size:.85rem;">
-              <input type="checkbox" name="delete_signature" value="1" style="accent-color:var(--danger);width:14px;height:14px;" onchange="if(this.checked){document.getElementById('dsi-sig-form').submit();}">
-              Supprimer ma signature
-            </label>
-          </div>
-          <?php endif; ?>
-          <label style="margin-bottom:.4rem;"><?=$mySig?'Remplacer ma signature':'Dessiner ma signature'?></label>
-          <div style="border:2px dashed var(--border2);border-radius:8px;background:#fff;touch-action:none;">
-            <canvas id="dsiSigCanvas" height="140" style="display:block;width:100%;border-radius:8px;"></canvas>
-          </div>
-          <div style="display:flex;gap:.75rem;margin-top:.75rem;align-items:center;">
-            <button type="button" class="btn-secondary" style="font-size:.82rem;padding:.4rem .9rem;" onclick="dsiSigClear()">🗑️ Effacer</button>
-            <button type="submit" class="btn-primary" id="dsi-sig-save" disabled>💾 Enregistrer ma signature</button>
-          </div>
-        </form>
-      </div>
-      <script>
-      (function(){
-        const canvas = document.getElementById('dsiSigCanvas');
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        let drawing = false, hasSig = false;
-        function resize() {
-          const w = canvas.parentElement.clientWidth;
-          canvas.width = w * devicePixelRatio; canvas.height = 140 * devicePixelRatio;
-          canvas.style.width = w + 'px'; canvas.style.height = '140px';
-          ctx.scale(devicePixelRatio, devicePixelRatio);
-          ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        }
-        resize();
-        function pos(e) { const r = canvas.getBoundingClientRect(); const s = e.touches ? e.touches[0] : e; return {x: s.clientX - r.left, y: s.clientY - r.top}; }
-        function start(e) { e.preventDefault(); drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
-        function move(e)  { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); hasSig = true; document.getElementById('dsi-sig-save').disabled = false; }
-        function stop(e)  { e.preventDefault(); drawing = false; }
-        window.dsiSigClear = function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasSig = false; document.getElementById('dsi-sig-save').disabled = true; };
-        canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); canvas.addEventListener('mouseup', stop);
-        canvas.addEventListener('touchstart', start, {passive:false}); canvas.addEventListener('touchmove', move, {passive:false}); canvas.addEventListener('touchend', stop, {passive:false});
-        document.getElementById('dsi-sig-form').addEventListener('submit', function(e) {
-          const del = this.querySelector('input[name=delete_signature]');
-          if (del && del.checked) return;
-          if (!hasSig) { e.preventDefault(); alert('Dessinez votre signature dans le cadre.'); return; }
-          document.getElementById('dsi-sig-data').value = canvas.toDataURL('image/png');
-        });
-      })();
-      </script>
+      </div><!-- fin colonne droite -->
 
     </div><!-- fin grille paramètres -->
 
@@ -2954,9 +3086,9 @@ elseif ($page === 'refs') {
 
     <div class="card" style="overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><?php foreach($cols as $name => $k) echo "<th>$name</th>"; ?><th>Actions</th></tr></thead>
+        <thead><tr><?php foreach($cols as $name => $k) echo "<th>$name</th>"; ?><?php if($tab==='admins'): ?><th>Signature (visa DSI)</th><?php endif; ?><th>Actions</th></tr></thead>
         <tbody id="tbody-refs">
-        <?php if(empty($data)): ?><tr><td colspan="<?=count($cols)+1?>" class="empty-cell">Aucune donnée</td></tr><?php endif; ?>
+        <?php if(empty($data)): ?><tr><td colspan="<?=count($cols)+($tab==='admins'?2:1)?>" class="empty-cell">Aucune donnée</td></tr><?php endif; ?>
         <?php foreach($data as $row): ?>
         <tr style="<?=($tab==='agents' && !empty($row['archived'])) ? 'opacity:.65;' : ''?>">
           <?php foreach($cols as $name => $k): ?>
@@ -2975,6 +3107,15 @@ elseif ($page === 'refs') {
               <?php endif; ?>
             </td>
           <?php endforeach; ?>
+          <?php if($tab === 'admins'): ?>
+          <td>
+            <?php if(!empty($sigMap[$row['id']])): ?>
+              <img src="<?=h($sigMap[$row['id']])?>" alt="Signature" style="max-height:34px;max-width:110px;object-fit:contain;background:#fff;border:1px solid var(--border);border-radius:4px;padding:2px;vertical-align:middle;">
+            <?php else: ?>
+              <span style="color:var(--text3);font-size:.82rem;">— aucune —</span>
+            <?php endif; ?>
+          </td>
+          <?php endif; ?>
           <td class="actions">
             <?php if($tab === 'agents'): ?>
                 <button class="btn-icon" title="Voir la Fiche Utilisateur" style="color:var(--primary)" onclick="viewAgent(<?=$row['id']?>, '<?=h($row['first_name'].' '.$row['last_name'])?>')">👁️</button>
@@ -3018,6 +3159,10 @@ elseif ($page === 'refs') {
                     <?php endif; ?>
                     </span>
                 <?php endif; ?>
+                <?php if($isSelf || !empty($_SESSION['is_admin'])): ?>
+                    <button class="btn-icon" title="<?=$isSelf ? 'Ma signature (visa DSI)' : 'Signature (visa DSI) de ce compte'?>" style="color:var(--primary)"
+                      onclick='openSigModal(<?=$row['id']?>, <?=json_encode(trim($row['first_name'].' '.$row['last_name']) ?: $row['username'], JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>, <?=json_encode($sigMap[$row['id']] ?? '', JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>✍️</button>
+                <?php endif; ?>
                 <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'>✏️</button>
                 <?php if(!$isSelf): ?>
                     <form method="post" style="display:inline" onsubmit="return confirm('Supprimer définitivement le compte « <?=h($row['username']) ?> » ?')">
@@ -3036,6 +3181,79 @@ elseif ($page === 'refs') {
         </tbody>
       </table>
     </div>
+
+    <?php if($tab === 'admins'): ?>
+    <!-- Modal signature (visa DSI) — une signature par compte admin -->
+    <div class="modal-overlay" id="modal-signature">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>✍️ Signature (visa DSI) — <span id="sig-admin-name"></span></h3>
+          <button type="button" class="modal-close" onclick="closeModal('modal-signature')">✕</button>
+        </div>
+        <form method="post" id="dsi-sig-form" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="admin_signature">
+          <input type="hidden" name="_action" value="save">
+          <input type="hidden" name="_id" id="sig-admin-id">
+          <input type="hidden" name="signature_data" id="dsi-sig-data">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+            Cette signature est apposée dans le cadre <strong>« Visa de la DSI »</strong> des bons générés par <strong>ce compte</strong>.
+            Elle est copiée dans chaque bon au moment de la génération (un bon déjà émis ne change jamais).
+          </p>
+          <div id="sig-current" style="display:none;align-items:center;gap:1.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;">
+            <img id="sig-current-img" src="" alt="Signature actuelle" style="max-height:70px;max-width:220px;object-fit:contain;background:#fff;border-radius:4px;padding:4px;">
+            <button type="submit" name="delete_signature" value="1" class="btn-secondary" style="color:var(--danger);font-size:.82rem;padding:.4rem .9rem;"
+              onclick="return confirm('Supprimer cette signature ?')">🗑️ Supprimer cette signature</button>
+          </div>
+          <label style="margin-bottom:.4rem;" id="sig-canvas-label">Dessiner la signature</label>
+          <div style="border:2px dashed var(--border2);border-radius:8px;background:#fff;touch-action:none;">
+            <canvas id="dsiSigCanvas" height="140" style="display:block;width:100%;border-radius:8px;"></canvas>
+          </div>
+          <div class="modal-footer" style="margin-top:1rem;">
+            <button type="button" class="btn-secondary" onclick="dsiSigClear()">🗑️ Effacer le cadre</button>
+            <button type="submit" class="btn-primary" id="dsi-sig-save" disabled>💾 Enregistrer la signature</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <script>
+    (function(){
+      const canvas = document.getElementById('dsiSigCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      let drawing = false, hasSig = false;
+      function resize() {
+        const w = canvas.parentElement.clientWidth || 500;
+        canvas.width = w * devicePixelRatio; canvas.height = 140 * devicePixelRatio;
+        canvas.style.width = w + 'px'; canvas.style.height = '140px';
+        ctx.scale(devicePixelRatio, devicePixelRatio);
+        ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      }
+      function pos(e) { const r = canvas.getBoundingClientRect(); const s = e.touches ? e.touches[0] : e; return {x: s.clientX - r.left, y: s.clientY - r.top}; }
+      function start(e) { e.preventDefault(); drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+      function move(e)  { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); hasSig = true; document.getElementById('dsi-sig-save').disabled = false; }
+      function stop(e)  { e.preventDefault(); drawing = false; }
+      window.dsiSigClear = function() { ctx.clearRect(0, 0, canvas.width, canvas.height); hasSig = false; document.getElementById('dsi-sig-save').disabled = true; };
+      canvas.addEventListener('mousedown', start); canvas.addEventListener('mousemove', move); canvas.addEventListener('mouseup', stop);
+      canvas.addEventListener('touchstart', start, {passive:false}); canvas.addEventListener('touchmove', move, {passive:false}); canvas.addEventListener('touchend', stop, {passive:false});
+      window.openSigModal = function(id, name, currentSig) {
+        document.getElementById('sig-admin-id').value = id;
+        document.getElementById('sig-admin-name').textContent = name;
+        const cur = document.getElementById('sig-current');
+        cur.style.display = currentSig ? 'flex' : 'none';
+        if (currentSig) document.getElementById('sig-current-img').src = currentSig;
+        document.getElementById('sig-canvas-label').textContent = currentSig ? 'Remplacer la signature' : 'Dessiner la signature';
+        openModal('modal-signature');
+        resize();               // le canvas doit être visible pour connaître sa largeur
+        window.dsiSigClear();
+      };
+      document.getElementById('dsi-sig-form').addEventListener('submit', function(e) {
+        if (e.submitter && e.submitter.name === 'delete_signature') return;
+        if (!hasSig) { e.preventDefault(); alert('Dessinez la signature dans le cadre.'); return; }
+        document.getElementById('dsi-sig-data').value = canvas.toDataURL('image/png');
+      });
+    })();
+    </script>
+    <?php endif; ?>
     <?php endif; /* end settings tab */ ?>
 
     <?php foreach(['add'=>'Ajouter', 'edit'=>'Modifier'] as $act => $title): ?>
@@ -3137,6 +3355,21 @@ elseif ($page === 'history') {
         if ($b['type'] === 'restitution' && $b['parent_id']) $childByParent[$b['parent_id']][] = $b;
     }
 
+    // Remises actives par agent + identifiants d'équipements d'un bon ('d3', 'l5'…),
+    // pour repérer les cycles entièrement repris par un bon plus récent
+    $remisesByAgent = [];
+    foreach ($bons as $b) {
+        if ($b['type'] === 'remise' && $b['status'] !== 'cancelled') $remisesByAgent[(int)$b['agent_id']][] = $b;
+    }
+    $bonItemIds = function($b) {
+        if (empty($b['items'])) return null;
+        $it = json_decode($b['items'], true);
+        $ids = [];
+        foreach (($it['devices'] ?? []) as $d) if (!empty($d['device_id'])) $ids[] = 'd' . $d['device_id'];
+        foreach (($it['lines'] ?? []) as $l) if (!empty($l['line_id'])) $ids[] = 'l' . $l['line_id'];
+        return $ids;
+    };
+
     $pairs = [];
     foreach ($bons as $b) {
         // Les bons annulés restent consultables depuis la fiche agent, pas ici
@@ -3144,7 +3377,19 @@ elseif ($page === 'history') {
         if ($b['type'] === 'remise') {
             $child = null;
             foreach (($childByParent[$b['id']] ?? []) as $c) { if ($c['status'] !== 'cancelled') { $child = $c; break; } }
-            $pairs[] = ['remise' => $b, 'restitution' => $child,
+            // Cycle sans restitution : ses équipements sont-ils tous couverts par un bon plus récent ?
+            $supersededBy = null;
+            if (!$child) {
+                $myIds = $bonItemIds($b);
+                foreach (($remisesByAgent[(int)$b['agent_id']] ?? []) as $other) {
+                    if ($other['id'] == $b['id']) continue;
+                    if (strtotime($other['created_at']) < strtotime($b['created_at'])) continue;
+                    if (strtotime($other['created_at']) == strtotime($b['created_at']) && $other['id'] < $b['id']) continue;
+                    $oIds = $bonItemIds($other);
+                    if ($myIds !== null && $oIds !== null && !array_diff($myIds, $oIds)) { $supersededBy = $other['numero']; break; }
+                }
+            }
+            $pairs[] = ['remise' => $b, 'restitution' => $child, 'superseded_by' => $supersededBy,
                         'agent_name' => $b['agent_name'], 'agent_id' => $b['agent_id'],
                         'service_name' => $b['service_name'], 'agent_archived' => $b['agent_archived'],
                         'phone_numbers' => $phonesOf($b)];
@@ -3228,6 +3473,8 @@ elseif ($page === 'history') {
               ✍️ <?=h($b['signer_name'])?> <span style="color:var(--text3);">— le <?=h($b['signed_fmt'])?></span>
             </div>
             <?php endif; ?>
+          <?php elseif($btype==='restitution' && !empty($pair['superseded_by'])): ?>
+            <div style="color:var(--text3);font-size:.82rem;font-style:italic;">♻️ Cycle remplacé<br><span style="font-size:.75rem;">Équipements repris dans le bon <strong><?=h($pair['superseded_by'])?></strong> — pas de restitution attendue ici</span></div>
           <?php else: ?>
             <div style="color:var(--text3);font-size:.82rem;font-style:italic;"><?=$icon?> <?=$label?><br><span style="font-size:.75rem;"><?=$btype==='restitution'?'Pas encore générée — matériel toujours en dotation':'Non généré'?></span></div>
           <?php endif; ?>
@@ -3441,7 +3688,9 @@ function copySignLink(btn, url) {
 }
 
 // CHARGEMENT FICHE UTILISATEUR AJAX
+let _currentAgentId = null;
 async function viewAgent(id, name) {
+    _currentAgentId = id;
     document.getElementById('agent-view-title').innerText = '👤 ' + name;
     openModal('modal-view-agent');
     document.getElementById('agent-view-content').innerHTML = '<div style="text-align:center;padding:2rem;color:var(--text3)">⏳ Chargement de la fiche...</div>';
@@ -3452,6 +3701,37 @@ async function viewAgent(id, name) {
         document.getElementById('agent-view-content').innerHTML = '<div style="text-align:center;padding:2rem;color:var(--danger)">❌ Erreur lors du chargement.</div>';
     }
 }
+
+// Attribution rapide (ligne / matériel du stock) depuis la fiche, sans fermer la modale
+async function quickAssign(form) {
+    const btn = form.querySelector('button[type=submit]');
+    if (btn) btn.disabled = true;
+    try {
+        const res = await fetch('index.php', { method: 'POST', body: new FormData(form) });
+        const data = await res.json();
+        if (!data.ok) alert(data.error || "L'attribution a échoué.");
+    } catch(e) {
+        alert("L'attribution a échoué. Rechargez la page et réessayez.");
+    }
+    if (_currentAgentId) {
+        try {
+            const res = await fetch('index.php?ajax_agent_details=' + _currentAgentId);
+            document.getElementById('agent-view-content').innerHTML = await res.text();
+        } catch(e) { if (btn) btn.disabled = false; }
+    }
+    return false;
+}
+
+// Rafraîchir la fiche ouverte quand on revient sur l'onglet (ex. : après avoir
+// généré ou signé un bon dans un autre onglet) — remplacement silencieux, sans spinner.
+window.addEventListener('focus', async function() {
+    const m = document.getElementById('modal-view-agent');
+    if (!m || !m.classList.contains('open') || !_currentAgentId) return;
+    try {
+        const res = await fetch('index.php?ajax_agent_details=' + _currentAgentId);
+        document.getElementById('agent-view-content').innerHTML = await res.text();
+    } catch(e) { /* silencieux : on garde l'affichage actuel */ }
+});
 
 // TRI DYNAMIQUE DES TABLEAUX
 document.addEventListener('DOMContentLoaded', () => {
@@ -3659,6 +3939,21 @@ function toggleSimVierge(act) {
     wrapper.style.pointerEvents = '';
     if (statusWrap) { statusWrap.style.opacity = '1'; statusWrap.style.pointerEvents = ''; }
   }
+}
+
+// À l'enregistrement d'une ligne : un utilisateur est affecté mais le statut
+// est resté « En Stock » → proposer de passer la ligne en « Active ».
+function lineFormCheck(act) {
+  const agentSel  = document.getElementById(act + '-agent_id');
+  const statusSel = document.getElementById(act + '-status');
+  const simVierge = document.getElementById(act + '-sim_vierge');
+  if (simVierge && simVierge.checked) return true;   // SIM vierge : reste en stock
+  if (agentSel && statusSel && agentSel.value !== '' && statusSel.value === 'Stock') {
+    if (confirm("Cette ligne est affectée à un utilisateur mais son statut est « En Stock (Non activée) ».\n\nPasser la ligne en « Active » ?")) {
+      statusSel.value = 'Active';
+    }
+  }
+  return true;
 }
 
 function togglePersonalDevice(act) {

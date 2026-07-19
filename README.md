@@ -80,7 +80,7 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 - La page **Historique des bons** montre chaque cycle remise/restitution (lié structurellement, pas par date) avec impression individuelle
 - **Lien de signature** : le bouton 🔗 copie le lien à transmettre par le canal de votre choix (Teams, SMS…) ; en option, configurez le SMTP (Paramètres → Envoi d'e-mails) pour faire apparaître un bouton 📧 d'envoi direct
 - **Remise partielle** : le bloc repliable de la fiche agent permet de générer un bon ne couvrant que certains équipements
-- **Visa DSI** : chaque admin peut dessiner sa signature dans Paramètres → Ma signature ; elle est apposée sur les bons qu'il génère
+- **Visa DSI** : chaque compte admin a sa propre signature, gérée dans Référentiels → Comptes Admin (bouton ✍️) ; elle est apposée sur les bons qu'il génère. Chacun dessine la sienne ; un super-admin peut gérer celles des autres comptes
 - Le **tableau de bord** liste les bons en attente de signature et alerte quand un lien expire bientôt
 
 ### Changement de SIM
