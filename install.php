@@ -109,13 +109,14 @@ try {
                 $pdo->exec("GRANT ALL PRIVILEGES ON `" . DB_NAME . "`.* TO '$appUser'@'$grantHost'");
                 $pdo->exec("FLUSH PRIVILEGES");
 
-                // Réécriture de config.php (si accessible en écriture)
+                // Réécriture de config.php (si accessible en écriture).
+                // On remplace la valeur de repli des expressions getenv(...) ?: '…'.
                 $cfgPath = __DIR__ . '/config.php';
                 $written = false;
                 if (is_writable($cfgPath)) {
-                    $cfg  = file_get_contents($cfgPath);
-                    $new  = preg_replace("/define\\(\\s*'DB_USER'\\s*,\\s*'[^']*'\\s*\\)/", "define('DB_USER',    '$appUser')", $cfg, 1);
-                    $new  = preg_replace("/define\\(\\s*'DB_PASS'\\s*,\\s*'[^']*'\\s*\\)/", "define('DB_PASS',    '$appPass')", $new, 1);
+                    $cfg = file_get_contents($cfgPath);
+                    $new = preg_replace_callback("/(getenv\\('DB_USER'\\)\\s*\\?:\\s*)'[^']*'/", fn($m) => $m[1] . "'$appUser'", $cfg, 1);
+                    $new = preg_replace_callback("/(getenv\\('DB_PASS'\\)\\s*\\?:\\s*)'[^']*'/", fn($m) => $m[1] . "'$appPass'", $new, 1);
                     if ($new && $new !== $cfg && file_put_contents($cfgPath, $new) !== false) $written = true;
                 }
                 $dbCreds = ['user' => $appUser, 'pass' => $appPass, 'host' => $grantHost, 'written' => $written];
@@ -137,7 +138,7 @@ try {
         ['Extension fileinfo',           extension_loaded('fileinfo'),    'Requise pour valider les fichiers uploadés (pièces jointes, logo).'],
         ["Dossier « " . UPLOAD_DIR . " » accessible en écriture", is_dir(UPLOAD_DIR) && is_writable(UPLOAD_DIR), 'Nécessaire aux pièces jointes et au logo.'],
         ['Affichage des erreurs désactivé (APP_DEBUG)', !(defined('APP_DEBUG') && APP_DEBUG), 'Doit être false en production (config.php).'],
-        ['Identifiants MySQL personnalisés', !(DB_USER === 'root' && DB_PASS === 'root'), "Remplacez root/root par un compte dédié dans config.php."],
+        ['Compte MySQL non-root', DB_USER !== 'root', "Utilisez un compte dédié limité à la base (bouton ci-dessous), pas root."],
         ['Protection .htaccess active',  $htActive, 'Sans elle, config.php est téléchargeable en clair (Apache).'],
     ];
     $adminIsDefault = false;
@@ -239,9 +240,13 @@ try {
             <tr><td><b>Hôte autorisé</b></td><td><code><?= htmlspecialchars($dbCreds['host']) ?></code></td></tr>
         </table>
         <?php if (!$dbCreds['written']): ?>
-        <div class="banner" style="margin-top:1rem;">⚠️ Notez ce mot de passe : il ne sera plus affiché. Reportez-le dans <code>config.php</code> :<br>
-            <code>define('DB_USER', '<?= htmlspecialchars($dbCreds['user']) ?>');</code><br>
-            <code>define('DB_PASS', '<?= htmlspecialchars($dbCreds['pass']) ?>');</code>
+        <div class="banner" style="margin-top:1rem;">⚠️ Notez ce mot de passe : il ne sera plus affiché. Deux façons de l'appliquer :<br><br>
+            <b>En conteneur (Docker)</b> — variables d'environnement dans <code>docker-compose.yml</code> :<br>
+            <code>DB_USER: <?= htmlspecialchars($dbCreds['user']) ?></code><br>
+            <code>DB_PASS: <?= htmlspecialchars($dbCreds['pass']) ?></code><br><br>
+            <b>En local</b> — modifiez la valeur de repli dans <code>config.php</code> :<br>
+            <code>define('DB_USER', getenv('DB_USER') ?: '<?= htmlspecialchars($dbCreds['user']) ?>');</code><br>
+            <code>define('DB_PASS', getenv('DB_PASS') ?: '<?= htmlspecialchars($dbCreds['pass']) ?>');</code>
         </div>
         <?php else: ?>
         <p class="hint" style="margin-top:1rem;">L'application se connecte désormais avec ce compte ; <code>root</code> n'est plus utilisé.</p>

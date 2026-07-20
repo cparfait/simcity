@@ -25,14 +25,37 @@ Placez le dossier dans le répertoire web de votre serveur (ex: `C:\laragon\www\
 
 ### 2. Configurer la base de données
 
-Éditez `config.php` avec vos identifiants MySQL :
+Les identifiants sont lus depuis les **variables d'environnement** si elles existent,
+sinon depuis les valeurs de repli de `config.php`. **Le même `config.php` fonctionne donc
+en local ET en conteneur**, sans modification :
 
 ```php
-define('DB_HOST', 'localhost');      // Hôte MySQL (ou nom du conteneur Docker)
-define('DB_NAME', 'simcity_db');     // Nom de la base (créée automatiquement)
-define('DB_USER', 'root');
-define('DB_PASS', '');               // Vide par défaut sous Laragon
+define('DB_HOST', getenv('DB_HOST') ?: 'localhost');   // repli local
+define('DB_NAME', getenv('DB_NAME') ?: 'simcity_db');
+define('DB_USER', getenv('DB_USER') ?: 'root');
+define('DB_PASS', getenv('DB_PASS') ?: '');            // vide par défaut sous Laragon
 ```
+
+- **Laragon / WAMP / XAMPP (local)** : aucune variable définie → repli sur
+  `localhost` / `root` / mot de passe vide. Rien à éditer dans la plupart des cas.
+- **Docker (prod)** : injectez les variables dans `docker-compose.yml`, elles prennent le dessus :
+  ```yaml
+  services:
+    app:
+      environment:
+        DB_HOST: simcity_db        # nom du service MySQL
+        DB_NAME: simcity_db
+        DB_USER: simcity           # compte dédié (voir install.php)
+        DB_PASS: "votre_mot_de_passe"
+        FORCE_HTTPS: "false"       # true si pas de reverse proxy
+      volumes:
+        - ./uploads:/var/www/html/uploads   # persistance des pièces jointes
+        - ./backups:/var/www/html/backups   # persistance des sauvegardes
+  ```
+  `APP_DEBUG` et `FORCE_HTTPS` sont aussi surchargeables par variable d'environnement.
+
+> ⚠️ **Docker — persistance** : montez des volumes pour `uploads/`, `backups/` et les
+> données MySQL, sinon leur contenu disparaît à chaque rebuild du conteneur.
 
 ### 3. Créer les tables
 

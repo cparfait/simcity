@@ -10,10 +10,16 @@
 define('APP_VERSION', '1.0');
 
 // ─── Connexion MySQL ──────────────────────────────────────────
-define('DB_HOST',    'simcity_db');
-define('DB_NAME',    'simcity_db');
-define('DB_USER',    'root');       // ← À modifier
-define('DB_PASS',    'root');           // ← À modifier
+// Les identifiants sont lus depuis les variables d'environnement si elles
+// existent, sinon on utilise les valeurs de repli (pratique en local).
+// → Un SEUL config.php fonctionne en local ET en conteneur Docker :
+//    • Laragon / WAMP / XAMPP : aucune variable définie → repli localhost/root/(vide)
+//    • Docker : injectez DB_HOST, DB_USER, DB_PASS… via docker-compose (environment:)
+//      Exemple :  environment: { DB_HOST: simcity_db, DB_USER: simcity, DB_PASS: secret }
+define('DB_HOST',    getenv('DB_HOST') ?: 'localhost');
+define('DB_NAME',    getenv('DB_NAME') ?: 'simcity_db');
+define('DB_USER',    getenv('DB_USER') ?: 'root');
+define('DB_PASS',    getenv('DB_PASS') ?: '');
 define('DB_CHARSET', 'utf8mb4');
 
 // ─── Session ─────────────────────────────────────────────────
@@ -25,9 +31,11 @@ define('SESSION_NAME',     'simcity_sess');
 define('APP_TIMEZONE', 'Europe/Paris');
 
 // ─── HTTPS ────────────────────────────────────────────────────
-// Passer à true en production : force la redirection http → https.
-// Laisser false en développement local (Laragon en http).
-define('FORCE_HTTPS', false);
+// true = force la redirection http → https (serveur direct avec certificat).
+// Derrière un reverse proxy qui termine le TLS : laisser false (le proxy gère
+// la redirection) et s'assurer qu'il transmet l'en-tête X-Forwarded-Proto.
+// Surchargeable par la variable d'environnement FORCE_HTTPS (true/false).
+define('FORCE_HTTPS', filter_var(getenv('FORCE_HTTPS') ?: 'false', FILTER_VALIDATE_BOOLEAN));
 
 // ─── Sécurité ─────────────────────────────────────────────────
 define('CSRF_TOKEN_NAME', '_csrf');
@@ -50,5 +58,6 @@ define('BACKUP_AUTO',          true);
 define('BACKUP_AUTO_INTERVAL', 86400);   // Intervalle minimal en secondes (86400 = 24 h)
 
 // ─── Environnement ────────────────────────────────────────────
-// Passer à false en production pour masquer les erreurs PHP
-define('APP_DEBUG', false);
+// false en production pour masquer les erreurs PHP.
+// Surchargeable par la variable d'environnement APP_DEBUG (true/false).
+define('APP_DEBUG', filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOLEAN));
