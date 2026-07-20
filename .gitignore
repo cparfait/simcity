@@ -1,0 +1,8 @@
+# Sauvegardes SQL générées sur le serveur (contiennent des données sensibles)
+/backups/
+
+# Fichiers uploadés (pièces jointes, logos)
+/uploads/
+
+# Configuration locale éventuelle
+config.local.php

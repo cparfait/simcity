@@ -383,6 +383,7 @@ function simcity_apply_schema(PDO $pdo): void
         ['smtp_pass',          '',    "Mot de passe SMTP"],
         ['smtp_from',          '',    "Adresse e-mail expéditrice"],
         ['smtp_from_name',     'SimCity — DSI', "Nom de l'expéditeur"],
+        ['last_auto_backup',   '',    "Horodatage de la dernière sauvegarde automatique"],
     ] as [$k, $v, $l]) {
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);

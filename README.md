@@ -94,15 +94,37 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 
 ### 🟠 Fortement recommandés
 
-5. **Forcer HTTPS** — une fois le certificat TLS en place, passez `FORCE_HTTPS` à `true`
-   dans `config.php` (redirige http → https) et décommentez la ligne **HSTS** dans `.htaccess`.
+5. **HTTPS** — deux cas :
+   - **Serveur direct** : une fois le certificat TLS en place, passez `FORCE_HTTPS` à `true`
+     dans `config.php` (redirige http → https) et décommentez la ligne **HSTS** dans `.htaccess`.
+   - **Derrière un reverse proxy** (nginx, Traefik, Cloudflare…) qui termine le TLS :
+     laissez `FORCE_HTTPS` à `false` et laissez le proxy gérer la redirection et le HSTS.
+     Assurez-vous simplement que le proxy transmet l'en-tête **`X-Forwarded-Proto: https`**
+     (l'application le lit pour poser le cookie `Secure` et générer les bons liens).
 6. **Fuseau horaire** — vérifiez `APP_TIMEZONE` dans `config.php` (défaut `Europe/Paris`) ;
    il pilote les horodatages des bons, signatures et journaux.
 7. **Extension `fileinfo`** — assurez-vous qu'elle est activée dans `php.ini`
    (utilisée pour valider les fichiers uploadés ; absente = tout upload échoue).
-8. **Sauvegardes** — planifiez un `mysqldump` régulier en plus de l'export SQL manuel
-   (Paramètres → Sauvegarde). Le contenu inclut les signatures électroniques :
-   stockez les sauvegardes dans un emplacement à accès restreint.
+8. **Sauvegardes automatiques** — l'application embarque un module complet
+   (Référentiels → Paramètres → « Sauvegardes ») : sauvegarde manuelle sur le serveur,
+   téléchargement, **restauration**, et suppression. Les fichiers sont conservés en
+   `BACKUP_RETENTION` exemplaires glissants (défaut 7) dans `BACKUP_DIR` (`backups/`,
+   protégé du web). Le dossier contient des données sensibles (signatures, mot de passe
+   SMTP) : il n'est jamais servi directement (le téléchargement passe par l'app authentifiée).
+
+   **Sauvegarde nocturne — choisissez selon votre hébergement :**
+   - **Sans cron (recommandé, idéal en conteneur)** : la constante `BACKUP_AUTO` (activée
+     par défaut) déclenche une sauvegarde toutes les `BACKUP_AUTO_INTERVAL` secondes (24 h),
+     à la première visite passé le délai. Aucune configuration serveur. Limite : ne se
+     déclenche que s'il y a du trafic.
+   - **Endpoint HTTP + planificateur externe** : définissez la variable d'environnement
+     `BACKUP_TOKEN`, puis appelez `https://votre-site/backup.php?token=…` depuis un cron
+     de l'hôte, un conteneur planificateur, une GitHub Action, etc.
+   - **Cron classique** (serveur non conteneurisé) :
+     ```
+     0 2 * * * /usr/bin/php /chemin/simcity/backup.php >> /var/log/simcity_backup.log 2>&1
+     ```
+   - **Depuis l'hôte Docker** : `0 2 * * * docker exec <conteneur> php /var/www/html/backup.php`
 
 ### 🟡 À connaître
 
@@ -154,9 +176,12 @@ simcity/
 ├── install.php       # Installation initiale — à supprimer après usage
 ├── reset.php         # Réinitialisation complète — à supprimer après usage
 ├── import.php        # Import CSV en masse
+├── backup.php        # Sauvegarde automatique (cron / tâche planifiée)
+├── backup_lib.php    # Fonctions de sauvegarde / restauration (partagées)
 ├── js/
 │   └── qrcode.min.js # Génération QR codes (client-side)
-└── uploads/          # Pièces jointes — créé automatiquement
+├── uploads/          # Pièces jointes — créé automatiquement
+└── backups/          # Sauvegardes .sql — créé automatiquement, protégé du web
 ```
 
 ---

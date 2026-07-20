@@ -74,6 +74,29 @@ try {
     die("<div style='color:#ef4444;padding:3rem;font-family:sans-serif'>$msg</div>");
 }
 
+// ─── Bibliothèque de sauvegarde / restauration ────────────────
+require_once __DIR__ . '/backup_lib.php';
+
+// ─── Sauvegarde automatique « sans cron » ─────────────────────
+// Déclenchée par le trafic web (idéal en conteneur, sans crontab). Un verrou
+// atomique en base garantit qu'un seul visiteur lance la sauvegarde par
+// intervalle. Non bloquant : toute erreur est silencieuse pour l'utilisateur.
+if (defined('BACKUP_AUTO') && BACKUP_AUTO && PHP_SAPI !== 'cli') {
+    try {
+        $interval  = defined('BACKUP_AUTO_INTERVAL') ? (int)BACKUP_AUTO_INTERVAL : 86400;
+        $threshold = date('Y-m-d H:i:s', time() - $interval);
+        // On « réclame » le créneau : l'UPDATE ne réussit que pour un seul
+        // processus (ceux qui suivent voient déjà la valeur mise à jour).
+        $claim = $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='last_auto_backup' AND (setting_value='' OR setting_value < ?)");
+        $claim->execute([date('Y-m-d H:i:s'), $threshold]);
+        if ($claim->rowCount() === 1) {
+            simcity_backup_to_disk($pdo);
+        }
+    } catch (Throwable $e) {
+        error_log('SimCity auto-backup: ' . $e->getMessage());
+    }
+}
+
 
 // ─── 2b. PAGE PUBLIQUE DE SIGNATURE MOBILE ────────────────────
 if (isset($_GET['page']) && $_GET['page'] === 'sign') {
@@ -853,25 +876,28 @@ if (isset($_GET['page']) && $_GET['page'] === 'backup_sql') {
     while (ob_get_level()) ob_end_clean();
     header('Content-Type: application/sql; charset=utf-8');
     header('Content-Disposition: attachment; filename="simcity_sauvegarde_' . date('Y-m-d_His') . '.sql"');
-    echo "-- ============================================================\n";
-    echo "-- SimCity v" . (defined('APP_VERSION') ? APP_VERSION : '1.0') . " — Sauvegarde de la base `" . DB_NAME . "`\n";
-    echo "-- Générée le " . date('d/m/Y à H:i:s') . " par " . ($_SESSION['username'] ?? '?') . "\n";
-    echo "-- Restauration : mysql -u root -p " . DB_NAME . " < ce_fichier.sql\n";
-    echo "-- ============================================================\n\n";
-    echo "SET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS=0;\n\n";
-    foreach ($pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN) as $table) {
-        $create = $pdo->query("SHOW CREATE TABLE `$table`")->fetch();
-        echo "-- ── Table `$table` ──\n";
-        echo "DROP TABLE IF EXISTS `$table`;\n" . $create['Create Table'] . ";\n\n";
-        $rows = $pdo->query("SELECT * FROM `$table`");
-        while ($row = $rows->fetch(PDO::FETCH_ASSOC)) {
-            $cols = '`' . implode('`,`', array_keys($row)) . '`';
-            $vals = implode(',', array_map(fn($v) => $v === null ? 'NULL' : $pdo->quote((string)$v), array_values($row)));
-            echo "INSERT INTO `$table` ($cols) VALUES ($vals);\n";
-        }
-        echo "\n";
-    }
-    echo "SET FOREIGN_KEY_CHECKS=1;\n-- Fin de la sauvegarde\n";
+    $out = fopen('php://output', 'w');
+    simcity_write_dump($pdo, $out);
+    fclose($out);
+    exit;
+}
+
+// ─── 3c. TÉLÉCHARGEMENT D'UNE SAUVEGARDE STOCKÉE ──────────────
+// Les fichiers de BACKUP_DIR ne sont pas servis directement par le web
+// (ils contiennent signatures + mot de passe SMTP). On les diffuse ici,
+// après contrôle d'accès. Réservé aux super-admins.
+if (isset($_GET['page']) && $_GET['page'] === 'backup_download') {
+    if (!isset($_SESSION['user_id']) || empty($_SESSION['is_admin'])) die("Accès refusé — réservé aux super-administrateurs.");
+    // Nom de fichier durci : uniquement le motif attendu, pas de traversée de dossier
+    $f = basename($_GET['f'] ?? '');
+    if (!preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql$/', $f)) die("Fichier invalide.");
+    $path = simcity_backup_dir() . $f;
+    if (!is_file($path)) die("Sauvegarde introuvable.");
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: application/sql; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $f . '"');
+    header('Content-Length: ' . filesize($path));
+    readfile($path);
     exit;
 }
 
@@ -1838,6 +1864,61 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->commit();
                 header('Location: index.php?page=pdf_bon&bon_id=' . $bonId); exit;
             }
+        } elseif ($ent === 'backup') {
+            // Sauvegarde / restauration — super-admin uniquement
+            if (empty($_SESSION['is_admin'])) {
+                flash('error', 'Accès refusé — réservé aux super-administrateurs.');
+            } elseif ($act === 'run') {
+                try {
+                    $name = simcity_backup_to_disk($pdo);
+                    flash('success', "Sauvegarde créée sur le serveur : $name");
+                } catch (Throwable $e) {
+                    flash('error', "Échec de la sauvegarde : " . $e->getMessage());
+                }
+            } elseif ($act === 'delete') {
+                $f = basename($d['file'] ?? '');
+                if (preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql$/', $f)) {
+                    $p = simcity_backup_dir() . $f;
+                    if (is_file($p) && @unlink($p)) flash('success', "Sauvegarde supprimée : $f");
+                    else flash('error', "Suppression impossible (fichier absent ou droits).");
+                } else {
+                    flash('error', "Nom de fichier invalide.");
+                }
+            } elseif ($act === 'restore') {
+                if (($d['confirm_word'] ?? '') !== 'RESTAURER') {
+                    flash('error', 'Mot de confirmation incorrect (tapez RESTAURER).');
+                } else {
+                    // Source : une sauvegarde stockée OU un fichier .sql uploadé
+                    $sql = null; $srcLabel = '';
+                    $f = basename($d['file'] ?? '');
+                    if ($f !== '' && preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql$/', $f)) {
+                        $p = simcity_backup_dir() . $f;
+                        if (is_file($p)) { $sql = file_get_contents($p); $srcLabel = $f; }
+                    } elseif (isset($_FILES['sql_file']) && $_FILES['sql_file']['error'] === UPLOAD_ERR_OK) {
+                        if ($_FILES['sql_file']['size'] > 50 * 1024 * 1024) {
+                            flash('error', 'Fichier trop volumineux (max 50 Mo).');
+                        } else {
+                            $sql = file_get_contents($_FILES['sql_file']['tmp_name']);
+                            $srcLabel = basename($_FILES['sql_file']['name']);
+                        }
+                    }
+                    if ($sql === null || trim($sql) === '') {
+                        flash('error', "Aucune sauvegarde valide fournie (sélectionnez un fichier stocké ou envoyez un .sql).");
+                    } else {
+                        // La restauration exécute du DDL (auto-commit MySQL) : on sort d'abord de la transaction
+                        if ($pdo->inTransaction()) $pdo->commit();
+                        try {
+                            // Filet de sécurité : photographier l'état actuel avant d'écraser
+                            $safety = simcity_backup_to_disk($pdo);
+                            $n = simcity_restore_sql($pdo, $sql);
+                            flash('success', "Restauration effectuée depuis « $srcLabel » ($n instruction(s)). Sauvegarde de sécurité créée avant écrasement : $safety. Reconnectez-vous si besoin.");
+                        } catch (Throwable $e) {
+                            flash('error', "Échec de la restauration : " . $e->getMessage() . " — la base peut être incohérente ; restaurez la sauvegarde de sécurité.");
+                        }
+                        header('Location: index.php?page=refs&tab=settings'); exit;
+                    }
+                }
+            }
         } elseif ($ent === 'db_reset') {
             // Réinitialisation complète — super-admin uniquement
             if (empty($_SESSION['is_admin'])) { flash('error', 'Accès refusé.'); }
@@ -2207,7 +2288,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -3139,21 +3220,115 @@ elseif ($page === 'refs') {
 
     </div><!-- fin grille paramètres -->
 
-    <?php if(!empty($_SESSION['is_admin'])): ?>
-    <!-- Bloc sauvegarde — super-admin uniquement -->
+    <?php if(!empty($_SESSION['is_admin'])):
+        $backups   = simcity_list_backups();
+        $retention = defined('BACKUP_RETENTION') ? BACKUP_RETENTION : 7;
+        $fmtSize = function($b) { return $b >= 1048576 ? round($b/1048576,1).' Mo' : round($b/1024).' Ko'; };
+        $autoOn    = defined('BACKUP_AUTO') && BACKUP_AUTO;
+        $autoLast  = getSetting($pdo, 'last_auto_backup', '');
+        $autoHours = defined('BACKUP_AUTO_INTERVAL') ? round(((int)BACKUP_AUTO_INTERVAL)/3600) : 24;
+    ?>
+    <!-- Bloc sauvegarde / restauration — super-admin uniquement -->
     <div class="card" style="margin-top:1.5rem;">
-      <div class="card-header">💾 Sauvegarde de la base de données</div>
+      <div class="card-header">💾 Sauvegardes de la base de données</div>
       <div style="padding:1.5rem;">
         <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
-          Télécharge un fichier <strong>.sql</strong> complet (structure + toutes les données : lignes, matériels, agents, bons signés, historique…)
-          à copier sur une <strong>clé USB</strong> ou un partage réseau.<br>
-          <strong>Restauration :</strong> <code style="font-family:var(--font-mono);font-size:.8rem;">mysql -u root -p simcity_db &lt; simcity_sauvegarde_XXXX.sql</code>
-          (ou via phpMyAdmin → Importer).
+          Sauvegarde complète (structure + données : lignes, matériels, agents, bons signés, signatures, historique…).
+          Les fichiers créés sur le serveur sont conservés en <strong><?=$retention?> exemplaires glissants</strong>
+          dans le dossier <code style="font-size:.8rem;"><?=h(BACKUP_DIR)?></code> (protégé du web).
         </p>
-        <a href="?page=backup_sql" class="btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;">💾 Télécharger la sauvegarde (.sql)</a>
-        <p style="font-size:.78rem;color:var(--text3);margin-top:.9rem;">
-          💡 Pensez-y avant chaque mise à jour de l'application, et régulièrement (le fichier contient aussi les signatures électroniques).
-        </p>
+
+        <!-- Statut de la sauvegarde automatique intégrée -->
+        <div style="display:flex;align-items:center;gap:.6rem;background:<?=$autoOn?'rgba(16,185,129,.08)':'rgba(148,163,184,.08)'?>;border:1px solid <?=$autoOn?'rgba(16,185,129,.25)':'var(--border)'?>;border-radius:8px;padding:.75rem 1rem;margin-bottom:1.25rem;font-size:.85rem;">
+          <span style="font-size:1.2rem;"><?=$autoOn?'🟢':'⚪'?></span>
+          <div>
+            <strong style="color:<?=$autoOn?'var(--success)':'var(--text2)'?>;">Sauvegarde automatique <?=$autoOn?'activée':'désactivée'?></strong>
+            <span style="color:var(--text3);">— déclenchée par le trafic, toutes les <?=$autoHours?> h (sans cron, idéal en conteneur).</span><br>
+            <span style="color:var(--text3);font-size:.8rem;">Dernière sauvegarde automatique : <strong><?= $autoLast ? h(date('d/m/Y H:i', strtotime($autoLast))) : 'aucune pour l\'instant' ?></strong>
+            <?php if(!$autoOn): ?> — activez <code>BACKUP_AUTO</code> dans <code>config.php</code>.<?php endif; ?></span>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.5rem;">
+          <form method="post" style="display:inline;margin:0;padding:0;">
+            <input type="hidden" name="_entity" value="backup">
+            <input type="hidden" name="_action" value="run">
+            <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;">🗄️ Sauvegarder maintenant (serveur)</button>
+          </form>
+          <a href="?page=backup_sql" class="btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;">⬇️ Télécharger un .sql</a>
+        </div>
+
+        <!-- Liste des sauvegardes stockées -->
+        <h4 style="font-size:.9rem;color:var(--text2);margin-bottom:.75rem;">📂 Sauvegardes présentes sur le serveur</h4>
+        <?php if(!$backups): ?>
+          <div class="muted" style="font-size:.85rem;margin-bottom:1rem;">Aucune sauvegarde sur le serveur pour l'instant. Cliquez sur « Sauvegarder maintenant » ou planifiez le cron (voir ci-dessous).</div>
+        <?php else: ?>
+          <div style="overflow-x:auto;margin-bottom:1rem;">
+          <table class="data-table" style="font-size:.85rem;">
+            <thead><tr><th>Fichier</th><th>Date</th><th>Taille</th><th>Actions</th></tr></thead>
+            <tbody>
+            <?php foreach($backups as $bk): ?>
+              <tr>
+                <td><code style="font-size:.78rem;"><?=h($bk['name'])?></code></td>
+                <td><?=date('d/m/Y H:i', $bk['mtime'])?></td>
+                <td><?=$fmtSize($bk['size'])?></td>
+                <td class="actions" style="white-space:nowrap;">
+                  <a href="?page=backup_download&f=<?=urlencode($bk['name'])?>" class="btn-icon" title="Télécharger" style="text-decoration:none;">⬇️</a>
+                  <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('Restaurer cette sauvegarde ? La base actuelle sera écrasée (une sauvegarde de sécurité est créée avant).')">
+                    <input type="hidden" name="_entity" value="backup">
+                    <input type="hidden" name="_action" value="restore">
+                    <input type="hidden" name="file" value="<?=h($bk['name'])?>">
+                    <input type="hidden" name="confirm_word" value="RESTAURER">
+                    <button type="submit" class="btn-icon" title="Restaurer cette sauvegarde" style="color:var(--warning);">♻️</button>
+                  </form>
+                  <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('Supprimer définitivement cette sauvegarde ?')">
+                    <input type="hidden" name="_entity" value="backup">
+                    <input type="hidden" name="_action" value="delete">
+                    <input type="hidden" name="file" value="<?=h($bk['name'])?>">
+                    <button type="submit" class="btn-icon btn-del" title="Supprimer">🗑️</button>
+                  </form>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+          </div>
+        <?php endif; ?>
+
+        <!-- Restauration depuis un fichier uploadé -->
+        <details style="margin-bottom:1rem;background:rgba(245,158,11,.05);border:1px solid rgba(245,158,11,.25);border-radius:8px;padding:.75rem 1rem;">
+          <summary style="cursor:pointer;font-size:.85rem;color:var(--warning);font-weight:600;">♻️ Restaurer depuis un fichier .sql externe</summary>
+          <form method="post" enctype="multipart/form-data" style="padding:.75rem 0 0;margin:0;"
+                onsubmit="return confirm('Restaurer depuis ce fichier ? La base actuelle sera écrasée (une sauvegarde de sécurité est créée avant).')">
+            <input type="hidden" name="_entity" value="backup">
+            <input type="hidden" name="_action" value="restore">
+            <p class="muted" style="font-size:.8rem;margin-bottom:.6rem;">Envoyez un fichier <code>.sql</code> généré par SimCity. Tapez <strong>RESTAURER</strong> pour confirmer.</p>
+            <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;">
+              <input type="file" name="sql_file" accept=".sql" required style="flex:1;min-width:200px;">
+              <input type="text" name="confirm_word" placeholder="RESTAURER" autocomplete="off" required style="max-width:150px;font-family:var(--font-mono);">
+              <button type="submit" class="btn-secondary" style="color:var(--warning);border-color:rgba(245,158,11,.4);">♻️ Restaurer</button>
+            </div>
+          </form>
+        </details>
+
+        <!-- Aide planification -->
+        <details style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;">
+          <summary style="cursor:pointer;font-size:.85rem;color:var(--text2);font-weight:600;">⏰ Planification (autres méthodes)</summary>
+          <div style="font-size:.82rem;color:var(--text2);line-height:1.7;margin-top:.6rem;">
+            La <strong>sauvegarde automatique intégrée</strong> (ci-dessus) suffit dans la plupart des cas —
+            aucune configuration serveur requise. Elle ne se déclenche toutefois que s'il y a du trafic ;
+            si l'application peut rester plusieurs jours sans visite, ajoutez l'une de ces méthodes :
+            <div style="margin:.5rem 0;"><strong>Endpoint HTTP + planificateur externe</strong> (adapté aux conteneurs) :<br>
+              définissez la variable d'environnement <code>BACKUP_TOKEN</code> puis appelez chaque nuit :<br>
+              <code style="display:block;background:var(--card2);padding:.5rem;border-radius:6px;font-size:.78rem;margin-top:.25rem;word-break:break-all;">curl -fsS "https://votre-site/backup.php?token=VOTRE_JETON"</code>
+              <span class="muted" style="font-size:.78rem;">(depuis un cron de l'hôte, un conteneur planificateur, une GitHub Action, un service de « cron en ligne »…)</span>
+            </div>
+            <div style="margin:.5rem 0;"><strong>Depuis l'hôte Docker :</strong><br>
+              <code style="display:block;background:var(--card2);padding:.5rem;border-radius:6px;font-size:.78rem;margin-top:.25rem;word-break:break-all;">0 2 * * * docker exec &lt;conteneur&gt; php /var/www/html/backup.php</code>
+            </div>
+            <span class="muted" style="font-size:.78rem;">💡 Restauration en ligne de commande : <code>mysql -u &lt;user&gt; -p <?=h(DB_NAME)?> &lt; fichier.sql</code></span>
+          </div>
+        </details>
       </div>
     </div>
 

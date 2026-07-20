@@ -19,9 +19,15 @@
     Require all denied
 </Files>
 
-# ─── Interdire l'exécution de scripts dans le dossier uploads ─
+# ─── Bloquer l'accès direct au dossier des sauvegardes ──────
+# Les fichiers .sql contiennent toutes les données (signatures, mot de passe
+# SMTP…). Ils ne doivent JAMAIS être servis directement : le téléchargement
+# passe par index.php (?page=backup_download), après contrôle d'accès.
 <IfModule mod_rewrite.c>
     RewriteEngine On
+
+    # Bloquer tout accès au dossier backups/
+    RewriteRule ^backups/ - [F,L]
 
     # Bloquer tout script PHP dans uploads/
     RewriteRule ^uploads/.*\.php$ - [F,L]

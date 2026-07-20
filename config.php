@@ -38,6 +38,17 @@ define('UPLOAD_MAX_BYTES',  1 * 1024 * 1024);  // 1 Mo
 define('UPLOAD_ALLOWED_MIME', ['image/png','image/jpeg','image/gif','image/webp']);
 // Les SVG sont retirés des MIME autorisés pour éviter les injections XSS via SVG
 
+// ─── Sauvegardes ──────────────────────────────────────────────
+// Dossier des sauvegardes SQL sur le serveur (protégé du web par .htaccess).
+define('BACKUP_DIR',        'backups/');
+define('BACKUP_RETENTION',  7);   // Nombre de sauvegardes conservées (jours glissants)
+
+// Sauvegarde automatique « sans cron » : déclenchée par le trafic web.
+// Idéal en conteneur (pas de crontab). Une seule sauvegarde est créée par
+// intervalle, quel que soit le nombre de visiteurs (verrou atomique en base).
+define('BACKUP_AUTO',          true);
+define('BACKUP_AUTO_INTERVAL', 86400);   // Intervalle minimal en secondes (86400 = 24 h)
+
 // ─── Environnement ────────────────────────────────────────────
 // Passer à false en production pour masquer les erreurs PHP
 define('APP_DEBUG', false);
