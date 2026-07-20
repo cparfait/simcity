@@ -217,16 +217,6 @@ try {
             </tr>
             <?php endforeach; ?>
         </table>
-
-        <?php if ($htMsg): ?><div class="msg <?= strpos($htMsg, '✅') === 0 ? 'ok' : 'err' ?>" style="margin-top:1rem;"><?= htmlspecialchars($htMsg) ?></div><?php endif; ?>
-        <?php if (!$htActive): ?>
-        <form method="post" style="margin-top:1rem;">
-            <input type="hidden" name="_csrf" value="<?= $csrf ?>">
-            <input type="hidden" name="action" value="enable_htaccess">
-            <button type="submit" class="btn secondary">🛡️ Activer la protection .htaccess</button>
-            <span class="hint">Crée <code>.htaccess</code> à partir du modèle fourni.</span>
-        </form>
-        <?php endif; ?>
     </div>
 
     <!-- ── Compte MySQL dédié ────────────────────────────────── -->
@@ -281,6 +271,26 @@ try {
             <li>Planifier une sauvegarde <code>mysqldump</code> régulière.</li>
         </ul>
         <p class="hint" style="margin-top:1rem;">Détails complets : section « Mise en production » du <code>README.md</code>.</p>
+    </div>
+
+    <!-- ── DERNIÈRE ÉTAPE : protection .htaccess ──────────────── -->
+    <div class="card" style="border-color:#d97706;">
+        <h3 style="color:#d97706;">🛡️ Dernière étape — activer la protection</h3>
+        <?php if ($htMsg): ?><div class="msg <?= strpos($htMsg, '✅') === 0 ? 'ok' : 'err' ?>"><?= htmlspecialchars($htMsg) ?></div><?php endif; ?>
+        <?php if ($htActive): ?>
+            <div class="msg ok">✅ Protection <code>.htaccess</code> active — <code>config.php</code>, <code>install.php</code> et <code>reset.php</code> sont bloqués (sous Apache).</div>
+            <p class="hint">Terminez en supprimant <code>install.php</code> et <code>reset.php</code> si vous n'en avez plus besoin.</p>
+        <?php else: ?>
+            <div class="banner">⚠️ <b>À faire en tout dernier.</b> Ceci crée le <code>.htaccess</code> qui protège
+            <code>config.php</code>… mais qui <b>bloque aussi l'accès à cette page (install.php)</b>.
+            Assurez-vous d'avoir d'abord terminé les étapes ci-dessus (compte admin, compte MySQL dédié).</p>
+            <p class="hint" style="margin-bottom:1rem;">Si vous devez revenir sur install.php après coup, renommez ou supprimez le fichier <code>.htaccess</code> (ou le modèle <code>htaccess</code>).</p>
+            <form method="post">
+                <input type="hidden" name="_csrf" value="<?= $csrf ?>">
+                <input type="hidden" name="action" value="enable_htaccess">
+                <button type="submit" class="btn" style="background:#d97706;">🛡️ Activer la protection .htaccess (dernière étape)</button>
+            </form>
+        <?php endif; ?>
     </div>
 
     <a href="index.php" class="go">▶️ Accéder à SimCity</a>
