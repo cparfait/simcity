@@ -41,25 +41,14 @@ define('FORCE_HTTPS', filter_var(getenv('FORCE_HTTPS') ?: 'false', FILTER_VALIDA
 define('CSRF_TOKEN_NAME', '_csrf');
 
 // ─── Authentification LDAP / Active Directory ─────────────────
-// Cohabite avec les comptes locaux : on tente d'abord le mot de passe local,
-// puis (si activé) un bind LDAP. Un utilisateur AD valide est provisionné
-// automatiquement (jamais super-admin). Mêmes variables que Sentinelle.
+// Se configure dans l'interface : Référentiels → Paramètres → carte
+// « Authentification Active Directory » (stockage en base, table settings).
+// En Docker, les variables d'environnement LDAP_* (mêmes noms que Sentinelle :
+// LDAP_ENABLED, LDAP_SERVER, LDAP_PORT, LDAP_USE_SSL, LDAP_VALIDATE_CERT,
+// LDAP_CA_CERT, LDAP_DOMAIN, LDAP_BASE_DN, LDAP_REQUIRED_GROUP,
+// LDAP_USER_DN_TEMPLATE, LDAP_BIND_USER, LDAP_BIND_PASSWORD) PRIMENT sur la
+// base : le champ correspondant est alors verrouillé dans l'interface.
 // Nécessite l'extension PHP « ldap » (php.ini : extension=ldap).
-define('LDAP_ENABLED',      filter_var(getenv('LDAP_ENABLED') ?: 'false', FILTER_VALIDATE_BOOLEAN));
-define('LDAP_SERVER',       getenv('LDAP_SERVER') ?: '');        // ex: dc.chatillon.lan ou ldaps://dc.chatillon.lan
-define('LDAP_PORT',         (int)(getenv('LDAP_PORT') ?: 0));    // 0 = auto (389, ou 636 en LDAPS)
-define('LDAP_USE_SSL',      filter_var(getenv('LDAP_USE_SSL') ?: 'false', FILTER_VALIDATE_BOOLEAN)); // LDAPS
-// Validation du certificat serveur en LDAPS (false si CA interne/auto-signée)
-define('LDAP_VALIDATE_CERT', filter_var(getenv('LDAP_VALIDATE_CERT') ?: 'true', FILTER_VALIDATE_BOOLEAN));
-define('LDAP_CA_CERT',      getenv('LDAP_CA_CERT') ?: '');       // chemin d'un fichier CA (PEM), optionnel
-define('LDAP_DOMAIN',       getenv('LDAP_DOMAIN') ?: '');        // ex: chatillon.lan (bind UPN user@domaine)
-define('LDAP_BASE_DN',      getenv('LDAP_BASE_DN') ?: '');       // ex: DC=chatillon,DC=lan
-// Restriction d'accès à un groupe AD (fortement conseillé) : DN complet ou nom simple (cn)
-define('LDAP_REQUIRED_GROUP',   getenv('LDAP_REQUIRED_GROUP') ?: '');
-define('LDAP_USER_DN_TEMPLATE', getenv('LDAP_USER_DN_TEMPLATE') ?: ''); // alternative au bind UPN, ex: CN={username},OU=Users,DC=...
-// Compte de service (optionnel) : utilisé uniquement par le bouton « Tester »
-define('LDAP_BIND_USER',     getenv('LDAP_BIND_USER') ?: '');    // ex: svc-simcity@chatillon.lan
-define('LDAP_BIND_PASSWORD', getenv('LDAP_BIND_PASSWORD') ?: '');
 
 // ─── Uploads ─────────────────────────────────────────────────
 define('UPLOAD_DIR',        'uploads/');

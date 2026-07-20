@@ -77,6 +77,9 @@ try {
     die("<div style='color:#ef4444;padding:3rem;font-family:sans-serif'>$msg</div>");
 }
 
+// ─── Configuration LDAP/AD (table settings, surcharge par env) ─
+ldap_init($pdo);
+
 // ─── Bibliothèque de sauvegarde / restauration ────────────────
 require_once __DIR__ . '/backup_lib.php';
 
@@ -1637,6 +1640,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $url = rtrim($url, '/');
                 $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='site_url'")->execute([$url]);
             }
+            // Configuration LDAP / Active Directory (réservée aux super-admins).
+            // Les champs imposés par variable d'environnement ne sont pas écrasés.
+            if (isset($d['ldap_form'])) {
+                if (empty($_SESSION['is_admin'])) {
+                    flash('error', "La configuration LDAP est réservée aux super-administrateurs.");
+                } else {
+                    $set = $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?");
+                    foreach (['ldap_enabled','ldap_use_ssl','ldap_validate_cert'] as $key) {
+                        if (!ldap_env_locked($key)) $set->execute([!empty($d[$key]) ? '1' : '0', $key]);
+                    }
+                    if (!ldap_env_locked('ldap_port')) $set->execute([(string)max(0, (int)($d['ldap_port'] ?? 0)), 'ldap_port']);
+                    foreach (['ldap_server','ldap_ca_cert','ldap_domain','ldap_base_dn','ldap_required_group','ldap_user_dn_template','ldap_bind_user'] as $key) {
+                        if (!ldap_env_locked($key)) $set->execute([trim($d[$key] ?? ''), $key]);
+                    }
+                    // Mot de passe du compte de service : conservé si le champ est laissé vide
+                    if (!ldap_env_locked('ldap_bind_password') && ($d['ldap_bind_password'] ?? '') !== '') {
+                        $set->execute([$d['ldap_bind_password'], 'ldap_bind_password']);
+                    }
+                    ldap_init($pdo); // recharge la config (utile si « Tester » suit)
+                    logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "Modification de la configuration LDAP/AD");
+                    flash('success', 'Configuration LDAP enregistrée.' . (ldap_auth_enabled() ? '' : (ldap_cfg('ldap_enabled') && !extension_loaded('ldap') ? " ⚠️ Extension PHP « ldap » manquante : l'authentification AD restera inactive." : '')));
+                }
+            }
             // Configuration SMTP (envoi des liens de signature)
             if (isset($d['smtp_host'])) {
                 foreach (['smtp_host','smtp_port','smtp_user','smtp_from','smtp_from_name'] as $key) {
@@ -1677,7 +1703,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
-            flash('success', 'Paramètres enregistrés.');
+            if (!isset($d['ldap_form'])) flash('success', 'Paramètres enregistrés.'); // la carte LDAP a son propre message
         } elseif ($ent === 'admin_signature') {
             // Signature manuscrite (visa DSI) — une par compte admin.
             // Chacun gère la sienne ; un super-admin peut gérer celles des autres.
@@ -3135,19 +3161,15 @@ elseif ($page === 'refs') {
       <span>🌐 <strong>Authentification Active Directory :</strong>
         <?php if(ldap_auth_enabled()): ?>
           <span style="color:var(--success);font-weight:600;">activée</span>
-          <span class="muted">— serveur : <code style="font-family:var(--font-mono);font-size:.8rem;"><?=h(LDAP_SERVER)?></code><?=LDAP_REQUIRED_GROUP!==''?' · groupe requis : <code style="font-family:var(--font-mono);font-size:.8rem;">'.h(LDAP_REQUIRED_GROUP).'</code>':''?></span>
-        <?php elseif(defined('LDAP_ENABLED') && LDAP_ENABLED && !extension_loaded('ldap')): ?>
+          <span class="muted">— serveur : <code style="font-family:var(--font-mono);font-size:.8rem;"><?=h(ldap_cfg('ldap_server'))?></code><?=ldap_cfg('ldap_required_group')!==''?' · groupe requis : <code style="font-family:var(--font-mono);font-size:.8rem;">'.h(ldap_cfg('ldap_required_group')).'</code>':' · <strong style="color:var(--warning);">⚠️ aucun groupe requis</strong>'?></span>
+        <?php elseif(ldap_cfg('ldap_enabled') && !extension_loaded('ldap')): ?>
           <span style="color:var(--danger);font-weight:600;">extension PHP « ldap » manquante</span>
         <?php else: ?>
-          <span class="muted">désactivée <small>(variables d'environnement LDAP_* — voir README)</small></span>
+          <span class="muted">désactivée</span>
         <?php endif; ?>
       </span>
-      <?php if(!empty($_SESSION['is_admin']) && defined('LDAP_ENABLED') && LDAP_ENABLED): ?>
-      <form method="post" style="display:inline;margin-left:auto;">
-        <input type="hidden" name="_entity" value="ldap_test">
-        <input type="hidden" name="_action" value="test">
-        <button type="submit" class="btn-secondary" style="font-size:.8rem;padding:.35rem .8rem;">🔌 Tester la connexion</button>
-      </form>
+      <?php if(!empty($_SESSION['is_admin'])): ?>
+      <a href="?page=refs&tab=settings" class="btn-secondary" style="font-size:.8rem;padding:.35rem .8rem;margin-left:auto;text-decoration:none;">⚙️ Configurer</a>
       <?php endif; ?>
     </div>
     <?php endif; ?>
@@ -3261,6 +3283,76 @@ elseif ($page === 'refs') {
             <button type="submit" class="btn-primary">💾 Enregistrer</button>
           </div>
         </form>
+      </div>
+
+      <!-- Bloc LDAP / Active Directory -->
+      <div class="card">
+        <div class="card-header">🌐 Authentification Active Directory (LDAP)</div>
+        <?php if(empty($_SESSION['is_admin'])): ?>
+        <p style="padding:1.5rem;color:var(--text2);font-size:.88rem;">Configuration réservée aux super-administrateurs.</p>
+        <?php else: ?>
+        <?php
+          // Champ verrouillé si imposé par variable d'environnement (Docker)
+          $lk  = fn($k) => ldap_env_locked($k) ? 'disabled title="Imposé par la variable d\'environnement '.h(LDAP_KEYS[$k]).' — modifiable uniquement côté serveur"' : '';
+          $lkN = fn($k) => ldap_env_locked($k) ? ' <span style="font-weight:400;text-transform:none;color:var(--warning);">🔒 env</span>' : '';
+        ?>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="settings">
+          <input type="hidden" name="_action" value="save">
+          <input type="hidden" name="ldap_form" value="1">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+            Les administrateurs se connectent avec leur <strong>compte Active Directory</strong>, en complément des comptes locaux
+            (mot de passe local testé d'abord, puis bind LDAP). Un utilisateur AD valide et inconnu est <strong>provisionné automatiquement</strong>
+            (jamais super-admin). Marqué 🔒 env : valeur imposée par l'environnement (Docker).
+          </p>
+          <?php if(!extension_loaded('ldap')): ?>
+          <div style="background:var(--danger-dim);color:var(--danger);border-radius:var(--radius-sm);padding:.75rem 1rem;margin-bottom:1.25rem;font-size:.85rem;">
+            ⚠️ Extension PHP <strong>« ldap »</strong> non chargée — l'authentification AD restera inactive (php.ini : <code>extension=ldap</code>, puis redémarrez le serveur web).
+          </div>
+          <?php endif; ?>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;text-transform:none;font-size:.88rem;">
+                <input type="checkbox" name="ldap_enabled" value="1" <?=ldap_cfg('ldap_enabled')?'checked':''?> <?=$lk('ldap_enabled')?> style="width:15px;height:15px;accent-color:var(--primary);">
+                <span><strong>Activer l'authentification Active Directory</strong><?=$lkN('ldap_enabled')?></span>
+              </label>
+            </div>
+            <div class="form-group"><label>Serveur LDAP<?=$lkN('ldap_server')?></label><input type="text" name="ldap_server" value="<?=h(ldap_cfg('ldap_server'))?>" placeholder="dc.chatillon.lan ou ldaps://dc.chatillon.lan" <?=$lk('ldap_server')?>></div>
+            <div class="form-group"><label>Port (0 = auto)<?=$lkN('ldap_port')?></label><input type="number" name="ldap_port" value="<?=(int)ldap_cfg('ldap_port')?>" min="0" max="65535" placeholder="636 en LDAPS, sinon 389" <?=$lk('ldap_port')?>></div>
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;text-transform:none;font-size:.85rem;">
+                <input type="checkbox" name="ldap_use_ssl" value="1" <?=ldap_cfg('ldap_use_ssl')?'checked':''?> <?=$lk('ldap_use_ssl')?> style="width:15px;height:15px;accent-color:var(--primary);">
+                <span>LDAPS — connexion chiffrée (TLS)<?=$lkN('ldap_use_ssl')?></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;text-transform:none;font-size:.85rem;">
+                <input type="checkbox" name="ldap_validate_cert" value="1" <?=ldap_cfg('ldap_validate_cert')?'checked':''?> <?=$lk('ldap_validate_cert')?> style="width:15px;height:15px;accent-color:var(--primary);">
+                <span>Valider le certificat serveur <small style="color:var(--text3);">(décocher si CA interne/auto-signée)</small><?=$lkN('ldap_validate_cert')?></span>
+              </label>
+            </div>
+            <div class="form-group"><label>Domaine AD (bind UPN)<?=$lkN('ldap_domain')?></label><input type="text" name="ldap_domain" value="<?=h(ldap_cfg('ldap_domain'))?>" placeholder="chatillon.lan → utilisateur@chatillon.lan" <?=$lk('ldap_domain')?>></div>
+            <div class="form-group"><label>Base DN<?=$lkN('ldap_base_dn')?></label><input type="text" name="ldap_base_dn" value="<?=h(ldap_cfg('ldap_base_dn'))?>" placeholder="DC=chatillon,DC=lan" <?=$lk('ldap_base_dn')?>></div>
+            <div class="form-group form-full"><label>Groupe AD requis <span style="font-weight:400;text-transform:none;color:var(--warning);">— fortement conseillé</span><?=$lkN('ldap_required_group')?></label>
+              <input type="text" name="ldap_required_group" value="<?=h(ldap_cfg('ldap_required_group'))?>" placeholder="GG-SimCity-Admins ou CN=GG-SimCity-Admins,OU=Groupes,DC=chatillon,DC=lan" <?=$lk('ldap_required_group')?>>
+              <small style="color:var(--text3);font-size:.75rem;">Sans groupe, <strong>tout compte AD valide</strong> accède à l'application. Les groupes imbriqués sont pris en compte.</small>
+            </div>
+            <div class="form-group form-full"><label>Gabarit DN de bind <span style="font-weight:400;text-transform:none;">(optionnel, alternative à l'UPN)</span><?=$lkN('ldap_user_dn_template')?></label><input type="text" name="ldap_user_dn_template" value="<?=h(ldap_cfg('ldap_user_dn_template'))?>" placeholder="CN={username},OU=Utilisateurs,DC=chatillon,DC=lan" <?=$lk('ldap_user_dn_template')?>></div>
+            <div class="form-group form-full"><label>Fichier CA (PEM) <span style="font-weight:400;text-transform:none;">(optionnel, chemin serveur)</span><?=$lkN('ldap_ca_cert')?></label><input type="text" name="ldap_ca_cert" value="<?=h(ldap_cfg('ldap_ca_cert'))?>" placeholder="C:\certs\ca-interne.pem" <?=$lk('ldap_ca_cert')?>></div>
+            <div class="form-group"><label>Compte de service <span style="font-weight:400;text-transform:none;">(bouton Tester)</span><?=$lkN('ldap_bind_user')?></label><input type="text" name="ldap_bind_user" value="<?=h(ldap_cfg('ldap_bind_user'))?>" autocomplete="off" placeholder="svc-simcity@chatillon.lan" <?=$lk('ldap_bind_user')?>></div>
+            <div class="form-group"><label>Mot de passe <span style="font-weight:400;text-transform:none;">(vide = inchangé)</span><?=$lkN('ldap_bind_password')?></label><input type="password" name="ldap_bind_password" value="" autocomplete="new-password" <?=$lk('ldap_bind_password')?>></div>
+          </div>
+          <div style="display:flex;gap:.75rem;align-items:center;padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
+            <button type="submit" class="btn-primary">💾 Enregistrer</button>
+          </div>
+        </form>
+        <form method="post" style="padding:0 1.5rem 1.5rem;">
+          <input type="hidden" name="_entity" value="ldap_test">
+          <input type="hidden" name="_action" value="test">
+          <button type="submit" class="btn-secondary">🔌 Tester la connexion</button>
+          <small style="color:var(--text3);margin-left:.75rem;">Teste la configuration <strong>enregistrée</strong> (enregistrez d'abord vos modifications).</small>
+        </form>
+        <?php endif; ?>
       </div>
 
       <!-- Bloc seuils -->

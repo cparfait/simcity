@@ -390,6 +390,20 @@ function simcity_apply_schema(PDO $pdo): void
         ['smtp_from',          '',    "Adresse e-mail expéditrice"],
         ['smtp_from_name',     'SimCity — DSI', "Nom de l'expéditeur"],
         ['last_auto_backup',   '',    "Horodatage de la dernière sauvegarde automatique"],
+        // Authentification LDAP / Active Directory (modifiable dans Paramètres ;
+        // les variables d'environnement LDAP_* priment si définies — Docker)
+        ['ldap_enabled',          '0', "Authentification Active Directory activée (0/1)"],
+        ['ldap_server',           '',  "Serveur LDAP (FQDN, ldap:// ou ldaps://)"],
+        ['ldap_port',             '0', "Port LDAP (0 = auto : 389, ou 636 en LDAPS)"],
+        ['ldap_use_ssl',          '1', "LDAPS — connexion chiffrée TLS (0/1)"],
+        ['ldap_validate_cert',    '1', "Validation du certificat serveur en LDAPS (0/1)"],
+        ['ldap_ca_cert',          '',  "Chemin d'un fichier CA (PEM), optionnel"],
+        ['ldap_domain',           '',  "Domaine AD — bind UPN utilisateur@domaine"],
+        ['ldap_base_dn',          '',  "Base DN (ex : DC=exemple,DC=lan)"],
+        ['ldap_required_group',   '',  "Groupe AD requis (DN ou nom) — fortement conseillé"],
+        ['ldap_user_dn_template', '',  "Gabarit DN de bind, {username} (alternative à l'UPN)"],
+        ['ldap_bind_user',        '',  "Compte de service (bouton Tester la connexion)"],
+        ['ldap_bind_password',    '',  "Mot de passe du compte de service"],
     ] as [$k, $v, $l]) {
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);

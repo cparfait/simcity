@@ -60,13 +60,24 @@ define('DB_PASS', getenv('DB_PASS') ?: '');            // vide par défaut sous 
 ### 2 bis. Authentification LDAP / Active Directory (optionnelle)
 
 Les administrateurs peuvent se connecter avec leur **compte Active Directory**,
-en complément des comptes locaux (mêmes variables que Sentinelle). L'ordre de
-vérification : mot de passe local d'abord, puis bind LDAP. Un utilisateur AD
-valide et inconnu en base est **provisionné automatiquement** (jamais
-super-admin ; le rôle se promeut ensuite dans Référentiels → Comptes Admin).
+en complément des comptes locaux. L'ordre de vérification : mot de passe local
+d'abord, puis bind LDAP. Un utilisateur AD valide et inconnu en base est
+**provisionné automatiquement** (jamais super-admin ; le rôle se promeut
+ensuite dans Référentiels → Comptes Admin).
+
+**Configuration dans l'interface** (super-admins) : **Référentiels → Paramètres
+→ carte « 🌐 Authentification Active Directory »** — serveur, LDAPS, validation
+du certificat, domaine (bind UPN), Base DN, groupe AD requis, compte de service,
+avec bouton **🔌 Tester la connexion**. Les réglages sont stockés en base
+(table `settings`), comme les Préférences de Sentinelle.
 
 Prérequis : extension PHP `ldap` (php.ini : `extension=ldap` ; Docker :
-`docker-php-ext-install ldap` dans l'image).
+`docker-php-ext-install ldap` dans l'image). Un avertissement s'affiche dans la
+carte si elle manque.
+
+**Docker / production** : les variables d'environnement `LDAP_*` (mêmes noms que
+Sentinelle) **priment sur la base** — le champ correspondant est alors verrouillé
+🔒 dans l'interface :
 
 ```yaml
       environment:
@@ -84,14 +95,12 @@ Prérequis : extension PHP `ldap` (php.ini : `extension=ldap` ; Docker :
         LDAP_BIND_PASSWORD: "secret"
 ```
 
-- `LDAP_REQUIRED_GROUP` restreint la connexion aux membres du groupe AD
+- Le **groupe AD requis** restreint la connexion aux membres du groupe
   (**groupes imbriqués inclus**). Sans lui, *tout* compte AD valide accède à
   l'application — à éviter.
 - Un compte provisionné depuis l'AD est marqué **🌐 AD** dans Référentiels →
   Comptes Admin : il n'a pas de mot de passe local (le champ est ignoré) et
   s'authentifie toujours via LDAP.
-- Le bouton **🔌 Tester la connexion** (onglet Comptes Admin, super-admins)
-  vérifie l'accessibilité du serveur et le bind du compte de service.
 
 ### 3. Créer les tables
 
