@@ -27,7 +27,8 @@ try {
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
     $dbname = DB_NAME;
-    $pdo->exec("CREATE DATABASE IF NOT EXISTS `$dbname` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    // Toléré : après bascule sur un compte dédié, CREATE DATABASE n'est plus permis.
+    try { $pdo->exec("CREATE DATABASE IF NOT EXISTS `$dbname` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); } catch (PDOException $e) {}
     $pdo->exec("USE `$dbname`");
 
     // ── Application du schéma (source unique : schema.php) ──────
@@ -84,6 +85,47 @@ try {
             $_SESSION['install_csrf'] = bin2hex(random_bytes(32));
         } else {
             $htMsg = "❌ Impossible de créer .htaccess (droits d'écriture ?). Renommez le fichier manuellement.";
+        }
+    }
+
+    // ── ACTION : créer un compte MySQL dédié (least-privilege) ────
+    // Le compte root crée un utilisateur limité à simcity_db, puis on réécrit
+    // config.php pour que l'application ne se connecte plus jamais en root.
+    $dbMsg = ''; $dbErr = ''; $dbCreds = null;
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'create_db_user') {
+        if (!$csrfOk()) {
+            $dbErr = "Session expirée, réessayez.";
+        } elseif (DB_USER !== 'root') {
+            $dbErr = "config.php n'utilise déjà plus le compte root — rien à faire.";
+        } else {
+            $appUser   = preg_replace('/[^a-zA-Z0-9_]/', '', trim($_POST['db_user'] ?? '')) ?: 'simcity_app';
+            $appPass   = bin2hex(random_bytes(12));   // mot de passe fort, caractères sûrs
+            $grantHost = in_array(DB_HOST, ['localhost', '127.0.0.1'], true) ? 'localhost' : '%';
+            try {
+                $qPass = $pdo->quote($appPass);
+                $pdo->exec("CREATE USER IF NOT EXISTS '$appUser'@'$grantHost' IDENTIFIED BY $qPass");
+                // S'assurer du mot de passe même si le compte préexistait (versions récentes)
+                try { $pdo->exec("ALTER USER '$appUser'@'$grantHost' IDENTIFIED BY $qPass"); } catch (Exception $e) {}
+                $pdo->exec("GRANT ALL PRIVILEGES ON `" . DB_NAME . "`.* TO '$appUser'@'$grantHost'");
+                $pdo->exec("FLUSH PRIVILEGES");
+
+                // Réécriture de config.php (si accessible en écriture)
+                $cfgPath = __DIR__ . '/config.php';
+                $written = false;
+                if (is_writable($cfgPath)) {
+                    $cfg  = file_get_contents($cfgPath);
+                    $new  = preg_replace("/define\\(\\s*'DB_USER'\\s*,\\s*'[^']*'\\s*\\)/", "define('DB_USER',    '$appUser')", $cfg, 1);
+                    $new  = preg_replace("/define\\(\\s*'DB_PASS'\\s*,\\s*'[^']*'\\s*\\)/", "define('DB_PASS',    '$appPass')", $new, 1);
+                    if ($new && $new !== $cfg && file_put_contents($cfgPath, $new) !== false) $written = true;
+                }
+                $dbCreds = ['user' => $appUser, 'pass' => $appPass, 'host' => $grantHost, 'written' => $written];
+                $dbMsg = $written
+                    ? "Compte dédié créé et config.php mis à jour. Rechargez cette page : elle se connectera avec le nouveau compte."
+                    : "Compte dédié créé, mais config.php n'a pas pu être modifié automatiquement (droits d'écriture). Reportez les identifiants ci-dessous à la main.";
+                $_SESSION['install_csrf'] = bin2hex(random_bytes(32));
+            } catch (PDOException $e) {
+                $dbErr = "Échec : le compte de connexion actuel a-t-il les droits CREATE USER / GRANT ? — " . $e->getMessage();
+            }
         }
     }
 
@@ -186,11 +228,49 @@ try {
         <?php endif; ?>
     </div>
 
+    <!-- ── Compte MySQL dédié ────────────────────────────────── -->
+    <?php if ($dbCreds): ?>
+    <div class="card">
+        <h3>🗝️ Compte MySQL dédié</h3>
+        <div class="msg ok">✅ <?= htmlspecialchars($dbMsg) ?></div>
+        <table class="checks">
+            <tr><td><b>Identifiant</b></td><td><code><?= htmlspecialchars($dbCreds['user']) ?></code></td></tr>
+            <tr><td><b>Mot de passe</b></td><td><code><?= htmlspecialchars($dbCreds['pass']) ?></code></td></tr>
+            <tr><td><b>Hôte autorisé</b></td><td><code><?= htmlspecialchars($dbCreds['host']) ?></code></td></tr>
+        </table>
+        <?php if (!$dbCreds['written']): ?>
+        <div class="banner" style="margin-top:1rem;">⚠️ Notez ce mot de passe : il ne sera plus affiché. Reportez-le dans <code>config.php</code> :<br>
+            <code>define('DB_USER', '<?= htmlspecialchars($dbCreds['user']) ?>');</code><br>
+            <code>define('DB_PASS', '<?= htmlspecialchars($dbCreds['pass']) ?>');</code>
+        </div>
+        <?php else: ?>
+        <p class="hint" style="margin-top:1rem;">L'application se connecte désormais avec ce compte ; <code>root</code> n'est plus utilisé.</p>
+        <?php endif; ?>
+    </div>
+    <?php elseif (DB_USER === 'root'): ?>
+    <div class="card">
+        <h3>🗝️ Créer un compte MySQL dédié</h3>
+        <?php if ($dbErr): ?><div class="msg err">⚠️ <?= htmlspecialchars($dbErr) ?></div><?php endif; ?>
+        <p class="hint">L'application se connecte actuellement en <b>root</b>. Ce bouton crée un compte
+        limité à la base <code><?= htmlspecialchars($dbname) ?></code> (mot de passe fort généré
+        automatiquement) et met à jour <code>config.php</code>. Le mot de passe de <code>root</code>
+        n'est pas modifié — laissez-le à votre administrateur MySQL.</p>
+        <form method="post">
+            <input type="hidden" name="_csrf" value="<?= $csrf ?>">
+            <input type="hidden" name="action" value="create_db_user">
+            <label>Nom du compte à créer</label>
+            <input type="text" name="db_user" value="simcity_app">
+            <button type="submit" class="btn secondary">🗝️ Créer le compte dédié et basculer config.php</button>
+        </form>
+    </div>
+    <?php endif; ?>
+
     <!-- ── Étapes manuelles restantes ────────────────────────── -->
     <div class="card">
         <h3>📋 À finaliser à la main</h3>
         <ul class="hint" style="line-height:1.9;margin:0;padding-left:1.25rem;">
-            <li>Créer un compte MySQL dédié (pas <code>root</code>) et le renseigner dans <code>config.php</code>.</li>
+            <li>Définir un mot de passe fort pour <code>root</code> MySQL (côté serveur, à conserver par l'administrateur) :<br>
+                <code>ALTER USER 'root'@'localhost' IDENTIFIED BY 'VotreMotDePasseFort';</code></li>
             <li>Supprimer ou restreindre l'accès à <code>install.php</code> et <code>reset.php</code>.</li>
             <li>Une fois le certificat TLS en place : passer <code>FORCE_HTTPS</code> à <code>true</code> et décommenter la ligne HSTS du <code>.htaccess</code>.</li>
             <li>Planifier une sauvegarde <code>mysqldump</code> régulière.</li>

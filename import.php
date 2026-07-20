@@ -20,7 +20,8 @@ try {
         PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
     ]);
-    $pdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    // Toléré : un compte dédié (droits limités à simcity_db) n'a pas CREATE DATABASE.
+    try { $pdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); } catch (PDOException $e) {}
     $pdo->exec("USE `" . DB_NAME . "`");
 } catch (Exception $e) {
     die("<div style='color:#ef4444;padding:2rem;font-family:sans-serif;'>Erreur DB : impossible de se connecter.</div>");

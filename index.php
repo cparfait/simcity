@@ -60,7 +60,9 @@ if (!is_dir(UPLOAD_DIR)) { mkdir(UPLOAD_DIR, 0755, true); }
 try {
     $pdo = new PDO("mysql:host=" . DB_HOST . ";charset=" . DB_CHARSET, DB_USER, DB_PASS,
         [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
-    $pdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    // Création tolérée : un compte MySQL dédié (droits limités à simcity_db) n'a pas
+    // le privilège CREATE DATABASE. Si la base existe déjà, le USE suffit.
+    try { $pdo->exec("CREATE DATABASE IF NOT EXISTS `" . DB_NAME . "` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"); } catch (PDOException $e) {}
     $pdo->exec("USE `" . DB_NAME . "`");
 } catch (Exception $e) { die("<div style='color:#ef4444;padding:3rem;font-family:sans-serif'>Erreur DB : impossible de se connecter.</div>"); }
 

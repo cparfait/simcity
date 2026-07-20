@@ -69,18 +69,20 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 
 À traiter **avant d'ouvrir l'accès**. Les points 1 à 4 sont des go/no-go de sécurité.
 
-> 💡 `install.php` automatise une partie de cette checklist : il propose de **définir le
-> mot de passe administrateur**, d'**activer le `.htaccess`**, et affiche un panneau de
+> 💡 `install.php` automatise l'essentiel de cette checklist : il propose de **définir le
+> mot de passe administrateur**, de **créer un compte MySQL dédié** (et de basculer
+> `config.php` dessus), d'**activer le `.htaccess`**, et affiche un panneau de
 > **contrôles d'environnement** (extensions PHP, droits d'écriture, identifiants DB par
 > défaut, `APP_DEBUG`). Les points restants ci-dessous sont à faire à la main.
 
 ### 🔴 Bloquants
 
-1. **Identifiants MySQL dédiés** — dans `config.php`, remplacez `DB_USER` / `DB_PASS`
-   (`root` / `root` par défaut) par un compte MySQL limité à la base `simcity_db`
-   avec un mot de passe fort. Évitez `root`.
-   > Si ce compte n'a pas le droit `CREATE DATABASE`, créez la base une fois à la main :
-   > `CREATE DATABASE simcity_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
+1. **Compte MySQL dédié** — depuis `install.php` (bloc « Créer un compte MySQL dédié »),
+   le compte `root` crée un utilisateur limité à `simcity_db` et met à jour `config.php`
+   automatiquement. L'application ne se connecte alors plus jamais en `root`.
+   > Si `config.php` n'est pas modifiable par le serveur web, `install.php` affiche les
+   > identifiants générés à reporter à la main. Pensez ensuite à définir un mot de passe
+   > fort pour `root` MySQL (côté serveur) — l'app n'en dépend plus, mais c'est une hygiène de base.
 2. **Mot de passe admin** — définissez-le directement depuis `install.php` (bloc
    « Compte administrateur »), ou plus tard via Référentiels → Comptes Admin.
    Ne laissez jamais `admin` / `admin` en production.
