@@ -3907,7 +3907,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
             if (!empty($_SESSION['admin_fullname'])) $adminDisplay = $_SESSION['admin_fullname'];
             echo h($adminDisplay);
         ?></strong></span>
-        <button class="btn-theme" onclick="toggleTheme()">🌙 Sombre</button>
+        <button class="btn-theme" id="theme-toggle" onclick="toggleTheme()" title="Basculer clair / sombre" aria-label="Basculer le thème clair ou sombre">🌙</button>
     </div>
   </div>
   <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): ?><div style="padding:.85rem;border-radius:8px;margin-bottom:1rem;<?=($f['type']??'')==='error' ? 'background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3)' : 'background:var(--success-dim);color:#10b981;border:1px solid rgba(16,185,129,.3)'?>"><?=(($f['type']??'')==='error'?'⚠️ ':'')?><?=h($f['msg'])?></div><?php endforeach; ?></div><?php endif; ?>
@@ -3962,7 +3962,13 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 })();
 
 // THEME
-function applyTheme(t){ document.documentElement.setAttribute('data-theme',t==='light'?'light':''); localStorage.setItem('pm_theme',t); }
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t==='light'?'light':'');
+  localStorage.setItem('pm_theme',t);
+  // Icône seule, reflétant le mode courant : ☀️ en clair, 🌙 en sombre
+  var b=document.getElementById('theme-toggle');
+  if(b) b.textContent = (t==='light' ? '☀️' : '🌙');
+}
 function toggleTheme(){ applyTheme((localStorage.getItem('pm_theme')||'dark')==='dark'?'light':'dark'); }
 applyTheme(localStorage.getItem('pm_theme')||'dark');
 
