@@ -3990,7 +3990,23 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .sidebar-nav{flex:1;padding:.5rem;overflow-y:auto;}
 .nav-item{display:flex;align-items:center;gap:.75rem;padding:.6rem 1rem;border-radius:var(--radius-sm);color:var(--text2);text-decoration:none;font-size:.875rem;font-weight:500;transition:all .18s ease;}
 .nav-item:hover{background:var(--bg3);color:var(--text-strong)} .nav-item.active{background:var(--primary-dim);color:var(--primary);font-weight:600;box-shadow:inset 3px 0 0 var(--primary)}
-.nav-icon{font-size:1.1rem;width:24px;text-align:center} .btn-hamburger{display:none;background:none;border:none;color:var(--text2);font-size:1.4rem;padding:.25rem;cursor:pointer}
+.nav-icon{width:20px;text-align:center;font-size:1.02rem;flex-shrink:0} .nav-item.active .nav-icon{color:var(--primary)}
+.btn-hamburger{display:none;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);width:38px;height:38px;font-size:1.25rem;align-items:center;justify-content:center;cursor:pointer}
+.btn-hamburger:hover{background:var(--bg3)}
+/* ── Pied de sidebar : carte utilisateur + actions, comme Sentinelle ── */
+.sidebar-footer{border-top:1px solid var(--border);padding:12px 12px 10px;margin-top:auto;}
+.sidebar-footer-user{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px;border-radius:var(--radius);background:var(--bg3);margin-bottom:8px;}
+.sidebar-footer-user .sfu-id{display:flex;align-items:center;gap:8px;min-width:0;}
+.sidebar-avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,var(--primary),var(--primary-dark));display:flex;align-items:center;justify-content:center;color:#fff;font-size:.9rem;flex-shrink:0;}
+.sidebar-username{font-size:.8rem;font-weight:600;color:var(--text-strong);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sidebar-role{font-size:.64rem;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;}
+.sidebar-footer-actions{display:flex;gap:4px;}
+.sidebar-footer-link{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 4px;font-size:.74rem;color:var(--text2);border-radius:var(--radius-sm);text-decoration:none;transition:background-color .18s ease,color .18s ease;}
+.sidebar-footer-link:hover{background:var(--bg3);color:var(--text-strong);}
+.sidebar-footer-link-danger:hover{background:var(--danger-dim);color:var(--danger);}
+/* Backdrop mobile (sidebar off-canvas) */
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:99;backdrop-filter:blur(1px);}
+.sidebar-overlay.open{display:block;}
 .main{margin-left:var(--sidebar-w);flex:1;display:flex;flex-direction:column;min-width:0}
 .topbar{height:var(--topbar-h);background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1.5rem;gap:1rem;position:sticky;top:0;z-index:50;}
 .topbar-title{font-family:var(--font-display);font-weight:700;font-size:1.05rem;color:var(--text-strong);flex:1}
@@ -4041,7 +4057,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 .shortcut-btn{display:flex;flex-direction:column;gap:.35rem;padding:1.25rem;border-radius:var(--radius);border:1px solid var(--border);text-decoration:none;transition:border-color .2s;} .shortcut-btn:hover{border-color:var(--primary);}
 .shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(79,70,229,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
 .tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);margin-bottom:-2px;z-index:2;}
-@media(max-width:900px){.sidebar{transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:block}}
+@media(max-width:900px){.sidebar{transform:translateX(-100%);transition:transform .25s ease;box-shadow:var(--shadow-lg)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:inline-flex}}
 a{color:var(--primary)} a:hover{color:var(--primary-dark)}
 .modal-overlay{background:rgba(15,23,42,.5)!important}
 [data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.75)!important}
@@ -4057,42 +4073,47 @@ a{color:var(--primary)} a:hover{color:var(--primary-dark)}
   </div>
   <nav class="sidebar-nav">
     <div class="sidebar-section">Principal</div>
-    <a href="?page=dashboard" class="nav-item <?=$page==='dashboard'?'active':''?>"><span class="nav-icon">🏠</span><span class="nav-label">Tableau de bord</span></a>
-    
+    <a href="?page=dashboard" class="nav-item <?=$page==='dashboard'?'active':''?>"><i class="bi bi-grid-1x2 nav-icon"></i><span class="nav-label">Tableau de bord</span></a>
+
     <div class="sidebar-section">Parc & Stocks</div>
-    <a href="?page=lines" class="nav-item <?=$page==='lines'?'active':''?>"><span class="nav-icon">💳</span><span class="nav-label">Lignes & SIM</span></a>
-    <a href="?page=devices" class="nav-item <?=$page==='devices'?'active':''?>"><span class="nav-icon">📱</span><span class="nav-label">Matériels (Mobiles)</span></a>
-    
+    <a href="?page=lines" class="nav-item <?=$page==='lines'?'active':''?>"><i class="bi bi-sim nav-icon"></i><span class="nav-label">Lignes & SIM</span></a>
+    <a href="?page=devices" class="nav-item <?=$page==='devices'?'active':''?>"><i class="bi bi-phone nav-icon"></i><span class="nav-label">Matériels (Mobiles)</span></a>
+
     <div class="sidebar-section">Outils</div>
-    <a href="?page=history" class="nav-item <?=$page==='history'?'active':''?>"><span class="nav-icon">📋</span><span class="nav-label">Historique des bons</span></a>
-    <a href="?page=refs" class="nav-item <?=$page==='refs'?'active':''?>"><span class="nav-icon">⚙️</span><span class="nav-label">Référentiels & Comptes</span></a>
+    <a href="?page=history" class="nav-item <?=$page==='history'?'active':''?>"><i class="bi bi-file-earmark-text nav-icon"></i><span class="nav-label">Historique des bons</span></a>
+    <a href="?page=refs" class="nav-item <?=$page==='refs'?'active':''?>"><i class="bi bi-gear nav-icon"></i><span class="nav-label">Référentiels & Comptes</span></a>
     <?php
     $navOperators = $pdo->query("SELECT name, website FROM operators WHERE website IS NOT NULL AND website != '' ORDER BY name")->fetchAll();
     foreach($navOperators as $op): ?>
-    <a href="<?=h($op['website'])?>" target="_blank" class="nav-item"><span class="nav-icon">🌐</span><span class="nav-label"><?=h($op['name'])?></span></a>
+    <a href="<?=h($op['website'])?>" target="_blank" class="nav-item"><i class="bi bi-globe2 nav-icon"></i><span class="nav-label"><?=h($op['name'])?></span></a>
     <?php endforeach; ?>
   </nav>
-  <div style="margin-top:auto; padding:1rem;">
-    <a href="?action=logout" class="nav-item" style="color:var(--danger); border: 1px solid var(--danger-dim);"><span class="nav-icon">🚪</span><span class="nav-label">Déconnexion</span></a>
+  <div class="sidebar-footer">
+    <div class="sidebar-footer-user">
+      <div class="sfu-id">
+        <div class="sidebar-avatar"><i class="bi bi-person-fill"></i></div>
+        <div style="min-width:0;">
+          <div class="sidebar-username"><?=h(!empty($_SESSION['admin_fullname']) ? $_SESSION['admin_fullname'] : $_SESSION['username'])?></div>
+          <div class="sidebar-role"><?=!empty($_SESSION['is_admin']) ? 'Super-administrateur' : 'Administrateur'?></div>
+        </div>
+      </div>
+      <span class="theme-toggle" onclick="toggleTheme()" title="Changer le thème" aria-label="Changer le thème" role="button" tabindex="0">
+        <i class="bi bi-moon js-theme-icon"></i>
+      </span>
+    </div>
+    <div class="sidebar-footer-actions">
+      <a href="?page=refs&tab=admins" class="sidebar-footer-link"><i class="bi bi-gear"></i> Mon compte</a>
+      <a href="?action=logout" class="sidebar-footer-link sidebar-footer-link-danger"><i class="bi bi-box-arrow-right"></i> Déconnexion</a>
+    </div>
   </div>
 </aside>
 
 <main class="main">
   <div class="topbar">
-    <button class="btn-hamburger" onclick="openSidebar()">☰</button>
+    <button class="btn-hamburger" onclick="openSidebar()" aria-label="Ouvrir le menu"><i class="bi bi-list"></i></button>
     <span class="topbar-title"><?=h($pageTitles[$page]??'Accueil')?></span>
-    <div class="topbar-right">
-        <span style="font-size:0.8rem; color:var(--text3); margin-right:10px;">Connecté(e): <strong style="color:var(--primary)"><?php
-            $adminDisplay = $_SESSION['username'];
-            if (!empty($_SESSION['admin_fullname'])) $adminDisplay = $_SESSION['admin_fullname'];
-            echo h($adminDisplay);
-        ?></strong></span>
-        <span class="theme-toggle" onclick="toggleTheme()" title="Changer le thème" aria-label="Changer le thème" role="button" tabindex="0">
-            <i class="bi bi-moon js-theme-icon"></i>
-        </span>
-    </div>
   </div>
-  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): ?><div style="padding:.85rem 1rem;border-radius:var(--radius);margin-bottom:1rem;box-shadow:var(--shadow);border:1px solid transparent;border-left-width:4px;<?=($f['type']??'')==='error' ? 'background:var(--danger-dim);color:var(--danger);border-left-color:var(--danger)' : 'background:var(--success-dim);color:var(--success);border-left-color:var(--success)'?>"><?=(($f['type']??'')==='error'?'⚠️ ':'')?><?=h($f['msg'])?></div><?php endforeach; ?></div><?php endif; ?>
+  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): $isErr=($f['type']??'')==='error'; ?><div style="display:flex;align-items:center;gap:.6rem;padding:.85rem 1rem;border-radius:var(--radius);margin-bottom:1rem;box-shadow:var(--shadow);border:1px solid transparent;border-left-width:4px;<?=$isErr ? 'background:var(--danger-dim);color:var(--danger);border-left-color:var(--danger)' : 'background:var(--success-dim);color:var(--success);border-left-color:var(--success)'?>"><i class="bi bi-<?=$isErr?'exclamation-octagon-fill':'check-circle-fill'?>" style="flex-shrink:0;"></i><div><?=h($f['msg'])?></div></div><?php endforeach; ?></div><?php endif; ?>
   <div class="content"><?=$content?></div>
 </main>
 </div>
