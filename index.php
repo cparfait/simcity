@@ -3073,7 +3073,7 @@ elseif ($page === 'refs') {
       <?php endif; ?>
     </div>
 
-    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); overflow-x:auto;">
+    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
         <?php foreach($tabs as $k => $label): ?><a href="?page=refs&tab=<?=$k?>" class="tab-btn <?=$tab===$k?'active':''?>"><?=$label?></a><?php endforeach; ?>
     </div>
 
@@ -3081,8 +3081,9 @@ elseif ($page === 'refs') {
         $currentLogo = getSetting($pdo, 'pdf_logo_path', '');
     ?>
     <!-- ── ONGLET PARAMÈTRES ───────────────────────────────────── -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;align-items:start;">
-    <div style="display:flex;flex-direction:column;gap:1.5rem;">
+    <!-- Colonnes CSS : les cartes se répartissent verticalement et remplissent
+         l'espace sans laisser de « trous » (responsive : 1 colonne si étroit). -->
+    <div style="column-width:460px;column-gap:1.5rem;">
 
       <!-- Bloc logo -->
       <div class="card">
@@ -3187,10 +3188,6 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
-      </div><!-- fin colonne gauche -->
-
-      <div style="display:flex;flex-direction:column;gap:1.5rem;"><!-- colonne droite -->
-
       <!-- Bloc seuils -->
       <div class="card">
         <div class="card-header">🔔 Seuils d'alerte Stock</div>
@@ -3216,9 +3213,7 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
-      </div><!-- fin colonne droite -->
-
-    </div><!-- fin grille paramètres -->
+    </div><!-- fin conteneur en colonnes des paramètres -->
 
     <?php if(!empty($_SESSION['is_admin'])):
         $backups   = simcity_list_backups();
@@ -3828,7 +3823,7 @@ $content = ob_get_clean();
 .content{padding:2rem;flex:1;max-width:1400px;margin:0 auto;width:100%;}
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;}
 .page-title-txt{font-family:var(--font-display);font-weight:700;font-size:1.4rem;}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:1.5rem;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:1.5rem;break-inside:avoid;}
 .card-header{padding:1rem 1.5rem;border-bottom:1px solid var(--border);font-family:var(--font-display);font-weight:600;font-size:.95rem;color:var(--text2);}
 
 .data-table{width:100%;border-collapse:collapse} 
