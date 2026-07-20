@@ -1010,9 +1010,11 @@ login_render:
 if (!isset($_SESSION['user_id'])) {
     ?>
     <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion – SimCity</title>
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root{--primary:#4f46e5;--primary-dark:#4338ca;--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
+        .login-logo{height:56px;width:56px;object-fit:contain;display:block;margin:0 auto 8px;}
         body{background:linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#1e3a6b 100%);color:var(--text);font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box;}
         .login-box{background:var(--card);padding:36px 32px;border-radius:14px;border:1px solid var(--border);width:100%;max-width:400px;box-shadow:0 12px 28px rgba(15,23,42,.35),0 4px 10px rgba(15,23,42,.2);}
         h2{text-align:center;margin-top:0;font-size:1.6rem;font-weight:700;color:var(--text-strong);}
@@ -1023,7 +1025,7 @@ if (!isset($_SESSION['user_id'])) {
         button:hover{background:var(--primary-dark);}
     </style></head>
     <body>
-        <div class="login-box"><h2>📱 SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI<?php if(ldap_auth_enabled()) echo '<br><span style="font-size:.78rem;color:var(--text-light);">Comptes locaux ou Active Directory</span>'; ?></p>
+        <div class="login-box"><img src="assets/logo.svg" alt="SimCity" class="login-logo"><h2>SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI<?php if(ldap_auth_enabled()) echo '<br><span style="font-size:.78rem;color:var(--text-light);">Comptes locaux ou Active Directory</span>'; ?></p>
             <?php if(isset($login_error)) echo "<div style='color:var(--danger);text-align:center;margin-bottom:1rem;'>".h($login_error)."</div>"; ?>
             <form method="post" autocomplete="off">
                 <?=csrf_field()?>
@@ -3968,7 +3970,9 @@ $content = ob_get_clean();
 <html lang="fr">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($pageTitles[$page]??'SimCity')?> – SimCity</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="vendor/bootstrap-icons.css" rel="stylesheet">
 <script>(function(){ if (localStorage.getItem('pm_theme') === 'dark') document.documentElement.setAttribute('data-theme','dark'); })();</script>
 <style>
 /* CSS UNIFIÉ MINIFIÉ — design system aligné sur Sentinelle (IBM Plex, indigo + slate) */
@@ -3980,7 +3984,7 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .app{display:flex;min-height:100vh}
 .sidebar{width:var(--sidebar-w);height:100vh;position:fixed;left:0;top:0;z-index:100;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
 .sidebar-logo{padding:1.5rem 1.5rem 1rem;display:flex;align-items:center;gap:.75rem;border-bottom:1px solid var(--border);}
-.sidebar-logo .logo-icon{font-size:1.8rem}
+.sidebar-logo .logo-icon{width:32px;height:32px;flex-shrink:0}
 .sidebar-logo .logo-text{font-family:var(--font-display);font-weight:700;font-size:1.15rem;color:var(--text-strong);letter-spacing:.3px;}
 .sidebar-section{padding:.85rem 1rem .3rem;font-size:.64rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.13em;}
 .sidebar-nav{flex:1;padding:.5rem;overflow-y:auto;}
@@ -3990,7 +3994,9 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .main{margin-left:var(--sidebar-w);flex:1;display:flex;flex-direction:column;min-width:0}
 .topbar{height:var(--topbar-h);background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1.5rem;gap:1rem;position:sticky;top:0;z-index:50;}
 .topbar-title{font-family:var(--font-display);font-weight:700;font-size:1.05rem;color:var(--text-strong);flex:1}
-.btn-theme{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text2);font-size:.88rem;padding:.3rem .65rem;cursor:pointer;transition:background-color .18s ease} .btn-theme:hover{background:var(--card2)}
+/* Bascule de thème : icône Bootstrap Icons (bi-sun / bi-moon), comme Sentinelle */
+.theme-toggle{cursor:pointer;color:var(--text2);font-size:1rem;padding:6px 8px;border-radius:var(--radius-sm);line-height:1;transition:background-color .18s ease,color .18s ease}
+.theme-toggle:hover{color:var(--text-strong);background:var(--bg3)}
 .content{padding:2rem;flex:1;max-width:1400px;margin:0 auto;width:100%;}
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;}
 .page-title-txt{font-family:var(--font-display);font-weight:700;font-size:1.4rem;color:var(--text-strong);}
@@ -4046,7 +4052,7 @@ a{color:var(--primary)} a:hover{color:var(--primary-dark)}
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-logo">
-    <span class="logo-icon">📱</span>
+    <img src="assets/logo.svg" alt="" class="logo-icon">
     <div><div class="logo-text">SimCity</div><div class="logo-ver">v<?=defined('APP_VERSION') ? APP_VERSION : '1.0'?></div></div>
   </div>
   <nav class="sidebar-nav">
@@ -4081,7 +4087,9 @@ a{color:var(--primary)} a:hover{color:var(--primary-dark)}
             if (!empty($_SESSION['admin_fullname'])) $adminDisplay = $_SESSION['admin_fullname'];
             echo h($adminDisplay);
         ?></strong></span>
-        <button class="btn-theme" id="theme-toggle" onclick="toggleTheme()" title="Basculer clair / sombre" aria-label="Basculer le thème clair ou sombre">🌙</button>
+        <span class="theme-toggle" onclick="toggleTheme()" title="Changer le thème" aria-label="Changer le thème" role="button" tabindex="0">
+            <i class="bi bi-moon js-theme-icon"></i>
+        </span>
     </div>
   </div>
   <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): ?><div style="padding:.85rem 1rem;border-radius:var(--radius);margin-bottom:1rem;box-shadow:var(--shadow);border:1px solid transparent;border-left-width:4px;<?=($f['type']??'')==='error' ? 'background:var(--danger-dim);color:var(--danger);border-left-color:var(--danger)' : 'background:var(--success-dim);color:var(--success);border-left-color:var(--success)'?>"><?=(($f['type']??'')==='error'?'⚠️ ':'')?><?=h($f['msg'])?></div><?php endforeach; ?></div><?php endif; ?>
@@ -4139,9 +4147,10 @@ a{color:var(--primary)} a:hover{color:var(--primary-dark)}
 function applyTheme(t){
   document.documentElement.setAttribute('data-theme',t==='dark'?'dark':'light');
   localStorage.setItem('pm_theme',t);
-  // Icône seule, reflétant le mode courant : ☀️ en clair, 🌙 en sombre
-  var b=document.getElementById('theme-toggle');
-  if(b) b.textContent = (t==='light' ? '☀️' : '🌙');
+  // Icône Bootstrap Icons, comme Sentinelle : lune en clair (→ passer en
+  // sombre), soleil en sombre (→ passer en clair).
+  var cls = (t==='dark' ? 'bi bi-sun js-theme-icon' : 'bi bi-moon js-theme-icon');
+  document.querySelectorAll('.js-theme-icon').forEach(function(icon){ icon.className = cls; });
 }
 function toggleTheme(){ applyTheme((localStorage.getItem('pm_theme')||'light')==='dark'?'light':'dark'); }
 applyTheme(localStorage.getItem('pm_theme')||'light');

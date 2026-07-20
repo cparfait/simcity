@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SimCity">
+  <defs>
+    <linearGradient id="simcity-grad" x1="6" y1="5" x2="58" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#3b82f6"/>
+    </linearGradient>
+  </defs>
+  <path d="M32 5 L55 14 V30 C55 44 45 53 32 59 C19 53 9 44 9 30 V14 Z" fill="url(#simcity-grad)"/>
+  <rect x="25" y="18" width="14" height="26" rx="3" fill="none" stroke="#ffffff" stroke-width="4"/>
+  <line x1="29.5" y1="39.5" x2="34.5" y2="39.5" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+</svg>

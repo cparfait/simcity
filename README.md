@@ -246,6 +246,12 @@ simcity/
 ├── import.php        # Import CSV en masse
 ├── backup.php        # Sauvegarde automatique (cron / tâche planifiée)
 ├── backup_lib.php    # Fonctions de sauvegarde / restauration (partagées)
+├── ldap_auth.php     # Authentification LDAP / Active Directory (optionnelle)
+├── assets/
+│   └── logo.svg      # Logo (sidebar, login, favicon) — style Sentinelle
+├── vendor/
+│   ├── bootstrap-icons.css   # Icônes Bootstrap Icons hors-ligne (thème…)
+│   └── fonts/                # Polices woff/woff2 des icônes
 ├── js/
 │   └── qrcode.min.js # Génération QR codes (client-side)
 ├── uploads/          # Pièces jointes — créé automatiquement
