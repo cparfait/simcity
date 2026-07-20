@@ -7,7 +7,7 @@ SimCity est une application web PHP de gestion de parc téléphonique : lignes m
 
 ## Prérequis
 
-- PHP 7.4+ avec extension PDO MySQL
+- PHP 8.3+ (version récente maintenue) avec extension PDO MySQL — extension `ldap` en plus pour l'authentification Active Directory (optionnelle)
 - MySQL / MariaDB
 - Serveur web : Apache, Nginx ou Laragon
 
@@ -56,6 +56,42 @@ define('DB_PASS', getenv('DB_PASS') ?: '');            // vide par défaut sous 
 
 > ⚠️ **Docker — persistance** : montez des volumes pour `uploads/`, `backups/` et les
 > données MySQL, sinon leur contenu disparaît à chaque rebuild du conteneur.
+
+### 2 bis. Authentification LDAP / Active Directory (optionnelle)
+
+Les administrateurs peuvent se connecter avec leur **compte Active Directory**,
+en complément des comptes locaux (mêmes variables que Sentinelle). L'ordre de
+vérification : mot de passe local d'abord, puis bind LDAP. Un utilisateur AD
+valide et inconnu en base est **provisionné automatiquement** (jamais
+super-admin ; le rôle se promeut ensuite dans Référentiels → Comptes Admin).
+
+Prérequis : extension PHP `ldap` (php.ini : `extension=ldap` ; Docker :
+`docker-php-ext-install ldap` dans l'image).
+
+```yaml
+      environment:
+        LDAP_ENABLED: "true"
+        LDAP_SERVER: dc.chatillon.lan        # FQDN/IP, ou ldaps://dc.chatillon.lan
+        LDAP_USE_SSL: "true"                 # LDAPS (port 636 par défaut)
+        LDAP_VALIDATE_CERT: "true"           # false si CA interne/auto-signée
+        LDAP_CA_CERT: ""                     # chemin d'un fichier CA (PEM), optionnel
+        LDAP_DOMAIN: chatillon.lan           # bind UPN : utilisateur@domaine
+        LDAP_BASE_DN: DC=chatillon,DC=lan
+        LDAP_REQUIRED_GROUP: GG-SimCity-Admins   # ⚠️ fortement conseillé (DN ou nom du groupe)
+        # LDAP_USER_DN_TEMPLATE: CN={username},OU=Users,DC=chatillon,DC=lan  # alternative au bind UPN
+        # Compte de service — uniquement pour le bouton « Tester la connexion » :
+        LDAP_BIND_USER: svc-simcity@chatillon.lan
+        LDAP_BIND_PASSWORD: "secret"
+```
+
+- `LDAP_REQUIRED_GROUP` restreint la connexion aux membres du groupe AD
+  (**groupes imbriqués inclus**). Sans lui, *tout* compte AD valide accède à
+  l'application — à éviter.
+- Un compte provisionné depuis l'AD est marqué **🌐 AD** dans Référentiels →
+  Comptes Admin : il n'a pas de mot de passe local (le champ est ignoré) et
+  s'authentifie toujours via LDAP.
+- Le bouton **🔌 Tester la connexion** (onglet Comptes Admin, super-admins)
+  vérifie l'accessibilité du serveur et le bind du compte de service.
 
 ### 3. Créer les tables
 

@@ -7,6 +7,9 @@ ob_start();
 // ─── Configuration centralisée ────────────────────────────────
 require_once __DIR__ . '/config.php';
 
+// ─── Authentification LDAP / Active Directory (optionnelle) ───
+require_once __DIR__ . '/ldap_auth.php';
+
 // ─── Affichage des erreurs selon l'environnement ──────────────
 if (defined('APP_DEBUG') && APP_DEBUG) {
     ini_set('display_errors', 1);
@@ -267,12 +270,13 @@ h2{font-size:1.2rem;color:#1e293b;margin-bottom:.25rem;}
 .info strong{display:block;color:#0f172a;font-size:1rem;margin-bottom:.25rem;}
 label{display:block;font-size:.8rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.4rem;}
 input{width:100%;padding:.75rem;border:1px solid #e2e8f0;border-radius:8px;font-size:1rem;margin-bottom:1rem;}
-input:focus{outline:none;border-color:#4361ee;box-shadow:0 0 0 3px rgba(67,97,238,.15);}
+input:focus{outline:none;border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.25);}
 .canvas-wrap{border:2px dashed #cbd5e1;border-radius:8px;background:#fafafa;margin-bottom:.75rem;position:relative;touch-action:none;}
 canvas{display:block;width:100%;border-radius:8px;}
 .canvas-hint{text-align:center;font-size:.75rem;color:#94a3b8;padding:.35rem;}
 .btn-clear{background:none;border:1px solid #e2e8f0;border-radius:6px;padding:.45rem 1rem;font-size:.82rem;color:#64748b;cursor:pointer;margin-bottom:1rem;}
-.btn-sign{width:100%;padding:1rem;background:linear-gradient(135deg,#4361ee,#3a86ff);color:#fff;border:none;border-radius:10px;font-size:1.05rem;font-weight:600;cursor:pointer;box-shadow:0 4px 15px rgba(67,97,238,.3);}
+.btn-sign{width:100%;padding:1rem;background:#4f46e5;color:#fff;border:none;border-radius:10px;font-size:1.05rem;font-weight:600;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.12);}
+.btn-sign:hover{background:#4338ca;}
 .btn-sign:disabled{background:#cbd5e1;box-shadow:none;cursor:not-allowed;}
 .error{background:#fef2f2;border:1px solid #fecaca;color:#dc2626;border-radius:8px;padding:1rem;margin-bottom:1rem;font-size:.9rem;}
 .success-box{text-align:center;padding:2rem 1rem;}
@@ -609,7 +613,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .card{background:#fff;border-radius:14px;padding:2rem;max-width:480px;width:100%;box-shadow:0 4px 20px rgba(0,0,0,.08);text-align:center;}
         h2{font-size:1.2rem;color:#1e293b;margin:0 0 1rem;}
         p{color:#475569;font-size:.92rem;line-height:1.6;}
-        .btn{display:inline-block;margin-top:1rem;padding:.75rem 1.75rem;background:#4361ee;color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:600;cursor:pointer;}
+        .btn{display:inline-block;margin-top:1rem;padding:.75rem 1.75rem;background:#4f46e5;color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:600;cursor:pointer;}
         </style></head><body>
         <div class="card">
             <h2>📄 Bon de remise — <?=h($agtName)?></h2>
@@ -687,7 +691,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         if ($isPending) {
             $url = baseUrl($pdo).'?page=sign&token='.$bon['token'];
             echo '<div id="qr-'.(int)$bon['id'].'"></div>
-                  <a href="'.htmlspecialchars($url).'" style="display:block;margin-top:3px;font-size:.75rem;color:#4361ee;text-decoration:none;">Signer en ligne</a>';
+                  <a href="'.htmlspecialchars($url).'" style="display:block;margin-top:3px;font-size:.75rem;color:#4f46e5;text-decoration:none;">Signer en ligne</a>';
         } else {
             echo '<div style="font-size:.8rem;font-weight:600;">'.bonStatusLabel($bon).'</div>';
         }
@@ -748,7 +752,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .toolbar .tb-status{font-size:.8rem;color:#475569;}
         .toolbar form{display:inline;margin:0;}
         .toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
-        .toolbar button.tb-primary{background:#4361ee;border-color:#4361ee;color:#fff;}
+        .toolbar button.tb-primary{background:#4f46e5;border-color:#4f46e5;color:#fff;}
         @media print {
             @page { margin: 1cm; }
             body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -939,10 +943,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     if ($st->fetchColumn() >= 5) {
         $login_error = "Trop de tentatives échouées. Réessayez dans quelques minutes.";
     } else {
-        $st = $pdo->prepare("SELECT id, username, password, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name, IFNULL(is_admin,0) as is_admin FROM users WHERE username=?");
+        $loginPass = $_POST['password'] ?? '';
+        $st = $pdo->prepare("SELECT id, username, password, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name, IFNULL(is_admin,0) as is_admin, IFNULL(auth_source,'local') as auth_source FROM users WHERE username=?");
         $st->execute([$loginUser]);
         $u = $st->fetch();
-        if ($u && password_verify($_POST['password'] ?? '', $u['password'])) {
+
+        // 1) Mot de passe local d'abord…
+        $authed   = ($u && $loginPass !== '' && password_verify($loginPass, $u['password']));
+        $ldapUsed = false;
+
+        // 2) …puis bind LDAP / Active Directory (si activé). Un utilisateur AD
+        //    valide et inconnu en base est provisionné automatiquement
+        //    (jamais super-admin), comme sur Sentinelle.
+        if (!$authed && ldap_auth_enabled() && $loginUser !== '' && $loginPass !== '') {
+            $ldapInfo = ldap_authenticate_user($loginUser, $loginPass);
+            if ($ldapInfo !== null) {
+                $authed = $ldapUsed = true;
+                if (!$u) {
+                    // Provisionnement : mot de passe local aléatoire inutilisable
+                    // (l'utilisateur s'authentifiera toujours via LDAP).
+                    $pdo->prepare("INSERT INTO users (username, password, first_name, last_name, email, is_admin, auth_source) VALUES (?,?,?,?,?,0,'ldap')")
+                        ->execute([
+                            $loginUser,
+                            password_hash(bin2hex(random_bytes(24)), PASSWORD_DEFAULT),
+                            $ldapInfo['first_name'] ?: null,
+                            $ldapInfo['last_name']  ?: ($ldapInfo['display_name'] ?: null),
+                            $ldapInfo['email']      ?: null,
+                        ]);
+                    $newId = (int)$pdo->lastInsertId();
+                    logHistory($pdo, 'admin', $newId, "Compte provisionné automatiquement depuis l'Active Directory : {$loginUser}");
+                    $st->execute([$loginUser]);
+                    $u = $st->fetch();
+                }
+            }
+        }
+
+        if ($authed && $u) {
             // Compte désactivé
             if (!(int)$u['active']) {
                 $login_error = "Ce compte est désactivé. Contactez un administrateur.";
@@ -953,6 +989,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                 $_SESSION['user_id'] = $u['id'];
                 $_SESSION['username'] = $u['username'];
                 $_SESSION['is_admin'] = !empty($u['is_admin']);
+                $_SESSION['auth_ldap'] = $ldapUsed;
                 $fullName = trim(($u['first_name'] ?? '') . ' ' . ($u['last_name'] ?? ''));
                 if ($fullName) $_SESSION['admin_fullname'] = $fullName;
                 header('Location: index.php'); exit;
@@ -970,18 +1007,20 @@ login_render:
 if (!isset($_SESSION['user_id'])) {
     ?>
     <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion – SimCity</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;700&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root{--bg:#0f1420;--card:#1a2235;--primary:#4361ee;--text:#f0f4ff;--border:rgba(255,255,255,.1);--danger:#ef4444;}
-        body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
-        .login-box{background:var(--card);padding:2.5rem;border-radius:12px;border:1px solid var(--border);width:100%;max-width:400px;box-shadow:0 10px 40px rgba(0,0,0,.5);}
-        h2{font-family:'Outfit',sans-serif;text-align:center;margin-top:0;font-size:1.8rem;}
-        input{width:100%;padding:10px 15px;margin-top:5px;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:6px;color:#fff;font-family:inherit;box-sizing:border-box;}
-        input:focus{outline:none;border-color:var(--primary);}
-        button{width:100%;padding:12px;background:var(--primary);color:#fff;border:none;border-radius:6px;font-weight:600;font-size:1rem;margin-top:1.5rem;cursor:pointer;}
+        :root{--primary:#4f46e5;--primary-dark:#4338ca;--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
+        body{background:linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#1e3a6b 100%);color:var(--text);font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box;}
+        .login-box{background:var(--card);padding:36px 32px;border-radius:14px;border:1px solid var(--border);width:100%;max-width:400px;box-shadow:0 12px 28px rgba(15,23,42,.35),0 4px 10px rgba(15,23,42,.2);}
+        h2{text-align:center;margin-top:0;font-size:1.6rem;font-weight:700;color:var(--text-strong);}
+        label{font-size:.82rem;font-weight:600;color:var(--text);}
+        input{width:100%;padding:9px 12px;margin-top:5px;background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:.9rem;box-sizing:border-box;transition:border-color .18s ease,box-shadow .18s ease;}
+        input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.35);}
+        button{width:100%;padding:11px;background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:var(--radius);font-weight:600;font-size:.95rem;margin-top:1.5rem;cursor:pointer;transition:background-color .18s ease;}
+        button:hover{background:var(--primary-dark);}
     </style></head>
     <body>
-        <div class="login-box"><h2>📱 SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI</p>
+        <div class="login-box"><h2>📱 SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI<?php if(ldap_auth_enabled()) echo '<br><span style="font-size:.78rem;color:var(--text-light);">Comptes locaux ou Active Directory</span>'; ?></p>
             <?php if(isset($login_error)) echo "<div style='color:var(--danger);text-align:center;margin-bottom:1rem;'>".h($login_error)."</div>"; ?>
             <form method="post" autocomplete="off">
                 <?=csrf_field()?>
@@ -1846,10 +1885,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $url     = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
                     $expFmt  = $b['expires_at'] ? date('d/m/Y', strtotime($b['expires_at'])) : null;
                     $html = '<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">'
-                          . '<h2 style="color:#4361ee;">📱 SimCity — Signature requise</h2>'
+                          . '<h2 style="color:#4f46e5;">📱 SimCity — Signature requise</h2>'
                           . '<p>Bonjour ' . h($b['first_name']) . ',</p>'
                           . '<p>Le bon de <strong>' . $typeLbl . ' de matériel</strong> n° <strong>' . h($b['numero']) . '</strong> vous attend pour signature électronique.</p>'
-                          . '<p style="margin:28px 0;text-align:center;"><a href="' . h($url) . '" style="background:#4361ee;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">✍️ Signer le bon</a></p>'
+                          . '<p style="margin:28px 0;text-align:center;"><a href="' . h($url) . '" style="background:#4f46e5;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">✍️ Signer le bon</a></p>'
                           . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '">' . h($url) . '</a></p>'
                           . ($expFmt ? '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . $expFmt . '</strong>.</p>' : '')
                           . '<hr style="border:0;border-top:1px solid #eee;margin:24px 0;"><p style="font-size:12px;color:#999;">Message automatique — merci de ne pas répondre.</p></div>';
@@ -1948,6 +1987,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($ent === 'billing') {
             if ($act === 'add') $pdo->prepare("INSERT INTO billing_accounts(account_number,name,notes)VALUES(?,?,?)")->execute([S($d,'account_number'),S($d,'name'),S($d,'notes')]);
             elseif ($act === 'edit') $pdo->prepare("UPDATE billing_accounts SET account_number=?,name=?,notes=? WHERE id=?")->execute([S($d,'account_number'),S($d,'name'),S($d,'notes'),$id]);
+        } elseif ($ent === 'ldap_test') {
+            // Test de la connexion LDAP/AD (réservé aux super-admins)
+            if (empty($_SESSION['is_admin'])) {
+                flash('error', "Action réservée aux super-administrateurs.");
+            } else {
+                [$ok, $msg] = ldap_test_connection();
+                flash($ok ? 'success' : 'error', ($ok ? '🔌 ' : '') . $msg);
+            }
         } elseif ($ent === 'admin') {
             $isSuper = !empty($_SESSION['is_admin']);
             $selfId  = (int)$_SESSION['user_id'];
@@ -1971,6 +2018,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($targetIsSuper && $isAdminVal === 0 && $superCount <= 1) {
                     flash('error', 'Impossible : ce compte est le dernier super-administrateur.');
                 } else {
+                    // Compte provisionné depuis l'AD : pas de mot de passe local
+                    // (il s'authentifie toujours via LDAP — on ignore le champ).
+                    $targetSource = $pdo->prepare("SELECT IFNULL(auth_source,'local') FROM users WHERE id=?");
+                    $targetSource->execute([$id]);
+                    if ($targetSource->fetchColumn() === 'ldap') $d['password'] = '';
                     $isAdminSet = $isAdminVal !== null ? ', is_admin=?' : '';
                     $params = [S($d,'username'), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email')];
                     if (!empty($d['password'])) {
@@ -2288,7 +2340,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'ldap_test'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -2467,7 +2519,7 @@ if ($page === 'dashboard') {
                     labels: <?php echo json_encode($brands); ?>,
                     datasets: [{
                         data: <?php echo json_encode($bCounts); ?>,
-                        backgroundColor: ['#4361ee', '#3a86ff', '#7b2d8b', '#f59e0b', '#10b981', '#ef4444'],
+                        backgroundColor: ['#4f46e5', '#2563eb', '#7c3aed', '#d97706', '#059669', '#dc2626'],
                         borderWidth: 0
                     }]
                 },
@@ -2481,11 +2533,11 @@ if ($page === 'dashboard') {
                     datasets: [{
                         label: 'Nombre de lignes',
                         data: <?php echo json_encode($sCounts); ?>,
-                        backgroundColor: '#4361ee',
+                        backgroundColor: '#4f46e5',
                         borderRadius: 5
                     }]
                 },
-                options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } }, x: { ticks: { color: '#94a3b8' } } }, plugins: { legend: { display: false } } }
+                options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, grid: { color: 'rgba(148,163,184,0.18)' }, ticks: { color: '#94a3b8' } }, x: { ticks: { color: '#94a3b8' } } }, plugins: { legend: { display: false } } }
             });
         }
     });
@@ -3057,7 +3109,7 @@ elseif ($page === 'refs') {
         $data = $pdo->query("SELECT * FROM billing_accounts ORDER BY name")->fetchAll();
         $cols = ['N° de Compte'=>'account_number', 'Nom / Entité'=>'name', 'Notes'=>'notes']; $ent = 'billing';
     } elseif ($tab === 'admins') {
-        $data = $pdo->query("SELECT id, username, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name, IFNULL(email,'') as email, DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') as created_at FROM users ORDER BY active DESC, last_name, first_name, username")->fetchAll();
+        $data = $pdo->query("SELECT id, username, active, IFNULL(first_name,'') as first_name, IFNULL(last_name,'') as last_name, IFNULL(email,'') as email, IFNULL(auth_source,'local') as auth_source, DATE_FORMAT(created_at, '%d/%m/%Y %H:%i') as created_at FROM users ORDER BY active DESC, last_name, first_name, username")->fetchAll();
         $cols = ['Identifiant'=>'username', 'Nom'=>'last_name', 'Prénom'=>'first_name', 'Email'=>'email', 'Créé le'=>'created_at']; $ent = 'admin';
         // Visa DSI de chaque compte (une signature par admin)
         $sigMap = $pdo->query("SELECT id, signature_data FROM users WHERE signature_data IS NOT NULL AND signature_data != ''")->fetchAll(PDO::FETCH_KEY_PAIR);
@@ -3077,7 +3129,30 @@ elseif ($page === 'refs') {
         <?php foreach($tabs as $k => $label): ?><a href="?page=refs&tab=<?=$k?>" class="tab-btn <?=$tab===$k?'active':''?>"><?=$label?></a><?php endforeach; ?>
     </div>
 
-    <?php if($tab === 'settings'): 
+    <?php if($tab === 'admins'): ?>
+    <!-- ── Statut LDAP / Active Directory ─────────────────────── -->
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;background:<?=ldap_auth_enabled()?'rgba(5,150,105,.06)':'var(--bg3)'?>;border:1px solid <?=ldap_auth_enabled()?'rgba(5,150,105,.3)':'var(--border)'?>;border-radius:var(--radius-sm);padding:.75rem 1rem;margin-bottom:1rem;font-size:.85rem;">
+      <span>🌐 <strong>Authentification Active Directory :</strong>
+        <?php if(ldap_auth_enabled()): ?>
+          <span style="color:var(--success);font-weight:600;">activée</span>
+          <span class="muted">— serveur : <code style="font-family:var(--font-mono);font-size:.8rem;"><?=h(LDAP_SERVER)?></code><?=LDAP_REQUIRED_GROUP!==''?' · groupe requis : <code style="font-family:var(--font-mono);font-size:.8rem;">'.h(LDAP_REQUIRED_GROUP).'</code>':''?></span>
+        <?php elseif(defined('LDAP_ENABLED') && LDAP_ENABLED && !extension_loaded('ldap')): ?>
+          <span style="color:var(--danger);font-weight:600;">extension PHP « ldap » manquante</span>
+        <?php else: ?>
+          <span class="muted">désactivée <small>(variables d'environnement LDAP_* — voir README)</small></span>
+        <?php endif; ?>
+      </span>
+      <?php if(!empty($_SESSION['is_admin']) && defined('LDAP_ENABLED') && LDAP_ENABLED): ?>
+      <form method="post" style="display:inline;margin-left:auto;">
+        <input type="hidden" name="_entity" value="ldap_test">
+        <input type="hidden" name="_action" value="test">
+        <button type="submit" class="btn-secondary" style="font-size:.8rem;padding:.35rem .8rem;">🔌 Tester la connexion</button>
+      </form>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
+    <?php if($tab === 'settings'):
         $currentLogo = getSetting($pdo, 'pdf_logo_path', '');
     ?>
     <!-- ── ONGLET PARAMÈTRES ───────────────────────────────────── -->
@@ -3386,6 +3461,9 @@ elseif ($page === 'refs') {
                 <?=h($row[$k])?> <span class="badge badge-danger" style="font-size:.65rem;">🗄️ Parti</span>
               <?php elseif($name==='Identifiant' && $tab==='admins'): ?>
                 <?=h($row[$k])?>
+                <?php if(($row['auth_source'] ?? 'local') === 'ldap'): ?>
+                  <span class="badge badge-info" style="font-size:.65rem;margin-left:4px;" title="Compte Active Directory : authentification via LDAP, pas de mot de passe local">🌐 AD</span>
+                <?php endif; ?>
                 <?php if(empty($row['active'])): ?>
                   <span class="badge badge-warning" style="font-size:.65rem;margin-left:4px;">🔒 Désactivé</span>
                 <?php elseif($row['id'] === (int)$_SESSION['user_id']): ?>
@@ -3692,14 +3770,14 @@ elseif ($page === 'history') {
     }
 
     // ── Couleurs de cycle pour les paires ──
-    $pairBorderColors = ['#10b981','#4361ee','#f59e0b','#8b5cf6','#ec4899','#38bdf8'];
+    $pairBorderColors = ['#059669','#4f46e5','#d97706','#7c3aed','#ec4899','#2563eb'];
 
     $now = time();
     function bonStatusHtml(array $b, int $now): string {
-        if ($b['status'] === 'signed')    return '<span style="background:rgba(16,185,129,.15);color:#10b981;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">✅ Signé</span>';
+        if ($b['status'] === 'signed')    return '<span style="background:rgba(5,150,105,.12);color:var(--success);font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">✅ Signé</span>';
         if ($b['status'] === 'cancelled') return '<span style="background:rgba(148,163,184,.1);color:#94a3b8;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">🚫 Annulé</span>';
-        if ($b['expires_at'] && strtotime($b['expires_at']) < $now) return '<span style="background:rgba(245,158,11,.15);color:#f59e0b;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏰ Expiré</span>';
-        return '<span style="background:rgba(56,189,248,.15);color:#38bdf8;font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏳ En attente</span>';
+        if ($b['expires_at'] && strtotime($b['expires_at']) < $now) return '<span style="background:rgba(217,119,6,.12);color:var(--warning);font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏰ Expiré</span>';
+        return '<span style="background:rgba(37,99,235,.12);color:var(--info);font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏳ En attente</span>';
     }
     ?>
     <div class="page-header">
@@ -3743,7 +3821,7 @@ elseif ($page === 'history') {
       </div>
       <!-- Bons : deux colonnes côte à côte -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;">
-        <?php foreach(['remise'=>['📥','Bon de Remise','#10b981','rgba(16,185,129,.06)'],'restitution'=>['📤','Bon de Restitution','#f59e0b','rgba(245,158,11,.06)']] as $btype=>[$icon,$label,$color,$bg]):
+        <?php foreach(['remise'=>['📥','Bon de Remise','#059669','rgba(5,150,105,.06)'],'restitution'=>['📤','Bon de Restitution','#d97706','rgba(217,119,6,.06)']] as $btype=>[$icon,$label,$color,$bg]):
             $b = $pair[$btype];
         ?>
         <div style="padding:1rem 1.25rem;border-right:<?=$btype==='remise'?'1px solid var(--border)':'none'?>;background:<?=$b?$bg:'var(--bg3)'?>;">
@@ -3798,68 +3876,77 @@ $content = ob_get_clean();
 <html lang="fr">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($pageTitles[$page]??'SimCity')?> – SimCity</title>
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=DM+Sans:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script>(function(){ if (localStorage.getItem('pm_theme') === 'light') document.documentElement.setAttribute('data-theme','light'); })();</script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script>(function(){ if (localStorage.getItem('pm_theme') === 'dark') document.documentElement.setAttribute('data-theme','dark'); })();</script>
 <style>
-/* CSS UNIFIÉ MINIFIÉ */
-:root{--bg:#080b14;--bg2:#0f1420;--bg3:#141928;--card:#111827;--card2:#1a2235;--border:rgba(255,255,255,.07);--border2:rgba(67,97,238,.25);--primary:#4361ee;--primary-dim:rgba(67,97,238,.15);--primary-glow:rgba(67,97,238,.4);--success:#10b981;--success-dim:rgba(16,185,129,.15);--danger:#ef4444;--danger-dim:rgba(239,68,68,.15);--warning:#f59e0b;--info:#38bdf8;--info-dim:rgba(56,189,248,.15);--text:#f0f4ff;--text2:#94a3b8;--text3:#4b5563;--sidebar-w:255px;--topbar-h:64px;--radius:12px;--radius-sm:8px;--font:'DM Sans',sans-serif;--font-display:'Outfit',sans-serif;--font-mono:'JetBrains Mono',monospace;}
-[data-theme="light"]{--bg:#f0f2f7;--bg2:#ffffff;--bg3:#e8ebf2;--card:#ffffff;--card2:#f4f6fb;--border:rgba(0,0,0,.09);--border2:rgba(0,48,135,.25);--primary:#003087;--primary-dim:rgba(0,48,135,.1);--primary-glow:rgba(0,48,135,.3);--success:#0a7c55;--success-dim:rgba(10,124,85,.12);--danger:#c8102e;--danger-dim:rgba(200,16,46,.12);--warning:#d97706;--info:#0077b6;--info-dim:rgba(0,119,182,.12);--text:#0d1b3e;--text2:#3d5080;--text3:#8a9abf;}
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0} body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:15px;}
-::-webkit-scrollbar{width:6px;height:6px} ::-webkit-scrollbar-track{background:var(--bg2)} ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px} ::-webkit-scrollbar-thumb:hover{background:var(--primary)}
+/* CSS UNIFIÉ MINIFIÉ — design system aligné sur Sentinelle (IBM Plex, indigo + slate) */
+:root{--bg:#f8fafc;--bg2:#ffffff;--bg3:#f1f5f9;--card:#ffffff;--card2:#f1f5f9;--border:#e2e8f0;--border2:#cbd5e1;--primary:#4f46e5;--primary-dark:#4338ca;--primary-dim:rgba(79,70,229,.08);--primary-glow:rgba(79,70,229,.35);--success:#059669;--success-dim:#d1fae5;--danger:#dc2626;--danger-dim:#fee2e2;--warning:#d97706;--warning-dim:#fef3c7;--info:#2563eb;--info-dim:#dbeafe;--text:#334155;--text-strong:#0f172a;--text2:#64748b;--text3:#94a3b8;--sidebar-w:255px;--topbar-h:64px;--radius:10px;--radius-sm:7px;--radius-lg:14px;--shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);--shadow-md:0 4px 12px rgba(15,23,42,.08),0 2px 4px rgba(15,23,42,.04);--shadow-lg:0 12px 28px rgba(15,23,42,.12),0 4px 10px rgba(15,23,42,.06);--ring:0 0 0 3px rgba(79,70,229,.35);--font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-display:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular','Consolas',monospace;}
+[data-theme="dark"]{--bg:#0b1120;--bg2:#111827;--bg3:#0f1b2d;--card:#1e293b;--card2:#233247;--border:#2b3a4f;--border2:#3a4a61;--primary:#818cf8;--primary-dark:#6366f1;--primary-dim:rgba(129,140,248,.14);--primary-glow:rgba(129,140,248,.35);--success:#34d399;--success-dim:#064e3b;--danger:#f87171;--danger-dim:#7f1d1d;--warning:#fbbf24;--warning-dim:#78350f;--info:#60a5fa;--info-dim:#1e3a5f;--text:#e2e8f0;--text-strong:#f8fafc;--text2:#94a3b8;--text3:#64748b;--shadow:0 1px 3px rgba(0,0,0,.45);--shadow-md:0 4px 14px rgba(0,0,0,.5);--shadow-lg:0 14px 32px rgba(0,0,0,.6);--ring:0 0 0 3px rgba(129,140,248,.35);}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0} body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:.9rem;line-height:1.5;letter-spacing:-.005em;-webkit-font-smoothing:antialiased;transition:background-color .2s ease,color .2s ease;}
+h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
+::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:transparent} ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:999px;border:2px solid var(--bg)} ::-webkit-scrollbar-thumb:hover{background:var(--text3)}
 .app{display:flex;min-height:100vh}
 .sidebar{width:var(--sidebar-w);height:100vh;position:fixed;left:0;top:0;z-index:100;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
 .sidebar-logo{padding:1.5rem 1.5rem 1rem;display:flex;align-items:center;gap:.75rem;border-bottom:1px solid var(--border);}
-.sidebar-logo .logo-icon{font-size:1.8rem;filter:drop-shadow(0 0 8px var(--primary-glow))}
-.sidebar-logo .logo-text{font-family:var(--font-display);font-weight:800;font-size:1.2rem;}
-.sidebar-section{padding:.75rem 1rem .25rem;font-size:.68rem;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.1em;}
+.sidebar-logo .logo-icon{font-size:1.8rem}
+.sidebar-logo .logo-text{font-family:var(--font-display);font-weight:700;font-size:1.15rem;color:var(--text-strong);letter-spacing:.3px;}
+.sidebar-section{padding:.85rem 1rem .3rem;font-size:.64rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.13em;}
 .sidebar-nav{flex:1;padding:.5rem;overflow-y:auto;}
-.nav-item{display:flex;align-items:center;gap:.75rem;padding:.65rem 1rem;border-radius:var(--radius-sm);color:var(--text2);text-decoration:none;font-size:.88rem;font-weight:500;transition:all .2s;}
-.nav-item:hover{background:var(--primary-dim);color:var(--text)} .nav-item.active{background:var(--primary-dim);color:var(--primary)}
+.nav-item{display:flex;align-items:center;gap:.75rem;padding:.6rem 1rem;border-radius:var(--radius-sm);color:var(--text2);text-decoration:none;font-size:.875rem;font-weight:500;transition:all .18s ease;}
+.nav-item:hover{background:var(--bg3);color:var(--text-strong)} .nav-item.active{background:var(--primary-dim);color:var(--primary);font-weight:600;box-shadow:inset 3px 0 0 var(--primary)}
 .nav-icon{font-size:1.1rem;width:24px;text-align:center} .btn-hamburger{display:none;background:none;border:none;color:var(--text2);font-size:1.4rem;padding:.25rem;cursor:pointer}
 .main{margin-left:var(--sidebar-w);flex:1;display:flex;flex-direction:column;min-width:0}
 .topbar{height:var(--topbar-h);background:var(--bg2);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 1.5rem;gap:1rem;position:sticky;top:0;z-index:50;}
-.topbar-title{font-family:var(--font-display);font-weight:700;font-size:1.1rem;flex:1}
-.btn-theme{background:var(--card2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text2);font-size:.88rem;padding:.3rem .65rem;cursor:pointer}
+.topbar-title{font-family:var(--font-display);font-weight:700;font-size:1.05rem;color:var(--text-strong);flex:1}
+.btn-theme{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text2);font-size:.88rem;padding:.3rem .65rem;cursor:pointer;transition:background-color .18s ease} .btn-theme:hover{background:var(--card2)}
 .content{padding:2rem;flex:1;max-width:1400px;margin:0 auto;width:100%;}
 .page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;}
-.page-title-txt{font-family:var(--font-display);font-weight:700;font-size:1.4rem;}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:1.5rem;break-inside:avoid;}
-.card-header{padding:1rem 1.5rem;border-bottom:1px solid var(--border);font-family:var(--font-display);font-weight:600;font-size:.95rem;color:var(--text2);}
+.page-title-txt{font-family:var(--font-display);font-weight:700;font-size:1.4rem;color:var(--text-strong);}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:1.5rem;break-inside:avoid;box-shadow:var(--shadow);}
+.card-header{padding:.85rem 1.5rem .85rem 2.15rem;border-bottom:1px solid var(--border);background:rgba(79,70,229,.03);font-family:var(--font-display);font-weight:700;font-size:.9rem;color:var(--text);position:relative;}
+.card-header::before{content:'';position:absolute;left:1.5rem;top:50%;transform:translateY(-50%);width:4px;height:1.05em;border-radius:3px;background:var(--primary);}
 
-.data-table{width:100%;border-collapse:collapse} 
-.data-table th{padding:.85rem 1.25rem;text-align:left;font-size:.75rem;font-weight:600;color:var(--text3);text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none;transition:color 0.15s;}
+.data-table{width:100%;border-collapse:collapse}
+.data-table th{padding:.75rem 1.25rem;text-align:left;font-size:.68rem;font-weight:700;letter-spacing:.06em;color:var(--text2);text-transform:uppercase;background:var(--card2);border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none;transition:color 0.15s;}
 .data-table th:hover{color:var(--primary);}
 .data-table th.sorted{color:var(--primary);font-weight:700;}
 
-.data-table td{padding:.85rem 1.25rem;border-bottom:1px solid var(--border);font-size:.88rem} .data-table tbody tr:hover{background:rgba(255,255,255,.02)}
+.data-table td{padding:.8rem 1.25rem;border-bottom:1px solid var(--border);font-size:.875rem;line-height:1.4} .data-table tbody tr{transition:background-color .12s ease} .data-table tbody tr:hover{background:var(--bg3)}
 .empty-cell{text-align:center;color:var(--text3);padding:3rem!important;font-style:italic} .muted{color:var(--text2)!important;font-size:.82rem;}
-.search-bar-wrap{margin-bottom:1rem;} .search-bar{display:flex;align-items:center;gap:.6rem;background:var(--card2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.55rem .9rem; transition:border-color .2s; }
-.search-bar:focus-within { border-color:var(--primary); box-shadow:0 0 0 3px var(--primary-dim); }
+.search-bar-wrap{margin-bottom:1rem;} .search-bar{display:flex;align-items:center;gap:.6rem;background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.55rem .9rem; transition:border-color .2s, box-shadow .2s; }
+[data-theme="dark"] .search-bar{background:var(--bg3)}
+.search-bar:focus-within { border-color:var(--primary); box-shadow:var(--ring); }
 .search-bar-icon{font-size:1rem;opacity:.5;flex-shrink:0;} .search-bar input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:.9rem;} .search-count{font-size:.75rem;color:var(--text3);margin-top:.3rem;}
-.badge{display:inline-block;padding:.2rem .65rem;border-radius:999px;font-size:.72rem;font-weight:600;white-space:nowrap;} .badge-success{background:var(--success-dim);color:#6ee7b7;} .badge-danger{background:var(--danger-dim);color:#fca5a5;} .badge-warning{background:rgba(245,158,11,.15);color:var(--warning);} .badge-info{background:var(--info-dim);color:var(--info);} .badge-muted{background:rgba(255,255,255,.06);color:var(--text2);}
-.btn-primary{background:linear-gradient(135deg,var(--primary),#3a86ff);border:none;border-radius:var(--radius-sm);padding:.65rem 1.5rem;color:#fff;font-weight:600;cursor:pointer;box-shadow: 0 4px 15px var(--primary-glow); transition:all .2s;} .btn-primary:hover{transform:translateY(-1px);box-shadow: 0 6px 20px var(--primary-glow);}
-.btn-secondary{background:var(--card2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.65rem 1.25rem;color:var(--text2);cursor:pointer;} .btn-secondary:hover{border-color:var(--primary);color:var(--text)}
+.badge{display:inline-block;padding:.2rem .65rem;border-radius:999px;font-size:.72rem;font-weight:600;white-space:nowrap;line-height:1.4;}
+.badge-success{background:var(--success-dim);color:#065f46;} .badge-danger{background:var(--danger-dim);color:#991b1b;} .badge-warning{background:var(--warning-dim);color:#92400e;} .badge-info{background:var(--info-dim);color:#1e40af;} .badge-muted{background:var(--bg3);color:var(--text2);}
+[data-theme="dark"] .badge-success{color:#6ee7b7} [data-theme="dark"] .badge-danger{color:#fca5a5} [data-theme="dark"] .badge-warning{color:#fcd34d} [data-theme="dark"] .badge-info{color:#93c5fd}
+.btn-primary{background:var(--primary);border:1px solid var(--primary);border-radius:var(--radius-sm);padding:.6rem 1.4rem;color:#fff;font-weight:500;font-size:.85rem;cursor:pointer;transition:all .18s ease;} .btn-primary:hover{background:var(--primary-dark);border-color:var(--primary-dark);box-shadow:var(--shadow);} .btn-primary:active{transform:translateY(1px);}
+.btn-secondary{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.6rem 1.25rem;color:var(--text2);font-size:.85rem;cursor:pointer;transition:all .18s ease;} .btn-secondary:hover{border-color:var(--primary);color:var(--text-strong)}
 .btn-icon{background:none;border:none;cursor:pointer;font-size:1rem;padding:.3rem .5rem;border-radius:var(--radius-sm);color:var(--text2);transition:all .15s;} .btn-edit:hover{background:var(--primary-dim);color:var(--primary)} .btn-del:hover{background:var(--danger-dim);color:var(--danger)}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;} .form-group{display:flex;flex-direction:column;gap:.4rem;} .form-full{grid-column:1/-1;}
-label{font-size:.78rem;font-weight:600;color:var(--text3);text-transform:uppercase;} input,select,textarea{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.7rem 1rem;color:var(--text);width:100%;}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-dim);}
+label{font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;} input,select,textarea{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.6rem .9rem;color:var(--text);width:100%;font-family:inherit;font-size:.85rem;transition:border-color .18s ease,box-shadow .18s ease;}
+[data-theme="dark"] input,[data-theme="dark"] select,[data-theme="dark"] textarea{background:var(--bg3)}
+input:hover:not(:focus):not(:disabled),select:hover:not(:focus):not(:disabled),textarea:hover:not(:focus):not(:disabled){border-color:rgba(79,70,229,.55)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:var(--ring);}
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;padding:1rem;backdrop-filter:blur(4px)} .modal-overlay.open{display:flex;animation:fadeIn .2s ease;}
 .modal{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);width:100%;max-width:580px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:slideUp .25s ease;} .modal-lg{max-width:700px;}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}} @keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
 .modal-header{padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;position:sticky;top:0;background:var(--card);z-index:1} .modal-close{background:none;border:none;color:var(--text3);font-size:1.1rem;cursor:pointer} .modal-close:hover{color:var(--text);}
 .modal form{padding:1.5rem;} .modal-footer{display:flex;justify-content:flex-end;gap:.75rem;padding-top:1.25rem;border-top:1px solid var(--border);margin-top:1.25rem}
 .dashboard-grid{display:flex;flex-direction:column;gap:1.5rem;} .kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem;}
-.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;display:flex;align-items:center;gap:1rem;position:relative;overflow:hidden;cursor:pointer;transition:transform .2s;}
-.kpi-card::before{content:'';position:absolute;inset:0;opacity:.04;} .kpi-card:hover{transform:translateY(-2px);}
-.kpi-blue{border-color:rgba(67,97,238,.3);} .kpi-blue::before{background:radial-gradient(circle at 100% 0,#4361ee,transparent 60%);}
-.kpi-violet{border-color:rgba(123,45,139,.3);} .kpi-violet::before{background:radial-gradient(circle at 100% 0,#7b2d8b,transparent 60%);}
-.kpi-green{border-color:rgba(16,185,129,.3);} .kpi-green::before{background:radial-gradient(circle at 100% 0,#10b981,transparent 60%);}
-.kpi-icon{font-size:2rem;} .kpi-val{font-family:var(--font-display);font-size:2rem;font-weight:800;line-height:1.1;} .kpi-label{font-size:.78rem;color:var(--text2);text-transform:uppercase;}
+.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;display:flex;align-items:center;gap:1rem;position:relative;overflow:hidden;cursor:pointer;box-shadow:var(--shadow);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
+.kpi-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;} .kpi-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--border2);}
+.kpi-blue::before{background:#4f46e5;}
+.kpi-violet::before{background:#7c3aed;}
+.kpi-green::before{background:#059669;}
+.kpi-icon{font-size:2rem;} .kpi-val{font-family:var(--font-mono);font-size:1.7rem;font-weight:600;line-height:1.1;color:var(--text-strong);letter-spacing:-.01em;} .kpi-label{font-size:.74rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;}
 .shortcut-btn{display:flex;flex-direction:column;gap:.35rem;padding:1.25rem;border-radius:var(--radius);border:1px solid var(--border);text-decoration:none;transition:border-color .2s;} .shortcut-btn:hover{border-color:var(--primary);}
-.shortcut-label{font-weight:700;color:var(--text)} .shortcut-in{background:rgba(16,185,129,.08);} .shortcut-order{background:rgba(67,97,238,.08);} .shortcut-resa{background:rgba(56,189,248,.08);}
+.shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(79,70,229,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
 .tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);margin-bottom:-2px;z-index:2;}
 @media(max-width:900px){.sidebar{transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:block}}
-[data-theme="light"] .data-table tbody tr:hover{background:rgba(0,48,135,.04)} [data-theme="light"] .btn-primary{background:linear-gradient(135deg,#003087,#1a53c5)} [data-theme="light"] .tab-btn.active{background:#fff;border-color:var(--border);border-bottom-color:#fff;}
+a{color:var(--primary)} a:hover{color:var(--primary-dark)}
+.modal-overlay{background:rgba(15,23,42,.5)!important}
+[data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.75)!important}
 </style>
 </head>
 <body>
@@ -3905,7 +3992,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
         <button class="btn-theme" id="theme-toggle" onclick="toggleTheme()" title="Basculer clair / sombre" aria-label="Basculer le thème clair ou sombre">🌙</button>
     </div>
   </div>
-  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): ?><div style="padding:.85rem;border-radius:8px;margin-bottom:1rem;<?=($f['type']??'')==='error' ? 'background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.3)' : 'background:var(--success-dim);color:#10b981;border:1px solid rgba(16,185,129,.3)'?>"><?=(($f['type']??'')==='error'?'⚠️ ':'')?><?=h($f['msg'])?></div><?php endforeach; ?></div><?php endif; ?>
+  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): ?><div style="padding:.85rem 1rem;border-radius:var(--radius);margin-bottom:1rem;box-shadow:var(--shadow);border:1px solid transparent;border-left-width:4px;<?=($f['type']??'')==='error' ? 'background:var(--danger-dim);color:var(--danger);border-left-color:var(--danger)' : 'background:var(--success-dim);color:var(--success);border-left-color:var(--success)'?>"><?=(($f['type']??'')==='error'?'⚠️ ':'')?><?=h($f['msg'])?></div><?php endforeach; ?></div><?php endif; ?>
   <div class="content"><?=$content?></div>
 </main>
 </div>
@@ -3958,14 +4045,14 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 
 // THEME
 function applyTheme(t){
-  document.documentElement.setAttribute('data-theme',t==='light'?'light':'');
+  document.documentElement.setAttribute('data-theme',t==='dark'?'dark':'light');
   localStorage.setItem('pm_theme',t);
   // Icône seule, reflétant le mode courant : ☀️ en clair, 🌙 en sombre
   var b=document.getElementById('theme-toggle');
   if(b) b.textContent = (t==='light' ? '☀️' : '🌙');
 }
-function toggleTheme(){ applyTheme((localStorage.getItem('pm_theme')||'dark')==='dark'?'light':'dark'); }
-applyTheme(localStorage.getItem('pm_theme')||'dark');
+function toggleTheme(){ applyTheme((localStorage.getItem('pm_theme')||'light')==='dark'?'light':'dark'); }
+applyTheme(localStorage.getItem('pm_theme')||'light');
 
 // COPIE DU LIEN DE SIGNATURE D'UN BON
 function copySignLink(btn, url) {
@@ -4179,6 +4266,14 @@ function openEditModal(data, ent){
   if(ent === 'admin') {
     const chkAdmin = document.getElementById('edit-is_admin');
     if(chkAdmin) chkAdmin.checked = (data.is_admin == 1 || data.is_admin === '1');
+    // Compte Active Directory : le mot de passe est géré par l'AD, pas ici
+    const pw = document.getElementById('edit-password');
+    if(pw) {
+      const isLdap = (data.auth_source === 'ldap');
+      pw.disabled = isLdap;
+      pw.placeholder = isLdap ? 'Compte Active Directory — géré par l\'AD' : '';
+      if(isLdap) pw.value = '';
+    }
   }
   // Restaure la case téléphone perso pour les lignes
   if(ent === 'line') {

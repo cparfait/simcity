@@ -227,6 +227,7 @@ function simcity_apply_schema(PDO $pdo): void
         email          VARCHAR(150) NULL,
         active         TINYINT(1) NOT NULL DEFAULT 1,
         is_admin       TINYINT(1) NOT NULL DEFAULT 0,
+        auth_source    VARCHAR(10) NOT NULL DEFAULT 'local',
         signature_data MEDIUMTEXT NULL,
         created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB;");
@@ -292,6 +293,11 @@ function simcity_apply_schema(PDO $pdo): void
         $pdo->exec("ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0 AFTER active");
         // Le compte admin initial devient super-admin
         $pdo->exec("UPDATE users SET is_admin=1 WHERE username='admin'");
+    }
+
+    // users.auth_source (provenance du compte : 'local' ou 'ldap')
+    if (empty($pdo->query("SHOW COLUMNS FROM users LIKE 'auth_source'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN auth_source VARCHAR(10) NOT NULL DEFAULT 'local' AFTER is_admin");
     }
 
     // users.signature_data (visa DSI apposé sur les bons)
