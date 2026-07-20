@@ -56,8 +56,56 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 
 ### 5. Après installation
 
+- **Renommez le fichier `htaccess` en `.htaccess`** (avec le point initial) à la racine du site.
+  Tant qu'il n'a pas ce nom, Apache l'ignore : `config.php`, `install.php` et `reset.php`
+  restent accessibles et l'exécution de scripts PHP dans `uploads/` n'est pas bloquée.
+  > ℹ️ Ce point n'a d'effet que sous Apache. Sous nginx, reportez ces règles dans la conf du serveur.
 - Supprimez ou protégez `install.php` et `reset.php` (accès restreint en production)
 - Configurez l'**URL publique du site** dans Paramètres → URL publique pour que les QR codes de signature pointent vers la bonne adresse
+
+---
+
+## Mise en production — checklist
+
+À traiter **avant d'ouvrir l'accès**. Les points 1 à 4 sont des go/no-go de sécurité.
+
+> 💡 `install.php` automatise une partie de cette checklist : il propose de **définir le
+> mot de passe administrateur**, d'**activer le `.htaccess`**, et affiche un panneau de
+> **contrôles d'environnement** (extensions PHP, droits d'écriture, identifiants DB par
+> défaut, `APP_DEBUG`). Les points restants ci-dessous sont à faire à la main.
+
+### 🔴 Bloquants
+
+1. **Identifiants MySQL dédiés** — dans `config.php`, remplacez `DB_USER` / `DB_PASS`
+   (`root` / `root` par défaut) par un compte MySQL limité à la base `simcity_db`
+   avec un mot de passe fort. Évitez `root`.
+   > Si ce compte n'a pas le droit `CREATE DATABASE`, créez la base une fois à la main :
+   > `CREATE DATABASE simcity_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
+2. **Mot de passe admin** — définissez-le directement depuis `install.php` (bloc
+   « Compte administrateur »), ou plus tard via Référentiels → Comptes Admin.
+   Ne laissez jamais `admin` / `admin` en production.
+3. **Activer le `.htaccess`** — bouton « Activer la protection » dans `install.php`,
+   ou renommez manuellement `htaccess` → `.htaccess` (avec le point) à la racine.
+   Sans ce fichier, Apache ne protège rien et `config.php` (vos identifiants DB)
+   devient téléchargeable en clair. **Point le plus critique.**
+4. **Supprimer ou protéger `install.php` et `reset.php`** une fois l'installation terminée.
+
+### 🟠 Fortement recommandés
+
+5. **Forcer HTTPS** — une fois le certificat TLS en place, passez `FORCE_HTTPS` à `true`
+   dans `config.php` (redirige http → https) et décommentez la ligne **HSTS** dans `.htaccess`.
+6. **Fuseau horaire** — vérifiez `APP_TIMEZONE` dans `config.php` (défaut `Europe/Paris`) ;
+   il pilote les horodatages des bons, signatures et journaux.
+7. **Extension `fileinfo`** — assurez-vous qu'elle est activée dans `php.ini`
+   (utilisée pour valider les fichiers uploadés ; absente = tout upload échoue).
+8. **Sauvegardes** — planifiez un `mysqldump` régulier en plus de l'export SQL manuel
+   (Paramètres → Sauvegarde). Le contenu inclut les signatures électroniques :
+   stockez les sauvegardes dans un emplacement à accès restreint.
+
+### 🟡 À connaître
+
+- Le **mot de passe SMTP** est stocké en clair dans la table `settings` (exposé via l'export SQL) — restreignez l'accès à la base et aux sauvegardes.
+- Les tables `history_logs` et `sim_history` ne sont jamais purgées ; prévoyez un archivage si la volumétrie devient importante.
 
 ---
 

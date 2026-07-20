@@ -12,6 +12,7 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 require_once __DIR__ . '/config.php';
+date_default_timezone_set(defined('APP_TIMEZONE') ? APP_TIMEZONE : 'Europe/Paris');
 
 // ─── Connexion DB ─────────────────────────────────────────────
 try {
@@ -54,6 +55,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['import_csrf'] = bin2hex(random_bytes(32));
 
         if (isset($_POST['truncate']) && $_POST['truncate'] == '1') {
+            // Purge = destruction totale : réservée aux super-administrateurs
+            // (cohérent avec la « zone dangereuse » de index.php).
+            if (empty($_SESSION['is_admin'])) {
+                $message .= "<div style='background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-top:1rem;'>⛔ La purge de la base est réservée aux super-administrateurs.</div>";
+                goto render;
+            }
             // Double confirmation requise pour la purge
             if (($_POST['confirm_purge'] ?? '') !== 'PURGER') {
                 $message .= "<div style='background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-top:1rem;'>⚠️ Vous devez saisir <strong>PURGER</strong> dans le champ de confirmation pour activer la purge.</div>";
@@ -302,7 +309,7 @@ render:
                             style="width:18px;height:18px;accent-color:#dc2626;flex-shrink:0;margin-top:2px;"
                             onchange="document.getElementById('purge-confirm-block').style.display=this.checked?'block':'none'">
                         <span>⚠️ <strong>Vider toute la base</strong> et recréer la structure V5.0 avant l'import<br>
-                        <small style="font-weight:400;">(Toutes les données existantes seront supprimées définitivement)</small></span>
+                        <small style="font-weight:400;">(Toutes les données seront supprimées définitivement, <strong>y compris les paramètres</strong> : configuration SMTP, logo et URL du site à reconfigurer)</small></span>
                     </label>
                     <div id="purge-confirm-block" style="display:none;margin-top:.75rem;">
                         <label style="font-size:.82rem;font-weight:700;color:#991b1b;">Tapez <strong>PURGER</strong> pour confirmer la suppression :</label>

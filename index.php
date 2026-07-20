@@ -16,13 +16,36 @@ if (defined('APP_DEBUG') && APP_DEBUG) {
     error_reporting(0);
 }
 
+// ─── Fuseau horaire (horodatages cohérents) ───────────────────
+date_default_timezone_set(defined('APP_TIMEZONE') ? APP_TIMEZONE : 'Europe/Paris');
+
+// ─── Détection HTTPS (gère les reverse proxies) ───────────────
+// Vrai si la connexion cliente est en HTTPS, y compris derrière un proxy
+// qui transmet X-Forwarded-Proto (ex. nginx, Traefik, Cloudflare).
+function isHttps(): bool {
+    if (!empty($_SERVER['HTTPS']) && strtolower($_SERVER['HTTPS']) !== 'off') return true;
+    if (($_SERVER['SERVER_PORT'] ?? '') === '443') return true;
+    $xfp = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';
+    return strtolower(explode(',', $xfp)[0]) === 'https';
+}
+
+// ─── Redirection HTTPS forcée (production) ─────────────────────
+if (defined('FORCE_HTTPS') && FORCE_HTTPS && PHP_SAPI !== 'cli' && !isHttps()) {
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $uri  = $_SERVER['REQUEST_URI'] ?? '/';
+    header('Location: https://' . $host . $uri, true, 301);
+    exit;
+}
+
 // ─── Session sécurisée ────────────────────────────────────────
 session_name(SESSION_NAME);
 ini_set('session.cookie_httponly', 1);   // Inaccessible au JS
 ini_set('session.cookie_samesite', 'Strict');
 ini_set('session.use_strict_mode', 1);
+ini_set('session.gc_maxlifetime', SESSION_LIFETIME);
+session_set_cookie_params(['lifetime' => 0, 'httponly' => true, 'samesite' => 'Strict', 'secure' => isHttps()]);
 // Cookie sécurisé activé automatiquement dès que le site est servi en HTTPS
-if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+if (isHttps()) {
     ini_set('session.cookie_secure', 1);
 }
 session_start();
@@ -44,7 +67,10 @@ try {
 // ─── 2. CREATION ET MISE A JOUR DES TABLES ────────────────────
 try {
     require_once __DIR__ . '/schema.php';
-} catch (Exception $e) { die("Erreur SQL de création : " . $e->getMessage()); }
+} catch (Exception $e) {
+    $msg = (defined('APP_DEBUG') && APP_DEBUG) ? htmlspecialchars($e->getMessage()) : 'Erreur lors de la préparation de la base de données.';
+    die("<div style='color:#ef4444;padding:3rem;font-family:sans-serif'>$msg</div>");
+}
 
 
 // ─── 2b. PAGE PUBLIQUE DE SIGNATURE MOBILE ────────────────────
@@ -61,7 +87,9 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
     $canSignNow = $bon && $bon['status'] === 'pending' && (!$bon['expires_at'] || strtotime($bon['expires_at']) >= time());
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canSignNow && isset($_POST['signature_data'])) {
         $sigData = $_POST['signature_data'];
-        $signerName = htmlspecialchars(trim($_POST['signer_name'] ?? ''), ENT_QUOTES);
+        // Stocké brut : l'échappement est fait à l'affichage (h() / htmlspecialchars),
+        // sinon un nom comme « D'Angelo » serait doublement encodé.
+        $signerName = trim($_POST['signer_name'] ?? '');
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
         $justSigned = false;
         // Valider que c'est bien du base64 PNG
@@ -342,7 +370,7 @@ function baseUrl($pdo = null) {
         $custom = getSetting($pdo, 'site_url', '');
         if ($custom) return rtrim($custom, '/') . '/index.php';
     }
-    $proto = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $proto = isHttps() ? 'https' : 'http';
     $host  = $_SERVER['HTTP_HOST'] ?? 'localhost';
     $script = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '/index.php');
     $dir   = rtrim(dirname($script), '/');
@@ -414,8 +442,21 @@ function createBon($pdo, $type, $agentId, $items, $parentId = null) {
         $st->execute([(int)$_SESSION['user_id']]);
         $dsiSig = $st->fetchColumn() ?: null;
     }
-    $pdo->prepare("INSERT INTO bons (numero, type, agent_id, parent_id, items, status, token, expires_at, created_by, dsi_name, dsi_signature_data) VALUES (?,?,?,?,?,'pending',?,?,?,?,?)")
-        ->execute([bonNumero($pdo, $type), $type, (int)$agentId, $parentId, json_encode($items, JSON_UNESCAPED_UNICODE), $token, $expires, $_SESSION['username'] ?? 'admin', $dsiName, $dsiSig]);
+    // Le numéro est calculé par MAX+1 sans verrou : deux générations simultanées
+    // peuvent viser le même numéro. On réessaie sur collision (contrainte UNIQUE).
+    $ins = $pdo->prepare("INSERT INTO bons (numero, type, agent_id, parent_id, items, status, token, expires_at, created_by, dsi_name, dsi_signature_data) VALUES (?,?,?,?,?,'pending',?,?,?,?,?)");
+    $itemsJson = json_encode($items, JSON_UNESCAPED_UNICODE);
+    $createdBy = $_SESSION['username'] ?? 'admin';
+    for ($attempt = 0; ; $attempt++) {
+        try {
+            $ins->execute([bonNumero($pdo, $type), $type, (int)$agentId, $parentId, $itemsJson, $token, $expires, $createdBy, $dsiName, $dsiSig]);
+            break;
+        } catch (PDOException $e) {
+            // 23000 = violation de contrainte d'intégrité (numéro déjà pris)
+            if ($e->getCode() === '23000' && $attempt < 5) continue;
+            throw $e;
+        }
+    }
     return (int)$pdo->lastInsertId();
 }
 
@@ -845,12 +886,21 @@ if (isset($_GET['action']) && $_GET['action'] === 'logout') {
     header('Location: index.php'); exit;
 }
 
+// Jeton CSRF disponible dès la page de connexion (anonyme)
+if (empty($_SESSION['csrf_token'])) $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+
 // ── Connexion avec protection anti-brute-force (en base) ──────
 // Le compteur est stocké en base (par compte ET par IP) : impossible de le
 // contourner en jetant son cookie de session.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     $loginUser = trim($_POST['username'] ?? '');
     $loginIp   = $_SERVER['REMOTE_ADDR'] ?? '';
+
+    // Protection CSRF du formulaire de connexion
+    if (!csrf_verify()) {
+        $login_error = "Session expirée. Rechargez la page et réessayez.";
+        goto login_render;
+    }
 
     // Purge des tentatives anciennes (> 24 h)
     $pdo->exec("DELETE FROM login_attempts WHERE attempted_at < DATE_SUB(NOW(), INTERVAL 1 DAY)");
@@ -887,6 +937,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     }
 } // fin if POST login
 
+login_render:
 // ── Page de login ─────────────────────────────────────────────
 if (!isset($_SESSION['user_id'])) {
     ?>
@@ -905,6 +956,7 @@ if (!isset($_SESSION['user_id'])) {
         <div class="login-box"><h2>📱 SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI</p>
             <?php if(isset($login_error)) echo "<div style='color:var(--danger);text-align:center;margin-bottom:1rem;'>".h($login_error)."</div>"; ?>
             <form method="post" autocomplete="off">
+                <?=csrf_field()?>
                 <div style="margin-bottom:1rem;"><label>Nom d'utilisateur</label><input type="text" name="username" required autofocus autocomplete="username"></div>
                 <div><label>Mot de passe</label><input type="password" name="password" required autocomplete="current-password"></div>
                 <button type="submit" name="login">Se connecter</button>
@@ -1492,7 +1544,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         flash('error', 'Extension de fichier non autorisée.');
                     } else {
                         $safeName = preg_replace('/[^a-zA-Z0-9.\-_]/', '_', $origName);
-                        $destPath = UPLOAD_DIR . time() . '_' . $safeName;
+                        // Préfixe aléatoire (non énumérable) : le fichier est servi
+                        // statiquement, un nom devinable exposerait les documents.
+                        $destPath = UPLOAD_DIR . bin2hex(random_bytes(16)) . '_' . $safeName;
                         if (move_uploaded_file($_FILES['file']['tmp_name'], $destPath)) {
                             $pdo->prepare("INSERT INTO attachments (entity_type, entity_id, file_name, file_path) VALUES ('agent', ?, ?, ?)")
                                 ->execute([$agentId, $safeName, $destPath]);
@@ -1538,8 +1592,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (isset($_FILES['pdf_logo']) && $_FILES['pdf_logo']['error'] === UPLOAD_ERR_OK) {
                 $finfo = new finfo(FILEINFO_MIME_TYPE);
                 $mime  = $finfo->file($_FILES['pdf_logo']['tmp_name']);
-                // SVG retiré : il peut contenir du JavaScript (XSS)
-                $allowedLogoMime = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+                // SVG retiré (défini dans config) : il peut contenir du JavaScript (XSS)
+                $allowedLogoMime = UPLOAD_ALLOWED_MIME;
                 if ($_FILES['pdf_logo']['size'] > UPLOAD_MAX_BYTES) {
                     flash('error', 'Logo trop volumineux (max 1 Mo).');
                 } elseif (!in_array($mime, $allowedLogoMime, true)) {
@@ -1547,7 +1601,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     if (!is_dir(UPLOAD_DIR)) mkdir(UPLOAD_DIR, 0755, true);
                     $ext  = pathinfo($_FILES['pdf_logo']['name'], PATHINFO_EXTENSION);
-                    $dest = UPLOAD_DIR . 'pdf_logo_' . time() . '.' . strtolower($ext);
+                    $dest = UPLOAD_DIR . 'pdf_logo_' . bin2hex(random_bytes(8)) . '.' . strtolower($ext);
                     // Supprimer l'ancien logo
                     $oldLogo = getSetting($pdo, 'pdf_logo_path', '');
                     if ($oldLogo && file_exists($oldLogo)) @unlink($oldLogo);
@@ -1812,27 +1866,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($act === 'add') $pdo->prepare("INSERT INTO billing_accounts(account_number,name,notes)VALUES(?,?,?)")->execute([S($d,'account_number'),S($d,'name'),S($d,'notes')]);
             elseif ($act === 'edit') $pdo->prepare("UPDATE billing_accounts SET account_number=?,name=?,notes=? WHERE id=?")->execute([S($d,'account_number'),S($d,'name'),S($d,'notes'),$id]);
         } elseif ($ent === 'admin') {
-            $isAdminVal = !empty($_SESSION['is_admin']) ? (!empty($d['is_admin']) ? 1 : 0) : null;
-            if ($act === 'add') {
+            $isSuper = !empty($_SESSION['is_admin']);
+            $selfId  = (int)$_SESSION['user_id'];
+            // La gestion d'un compte AUTRE que le sien (création, modification d'un
+            // tiers, activation, suppression) est réservée aux super-administrateurs.
+            // Un admin simple ne peut modifier que son propre profil (mot de passe, e-mail…).
+            $managingOther = ($act !== 'edit') || ($id !== $selfId);
+            // État courant de la cible (pour protéger le dernier super-admin)
+            $targetIsSuper = ($act !== 'add' && $id) ? (int)$pdo->query("SELECT is_admin FROM users WHERE id=$id")->fetchColumn() === 1 : false;
+            $superCount    = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE is_admin=1")->fetchColumn();
+            $isAdminVal = $isSuper ? (!empty($d['is_admin']) ? 1 : 0) : null;
+
+            if ($managingOther && !$isSuper) {
+                flash('error', "Action réservée aux super-administrateurs.");
+            } elseif ($act === 'add') {
                 $pdo->prepare("INSERT INTO users(username, password, first_name, last_name, email, is_admin) VALUES(?,?,?,?,?,?)")->execute([S($d,'username'), password_hash(S($d,'password'), PASSWORD_DEFAULT), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email'), $isAdminVal ?? 0]);
                 logHistory($pdo, 'admin', $pdo->lastInsertId(), "Création de l'administrateur ".S($d,'username'));
+                flash('success', 'Compte créé.');
             } elseif ($act === 'edit') {
-                $isAdminSet = $isAdminVal !== null ? ', is_admin=?' : '';
-                $params = [S($d,'username'), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email')];
-                if (!empty($d['password'])) {
-                    $sql = "UPDATE users SET username=?, password=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
-                    array_splice($params, 1, 0, [password_hash(S($d,'password'), PASSWORD_DEFAULT)]);
+                // Empêcher qu'on retire le dernier super-admin en le rétrogradant
+                if ($targetIsSuper && $isAdminVal === 0 && $superCount <= 1) {
+                    flash('error', 'Impossible : ce compte est le dernier super-administrateur.');
                 } else {
-                    $sql = "UPDATE users SET username=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
+                    $isAdminSet = $isAdminVal !== null ? ', is_admin=?' : '';
+                    $params = [S($d,'username'), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email')];
+                    if (!empty($d['password'])) {
+                        $sql = "UPDATE users SET username=?, password=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
+                        array_splice($params, 1, 0, [password_hash(S($d,'password'), PASSWORD_DEFAULT)]);
+                    } else {
+                        $sql = "UPDATE users SET username=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
+                    }
+                    if ($isAdminVal !== null) $params[] = $isAdminVal;
+                    $params[] = $id;
+                    $pdo->prepare($sql)->execute($params);
+                    logHistory($pdo, 'admin', $id, "Modification du compte administrateur ".S($d,'username'));
+                    flash('success', 'Compte mis à jour.');
                 }
-                if ($isAdminVal !== null) $params[] = $isAdminVal;
-                $params[] = $id;
-                $pdo->prepare($sql)->execute($params);
-                logHistory($pdo, 'admin', $id, "Modification du compte administrateur ".S($d,'username'));
             } elseif ($act === 'disable') {
                 // Empêcher la désactivation de son propre compte
-                if ($id === (int)$_SESSION['user_id']) {
+                if ($id === $selfId) {
                     flash('error', 'Vous ne pouvez pas désactiver votre propre compte.');
+                } elseif ($targetIsSuper && $superCount <= 1) {
+                    flash('error', 'Impossible : ce compte est le dernier super-administrateur.');
                 } else {
                     // Empêcher de désactiver le dernier compte actif
                     $activeCount = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE active=1")->fetchColumn();
@@ -1852,8 +1927,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 flash('success', 'Compte réactivé.');
             } elseif ($act === 'delete') {
                 // Empêcher la suppression de son propre compte
-                if ($id === (int)$_SESSION['user_id']) {
+                if ($id === $selfId) {
                     flash('error', 'Vous ne pouvez pas supprimer votre propre compte.');
+                } elseif ($targetIsSuper && $superCount <= 1) {
+                    flash('error', 'Impossible : ce compte est le dernier super-administrateur.');
                 } else {
                     // Empêcher la suppression du dernier compte actif
                     $activeCount = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE active=1")->fetchColumn();
@@ -2128,7 +2205,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin_signature', 'quick_assign'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -2224,7 +2301,7 @@ if ($page === 'dashboard') {
       <div class="kpi-row">
         <a href="?page=lines&tab=active" class="kpi-card kpi-blue" style="text-decoration:none">
           <div class="kpi-icon">📞</div><div class="kpi-info"><span class="kpi-val"><?=h($cLinesAct)?></span><span class="kpi-label">Lignes Actives</span></div>
-          <div class="kpi-sub"><?=$cLinesStk?> SIM vierge<?=($cLinesStk > 1 ? 's' : '')?> en stock</div>
+          <div class="kpi-sub"><?=$cLinesStk?> ligne<?=($cLinesStk > 1 ? 's' : '')?> en stock (non attribuée<?=($cLinesStk > 1 ? 's' : '')?>)</div>
         </a>
         <a href="?page=devices&tab=active" class="kpi-card kpi-violet" style="text-decoration:none">
           <div class="kpi-icon">📱</div><div class="kpi-info"><span class="kpi-val"><?=h($cDevDep)?></span><span class="kpi-label">Mobiles Déployés</span></div>
@@ -3694,10 +3771,6 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
     // Injecter sur le DOM initial
     document.addEventListener('DOMContentLoaded', function() { injectCsrf(document); });
 
-    // Injecter aussi dans les modals/fiches chargées dynamiquement via fetch
-    const _origFetch = window.fetch;
-    window._csrfToken = token;
-    window._csrfName  = tokenName;
     // Observer les mutations DOM pour couvrir les contenus injectés dynamiquement
     const observer = new MutationObserver(function(mutations) {
         mutations.forEach(function(m) {

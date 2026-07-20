@@ -20,6 +20,15 @@ define('DB_CHARSET', 'utf8mb4');
 define('SESSION_LIFETIME', 3600);   // Durée de session en secondes (1 heure)
 define('SESSION_NAME',     'simcity_sess');
 
+// ─── Localisation ─────────────────────────────────────────────
+// Fuseau horaire appliqué à tous les horodatages (bons, signatures, logs).
+define('APP_TIMEZONE', 'Europe/Paris');
+
+// ─── HTTPS ────────────────────────────────────────────────────
+// Passer à true en production : force la redirection http → https.
+// Laisser false en développement local (Laragon en http).
+define('FORCE_HTTPS', false);
+
 // ─── Sécurité ─────────────────────────────────────────────────
 define('CSRF_TOKEN_NAME', '_csrf');
 
