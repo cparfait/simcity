@@ -2491,7 +2491,7 @@ if ($page === 'dashboard') {
     $threshSim    = (int)getSetting($pdo, 'sim_stock_alert', 5);
     $threshDevice = (int)getSetting($pdo, 'device_stock_alert', 3);
     
-    $recent = $pdo->query("SELECT l.phone_number, a.first_name, a.last_name, p.name as plan_type, l.status FROM mobile_lines l LEFT JOIN agents a ON l.agent_id = a.id LEFT JOIN plan_types p ON l.plan_id = p.id WHERE l.archived=0 ORDER BY l.created_at DESC LIMIT 5")->fetchAll();
+    $recent = $pdo->query("SELECT l.id as line_id, l.phone_number, l.agent_id, a.first_name, a.last_name, p.name as plan_type, l.status FROM mobile_lines l LEFT JOIN agents a ON l.agent_id = a.id LEFT JOIN plan_types p ON l.plan_id = p.id WHERE l.archived=0 ORDER BY l.created_at DESC LIMIT 5")->fetchAll();
 
     $alertSuspended = $pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND status='Suspended'")->fetchColumn();
 
@@ -2618,8 +2618,8 @@ if ($page === 'dashboard') {
             <?php if(empty($recent)): ?><tr><td colspan="4" class="empty-cell">Aucune ligne récente</td></tr><?php endif; ?>
             <?php foreach($recent as $r): ?>
             <tr>
-              <td><strong style="font-family:var(--font-mono);color:var(--primary);font-size:1.05rem"><?=formatPhone($r['phone_number'])?></strong></td>
-              <td><?=h($r['first_name'].' '.$r['last_name'])?></td>
+              <td><a href="?page=lines&open_line=<?=$r['line_id']?>" class="cell-link" style="font-family:var(--font-mono);color:var(--primary);font-size:1.05rem;font-weight:700;" title="Ouvrir la fiche de la ligne"><?=formatPhone($r['phone_number'])?></a></td>
+              <td><?php if($r['agent_id']): ?><span class="cell-link" onclick="viewAgent(<?=$r['agent_id']?>, '<?=h(addslashes($r['first_name'].' '.$r['last_name']))?>')" title="Ouvrir la fiche utilisateur"><?=h($r['first_name'].' '.$r['last_name'])?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
               <td><span class="badge badge-muted"><?=h($r['plan_type']?:'Non défini')?></span></td>
               <td><?=statusBadge($r['status'])?></td>
             </tr>
@@ -2768,7 +2768,7 @@ elseif ($page === 'lines') {
         <?php foreach($lines as $l): ?>
         <tr>
           <td><input type="checkbox" class="bulk-chk-line" value="<?=$l['id']?>" onchange="updateBulkBar('line')" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></td>
-          <td><strong style="font-family:var(--font-mono);font-size:1.05rem;color:var(--primary)"><?= !empty($l['sim_vierge']) ? '<span style="color:var(--text3);font-style:italic;font-family:var(--font);">Sans numéro</span>' : formatPhone($l['phone_number']) ?></strong><br>
+          <td><strong class="cell-link" onclick="this.closest('tr').querySelector('.btn-edit').click()" title="Ouvrir la fiche de la ligne" style="font-family:var(--font-mono);font-size:1.05rem;color:var(--primary)"><?= !empty($l['sim_vierge']) ? '<span style="color:var(--text3);font-style:italic;font-family:var(--font);">Sans numéro</span>' : formatPhone($l['phone_number']) ?></strong><br>
           <?php if(!empty($l['sim_vierge'])): ?><span class="badge" style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.7rem;"><i class="bi bi-box-seam"></i> SIM Vierge</span>
           <?php elseif(!empty($l['esim'])): ?><span class="badge" style="background:rgba(139,92,246,.15);color:#a78bfa;font-size:.7rem;"><i class="bi bi-sim"></i> eSIM</span>
           <?php endif; ?>
@@ -2805,7 +2805,7 @@ elseif ($page === 'lines') {
           <td class="actions">
             <?php $hist = fetchEntityHistory($pdo, 'line', $l['id']); ?>
             <?php if(!$isArchive): ?>
-                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'><i class="bi bi-pencil"></i></button>
+                <button class="btn-icon btn-edit" data-line-id="<?=$l['id']?>" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'><i class="bi bi-pencil"></i></button>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
                 <?php if($l['agent_id']): ?>
                 <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Voir / générer le bon de remise" style="text-decoration:none;">🖨️</a>
@@ -3109,7 +3109,7 @@ elseif ($page === 'devices') {
           <td><strong><?=h($d['brand'].' '.$d['model_name'])?></strong></td>
           <td><span class="badge badge-muted"><?=h($d['category']?:'N/A')?></span></td>
           <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span><?php if($d['inventory_label']): ?><br><span class="badge badge-muted" style="font-size:.68rem;"><i class="bi bi-tag"></i> <?=h($d['inventory_label'])?></span><?php endif; ?></td>
-          <td><strong><?=h($d['first_name'].' '.$d['last_name']?:'Non affecté')?></strong><br><span class="muted"><i class="bi bi-building"></i> <?=h($d['service_name']?:'-')?></span></td>
+          <td><?php if($d['agent_id']): ?><strong class="cell-link" onclick="viewAgent(<?=$d['agent_id']?>, '<?=h(addslashes($d['first_name'].' '.$d['last_name']))?>')" title="Ouvrir la fiche utilisateur"><?=h($d['first_name'].' '.$d['last_name'])?></strong><?php else: ?><strong class="muted">Non affecté</strong><?php endif; ?><br><span class="muted"><i class="bi bi-building"></i> <?=h($d['service_name']?:'-')?></span></td>
           <td><?=statusBadge($d['status'])?></td>
           <td><?=$d['purchase_date']?date('d/m/Y',strtotime($d['purchase_date'])):'-'?></td>
           <td class="actions">
@@ -3175,7 +3175,7 @@ elseif ($page === 'devices') {
     <?php foreach(['add'=>'Ajouter', 'edit'=>'Modifier'] as $act => $title): ?>
     <div class="modal-overlay" id="modal-<?=$act?>-device">
       <div class="modal"><div class="modal-header"><h3><?=$title?> un Matériel</h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-device')"><i class="bi bi-x-lg"></i></button></div>
-      <form method="post"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-device">'; ?>
+      <form method="post" onsubmit="return deviceFormCheck('<?=$act?>')"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-device">'; ?>
       <div class="form-grid">
         <div class="form-group form-full"><label>Modèle *</label>
           <div class="qa-row">
@@ -4176,6 +4176,9 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 .qa-row select{flex:1;min-width:0}
 .btn-quickadd{flex-shrink:0;width:42px;display:inline-flex;align-items:center;justify-content:center;background:var(--primary-dim);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:1rem;transition:background-color .15s,color .15s}
 .btn-quickadd:hover{background:var(--primary);color:#fff}
+/* Cellules cliquables (numéro de ligne, nom d'utilisateur) → fiche concernée */
+.cell-link{cursor:pointer;text-decoration:none;border-bottom:1px dashed transparent;transition:border-color .15s,color .15s}
+.cell-link:hover{border-bottom-color:currentColor;color:var(--primary)}
 .modal-overlay{background:rgba(15,23,42,.5)!important}
 [data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.75)!important}
 </style>
@@ -4251,6 +4254,23 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
   <div class="modal modal-lg" style="max-width:900px">
     <div class="modal-header"><h3 id="agent-view-title"><i class="bi bi-person-vcard"></i> Fiche Utilisateur</h3><button type="button" class="modal-close" onclick="closeModal('modal-view-agent')"><i class="bi bi-x-lg"></i></button></div>
     <div id="agent-view-content" style="padding:1.5rem; max-height: 70vh; overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- Proposition de changement de statut (ligne → Active, matériel → Déployé) -->
+<div class="modal-overlay" id="modal-status-proposal">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header"><h3 id="sp-title"><i class="bi bi-arrow-up-circle"></i> Changer le statut ?</h3><button type="button" class="modal-close" onclick="statusProposalResolve('cancel')"><i class="bi bi-x-lg"></i></button></div>
+    <div style="padding:1.5rem;">
+      <div style="display:flex;gap:1rem;align-items:flex-start;">
+        <div style="flex-shrink:0;width:44px;height:44px;border-radius:50%;background:var(--primary-dim);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:1.4rem;"><i id="sp-icon" class="bi bi-arrow-up-circle"></i></div>
+        <p id="sp-message" style="color:var(--text2);line-height:1.6;margin:0;"></p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" id="sp-keep" onclick="statusProposalResolve('keep')">Garder en stock</button>
+        <button type="button" class="btn-primary" id="sp-activate" onclick="statusProposalResolve('activate')">Activer</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -4650,19 +4670,55 @@ function toggleSimVierge(act) {
   }
 }
 
-// À l'enregistrement d'une ligne : un utilisateur est affecté mais le statut
-// est resté « En Stock » → proposer de passer la ligne en « Active ».
-function lineFormCheck(act) {
+// ── Proposition de changement de statut (belle modale, pas de confirm()) ──
+let _spResolve = null;
+function openStatusProposal(cfg) {
+  document.getElementById('sp-icon').className = 'bi bi-' + (cfg.icon || 'arrow-up-circle');
+  document.getElementById('sp-title').innerHTML = '<i class="bi bi-' + (cfg.icon || 'arrow-up-circle') + '"></i> ' + cfg.title;
+  document.getElementById('sp-message').innerHTML = cfg.message;
+  document.getElementById('sp-keep').textContent = cfg.keepLabel;
+  document.getElementById('sp-activate').innerHTML = '<i class="bi bi-check-lg"></i> ' + cfg.activateLabel;
+  openModal('modal-status-proposal');
+  return new Promise(res => { _spResolve = res; });
+}
+function statusProposalResolve(choice) {
+  closeModal('modal-status-proposal');
+  const r = _spResolve; _spResolve = null;
+  if (r) r(choice);
+}
+// À la soumission, si un utilisateur est affecté mais le matériel/la ligne est
+// resté(e) « En Stock » → proposer le passage en Active / Déployé via la modale.
+// La validation HTML5 s'est déjà exécutée (l'événement submit vient de passer),
+// donc un form.submit() ultérieur est sûr.
+function statusFormCheck(act, cfg) {
   const agentSel  = document.getElementById(act + '-agent_id');
   const statusSel = document.getElementById(act + '-status');
+  if (!(agentSel && statusSel && agentSel.value !== '' && statusSel.value === 'Stock')) return true;
+  const form = statusSel.closest('form');
+  openStatusProposal(cfg).then(choice => {
+    if (choice === 'cancel') return;                       // fermeture : on n'enregistre pas
+    if (choice === 'activate') statusSel.value = cfg.activeValue;
+    form.submit();                                         // « garder » ou « activer » : on enregistre
+  });
+  return false;   // bloque la soumission initiale ; la modale décide de la suite
+}
+function lineFormCheck(act) {
   const simVierge = document.getElementById(act + '-sim_vierge');
   if (simVierge && simVierge.checked) return true;   // SIM vierge : reste en stock
-  if (agentSel && statusSel && agentSel.value !== '' && statusSel.value === 'Stock') {
-    if (confirm("Cette ligne est affectée à un utilisateur mais son statut est « En Stock (Non activée) ».\n\nPasser la ligne en « Active » ?")) {
-      statusSel.value = 'Active';
-    }
-  }
-  return true;
+  return statusFormCheck(act, {
+    icon: 'sim', activeValue: 'Active',
+    title: 'Activer la ligne ?',
+    message: "Cette ligne est affectée à un utilisateur mais son statut est encore <strong>« En Stock (non activée) »</strong>.<br><br>Souhaitez-vous la passer en <strong>« Active »</strong> ?",
+    keepLabel: 'Garder en stock', activateLabel: 'Activer la ligne'
+  });
+}
+function deviceFormCheck(act) {
+  return statusFormCheck(act, {
+    icon: 'phone', activeValue: 'Deployed',
+    title: 'Déployer le matériel ?',
+    message: "Ce matériel est affecté à un utilisateur mais son statut est encore <strong>« En Stock »</strong>.<br><br>Souhaitez-vous le passer en <strong>« Déployé »</strong> ?",
+    keepLabel: 'Garder en stock', activateLabel: 'Déployer le matériel'
+  });
 }
 
 function togglePersonalDevice(act) {
@@ -4840,6 +4896,13 @@ async function loadSimHistory() {
 }
 
 <?php if(!empty($_GET['open'])): ?>window.addEventListener('DOMContentLoaded', () => openModal('<?=h($_GET['open'])?>'));<?php endif; ?>
+<?php if(!empty($_GET['open_line'])): ?>
+// Ouverture directe de la fiche d'une ligne (lien depuis le tableau de bord)
+window.addEventListener('DOMContentLoaded', () => {
+  const btn = document.querySelector('.btn-edit[data-line-id="<?=(int)$_GET['open_line']?>"]');
+  if (btn) { btn.click(); btn.closest('tr')?.scrollIntoView({block:'center'}); }
+});
+<?php endif; ?>
 </script>
 </body>
 </html>
