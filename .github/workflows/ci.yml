@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_mysql, ldap, mbstring
+
+      - name: Compilation (syntaxe)
+        run: |
+          set -e
+          find . -name '*.php' -not -path './vendor/*' -print0 | while IFS= read -r -d '' f; do
+            php -l "$f"
+          done
+
+      - name: Test de démarrage (smoke test)
+        env:
+          DB_HOST: 127.0.0.1
+          DB_USER: root
+          DB_PASS: ""
+          DB_NAME: simcity_ci
+          APP_DEBUG: "true"
+        run: |
+          php -S 127.0.0.1:8123 >/tmp/server.log 2>&1 &
+          sleep 2
+          curl -sf http://127.0.0.1:8123/index.php | grep -q "Connexion – SimCity" \
+            || { echo "La page de connexion ne répond pas :"; cat /tmp/server.log; exit 1; }
+
+      - name: Test de recette (tests/smoke.sh)
+        env:
+          BASE_URL: http://127.0.0.1:8123/index.php
+          ADMIN_USER: admin
+          ADMIN_PASS: admin
+        run: echo "oui" | bash tests/smoke.sh

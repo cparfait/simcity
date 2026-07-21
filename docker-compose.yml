@@ -1,0 +1,64 @@
+# ============================================================
+#  SimCity — docker-compose (structure jumelle de Sentinelle)
+#  Conventions communes aux deux applications :
+#   - DB_*    : connexion à la base
+#   - LDAP_*  : authentification Active Directory (prime sur la base,
+#               champs verrouillés 🔒 dans Paramètres)
+#   - MAIL_*  : envoi d'e-mails SMTP (prime sur la base, idem)
+#  Les variables LDAP_* / MAIL_* sont optionnelles : sans elles, tout
+#  se configure dans l'interface (Référentiels → Paramètres).
+# ============================================================
+services:
+  app:
+    build: .
+    ports:
+      - "8080:80"
+    environment:
+      DB_HOST: db
+      DB_NAME: simcity_db
+      DB_USER: simcity
+      DB_PASS: "change-me"          # doit correspondre à MYSQL_PASSWORD ci-dessous
+      FORCE_HTTPS: "false"          # true si pas de reverse proxy TLS devant
+      APP_DEBUG: "false"
+      # ── Authentification Active Directory (optionnel — sinon via l'UI) ──
+      # LDAP_ENABLED: "true"
+      # LDAP_SERVER: ldaps://dc.chatillon.lan
+      # LDAP_VALIDATE_CERT: "false"           # CA interne/auto-signée
+      # LDAP_DOMAIN: chatillon.lan
+      # LDAP_BASE_DN: DC=chatillon,DC=lan
+      # LDAP_REQUIRED_GROUP: GG-SimCity-Admins
+      # LDAP_BIND_USER: svc-simcity@chatillon.lan
+      # LDAP_BIND_PASSWORD: "secret"
+      # ── Envoi d'e-mails (optionnel — sinon via l'UI) ──
+      # MAIL_SERVER: smtp.chatillon.lan
+      # MAIL_PORT: "587"
+      # MAIL_USE_TLS: "true"
+      # MAIL_USERNAME: svc-simcity@chatillon.lan
+      # MAIL_PASSWORD: "secret"
+      # MAIL_DEFAULT_SENDER: dsi@chatillon.lan
+    volumes:
+      - ./uploads:/var/www/html/uploads    # persistance des pièces jointes
+      - ./backups:/var/www/html/backups    # persistance des sauvegardes SQL
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: simcity_db
+      MYSQL_USER: simcity
+      MYSQL_PASSWORD: "change-me"
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+    volumes:
+      - dbdata:/var/lib/mysql              # persistance des données MySQL
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+volumes:
+  dbdata:

@@ -28,7 +28,9 @@ read -r -p "Cette instance est-elle bien une instance de TEST ? (oui/NON) " CONF
 [ "$CONFIRM" = "oui" ] || { echo "Abandon."; exit 1; }
 
 step "1. Connexion"
-curl -s -c "$CJ" -b "$CJ" -d "username=$ADMIN_USER&password=$ADMIN_PASS&login=1" -o /dev/null "$BASE_URL"
+# Le formulaire de connexion est protégé par CSRF : récupérer d'abord le jeton
+LOGIN_CSRF=$(curl -s -c "$CJ" "$BASE_URL" | grep -o 'name="_csrf" value="[a-f0-9]*"' | grep -o '[a-f0-9]\{64\}' | head -1)
+curl -s -c "$CJ" -b "$CJ" -d "username=$ADMIN_USER&password=$ADMIN_PASS&login=1&_csrf=$LOGIN_CSRF" -o /dev/null "$BASE_URL"
 CSRF=$(curl -s -b "$CJ" "$BASE_URL?page=dashboard" | grep -o 'const token = "[a-f0-9]*"' | grep -o '[a-f0-9]\{64\}')
 [ -n "$CSRF" ] && ok "connecté (jeton CSRF récupéré)" || { ko "échec de connexion"; exit 1; }
 

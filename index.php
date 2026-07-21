@@ -492,16 +492,51 @@ function createBon($pdo, $type, $agentId, $items, $parentId = null) {
     return (int)$pdo->lastInsertId();
 }
 
+// ─── Réglages SMTP : surcharge par variables d'environnement ──
+// Mêmes noms que Sentinelle (MAIL_SERVER, MAIL_PORT, MAIL_USERNAME,
+// MAIL_PASSWORD, MAIL_DEFAULT_SENDER, MAIL_USE_TLS) : si la variable est
+// définie (Docker), elle PRIME sur la base et le champ correspondant est
+// verrouillé dans Paramètres — même logique que la configuration LDAP.
+const SMTP_ENV_KEYS = [
+    'smtp_host'      => 'MAIL_SERVER',
+    'smtp_port'      => 'MAIL_PORT',
+    'smtp_secure'    => 'MAIL_SECURE',          // tls | ssl | none
+    'smtp_user'      => 'MAIL_USERNAME',
+    'smtp_pass'      => 'MAIL_PASSWORD',
+    'smtp_from'      => 'MAIL_DEFAULT_SENDER',
+    'smtp_from_name' => 'MAIL_FROM_NAME',
+];
+
+function smtp_env_locked(string $key): bool {
+    $env = SMTP_ENV_KEYS[$key] ?? '';
+    if ($env !== '' && getenv($env) !== false && getenv($env) !== '') return true;
+    // Compat Sentinelle : MAIL_USE_TLS pilote smtp_secure si MAIL_SECURE absent
+    return $key === 'smtp_secure' && getenv('MAIL_USE_TLS') !== false && getenv('MAIL_USE_TLS') !== '';
+}
+
+function smtpSetting($pdo, string $key, $default = '') {
+    $env = SMTP_ENV_KEYS[$key] ?? '';
+    if ($env !== '') {
+        $v = getenv($env);
+        if ($v !== false && $v !== '') return $v;
+    }
+    if ($key === 'smtp_secure') {
+        $tls = getenv('MAIL_USE_TLS');
+        if ($tls !== false && $tls !== '') return filter_var($tls, FILTER_VALIDATE_BOOLEAN) ? 'tls' : 'none';
+    }
+    return getSetting($pdo, $key, $default);
+}
+
 // ─── Envoi d'e-mail via SMTP (aucune dépendance externe) ──────
 // Retourne true en cas de succès, sinon un message d'erreur lisible.
 function smtpSendMail($pdo, $to, $subject, $htmlBody) {
-    $host     = trim(getSetting($pdo, 'smtp_host', ''));
-    $port     = (int)getSetting($pdo, 'smtp_port', 587);
-    $secure   = strtolower(trim(getSetting($pdo, 'smtp_secure', 'tls')));   // tls | ssl | none
-    $user     = getSetting($pdo, 'smtp_user', '');
-    $pass     = getSetting($pdo, 'smtp_pass', '');
-    $from     = trim(getSetting($pdo, 'smtp_from', '')) ?: $user;
-    $fromName = getSetting($pdo, 'smtp_from_name', 'SimCity');
+    $host     = trim(smtpSetting($pdo, 'smtp_host', ''));
+    $port     = (int)smtpSetting($pdo, 'smtp_port', 587);
+    $secure   = strtolower(trim(smtpSetting($pdo, 'smtp_secure', 'tls')));   // tls | ssl | none
+    $user     = smtpSetting($pdo, 'smtp_user', '');
+    $pass     = smtpSetting($pdo, 'smtp_pass', '');
+    $from     = trim(smtpSetting($pdo, 'smtp_from', '')) ?: $user;
+    $fromName = smtpSetting($pdo, 'smtp_from_name', 'SimCity');
     if (!$host || !$from) return "SMTP non configuré — renseignez Paramètres → Envoi d'e-mails.";
     if (!filter_var($to, FILTER_VALIDATE_EMAIL)) return "Adresse destinataire invalide : $to";
 
@@ -816,7 +851,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         </div>
         <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
             <?php // Pour chaque bon encore signable : copier le lien (toujours), e-mail (si SMTP configuré)
-            $smtpConfigured = trim(getSetting($pdo, 'smtp_host', '')) !== '';
+            $smtpConfigured = trim(smtpSetting($pdo, 'smtp_host', '')) !== '';
             foreach ([$bonRemise, $bonRestitution] as $tb):
                 if (!$tb || $tb['status'] !== 'pending' || ($tb['expires_at'] && strtotime($tb['expires_at']) < time())) continue;
                 $signUrl = baseUrl($pdo) . '?page=sign&token=' . $tb['token']; ?>
@@ -1273,7 +1308,7 @@ if (isset($_GET['ajax_agent_details'])) {
     $history = $histSt->fetchAll();
     
     // ── BONS : statut du dernier cycle + actions ──────────────────
-    $smtpConfigured = trim(getSetting($pdo, 'smtp_host', '')) !== '';
+    $smtpConfigured = trim(smtpSetting($pdo, 'smtp_host', '')) !== '';
     $lastRemise = $pdo->prepare("SELECT * FROM bons WHERE agent_id=? AND type='remise' AND status!='cancelled' ORDER BY created_at DESC, id DESC LIMIT 1");
     $lastRemise->execute([$id]); $lastRemise = $lastRemise->fetch();
     $lastRestit = null;
@@ -1665,15 +1700,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash('success', 'Configuration LDAP enregistrée.' . (ldap_auth_enabled() ? '' : (ldap_cfg('ldap_enabled') && !extension_loaded('ldap') ? " ⚠️ Extension PHP « ldap » manquante : l'authentification AD restera inactive." : '')));
                 }
             }
-            // Configuration SMTP (envoi des liens de signature)
+            // Configuration SMTP (envoi des liens de signature).
+            // Les champs imposés par variable d'environnement (MAIL_*) ne sont pas écrasés.
             if (isset($d['smtp_host'])) {
                 foreach (['smtp_host','smtp_port','smtp_user','smtp_from','smtp_from_name'] as $key) {
-                    $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?")->execute([trim($d[$key] ?? ''), $key]);
+                    if (!smtp_env_locked($key)) $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?")->execute([trim($d[$key] ?? ''), $key]);
                 }
-                $sec = in_array($d['smtp_secure'] ?? '', ['tls','ssl','none'], true) ? $d['smtp_secure'] : 'tls';
-                $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='smtp_secure'")->execute([$sec]);
+                if (!smtp_env_locked('smtp_secure')) {
+                    $sec = in_array($d['smtp_secure'] ?? '', ['tls','ssl','none'], true) ? $d['smtp_secure'] : 'tls';
+                    $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='smtp_secure'")->execute([$sec]);
+                }
                 // Mot de passe : conservé si le champ est laissé vide
-                if (($d['smtp_pass'] ?? '') !== '') {
+                if (!smtp_env_locked('smtp_pass') && ($d['smtp_pass'] ?? '') !== '') {
                     $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='smtp_pass'")->execute([$d['smtp_pass']]);
                 }
             }
@@ -3261,25 +3299,30 @@ elseif ($page === 'refs') {
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="settings">
           <input type="hidden" name="_action" value="save">
+          <?php
+            // Champ verrouillé si imposé par variable d'environnement (Docker)
+            $mk  = fn($k) => smtp_env_locked($k) ? 'disabled title="Imposé par la variable d\'environnement '.h(SMTP_ENV_KEYS[$k]).' — modifiable uniquement côté serveur"' : '';
+            $mkN = fn($k) => smtp_env_locked($k) ? ' <span style="font-weight:400;text-transform:none;color:var(--warning);">🔒 env</span>' : '';
+          ?>
           <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
             Permet d'envoyer le lien de signature d'un bon directement à l'agent (bouton 📧).<br>
-            Laissez le serveur vide pour désactiver l'envoi d'e-mails.
+            Laissez le serveur vide pour désactiver l'envoi d'e-mails. Marqué 🔒 env : valeur imposée par l'environnement (variables <code>MAIL_*</code>, comme Sentinelle).
           </p>
           <div class="form-grid">
-            <div class="form-group"><label>Serveur SMTP</label><input type="text" name="smtp_host" value="<?=h(getSetting($pdo,'smtp_host',''))?>" placeholder="smtp.monentreprise.fr"></div>
-            <div class="form-group"><label>Port</label><input type="number" name="smtp_port" value="<?=h(getSetting($pdo,'smtp_port','587'))?>" min="1" max="65535"></div>
-            <div class="form-group"><label>Chiffrement</label>
-              <?php $smtpSec = getSetting($pdo,'smtp_secure','tls'); ?>
-              <select name="smtp_secure">
+            <div class="form-group"><label>Serveur SMTP<?=$mkN('smtp_host')?></label><input type="text" name="smtp_host" value="<?=h(smtpSetting($pdo,'smtp_host',''))?>" placeholder="smtp.monentreprise.fr" <?=$mk('smtp_host')?>></div>
+            <div class="form-group"><label>Port<?=$mkN('smtp_port')?></label><input type="number" name="smtp_port" value="<?=h(smtpSetting($pdo,'smtp_port','587'))?>" min="1" max="65535" <?=$mk('smtp_port')?>></div>
+            <div class="form-group"><label>Chiffrement<?=$mkN('smtp_secure')?></label>
+              <?php $smtpSec = smtpSetting($pdo,'smtp_secure','tls'); ?>
+              <select name="smtp_secure" <?=$mk('smtp_secure')?>>
                 <option value="tls" <?=$smtpSec==='tls'?'selected':''?>>STARTTLS (port 587)</option>
                 <option value="ssl" <?=$smtpSec==='ssl'?'selected':''?>>SSL/TLS (port 465)</option>
                 <option value="none" <?=$smtpSec==='none'?'selected':''?>>Aucun (interne uniquement)</option>
               </select>
             </div>
-            <div class="form-group"><label>Identifiant</label><input type="text" name="smtp_user" value="<?=h(getSetting($pdo,'smtp_user',''))?>" autocomplete="off" placeholder="Vide si serveur sans authentification"></div>
-            <div class="form-group"><label>Mot de passe <span style="font-weight:400;text-transform:none;">(vide = inchangé)</span></label><input type="password" name="smtp_pass" value="" autocomplete="new-password"></div>
-            <div class="form-group"><label>Adresse expéditrice</label><input type="email" name="smtp_from" value="<?=h(getSetting($pdo,'smtp_from',''))?>" placeholder="dsi@monentreprise.fr"></div>
-            <div class="form-group form-full"><label>Nom de l'expéditeur</label><input type="text" name="smtp_from_name" value="<?=h(getSetting($pdo,'smtp_from_name','SimCity — DSI'))?>"></div>
+            <div class="form-group"><label>Identifiant<?=$mkN('smtp_user')?></label><input type="text" name="smtp_user" value="<?=h(smtpSetting($pdo,'smtp_user',''))?>" autocomplete="off" placeholder="Vide si serveur sans authentification" <?=$mk('smtp_user')?>></div>
+            <div class="form-group"><label>Mot de passe <span style="font-weight:400;text-transform:none;">(vide = inchangé)</span><?=$mkN('smtp_pass')?></label><input type="password" name="smtp_pass" value="" autocomplete="new-password" <?=$mk('smtp_pass')?>></div>
+            <div class="form-group"><label>Adresse expéditrice<?=$mkN('smtp_from')?></label><input type="email" name="smtp_from" value="<?=h(smtpSetting($pdo,'smtp_from',''))?>" placeholder="dsi@monentreprise.fr" <?=$mk('smtp_from')?>></div>
+            <div class="form-group form-full"><label>Nom de l'expéditeur<?=$mkN('smtp_from_name')?></label><input type="text" name="smtp_from_name" value="<?=h(smtpSetting($pdo,'smtp_from_name','SimCity — DSI'))?>" <?=$mk('smtp_from_name')?>></div>
           </div>
           <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
             <button type="submit" class="btn-primary">💾 Enregistrer</button>

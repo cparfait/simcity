@@ -38,7 +38,11 @@ define('DB_PASS', getenv('DB_PASS') ?: '');            // vide par défaut sous 
 
 - **Laragon / WAMP / XAMPP (local)** : aucune variable définie → repli sur
   `localhost` / `root` / mot de passe vide. Rien à éditer dans la plupart des cas.
-- **Docker (prod)** : injectez les variables dans `docker-compose.yml`, elles prennent le dessus :
+- **Docker (prod)** : un `Dockerfile` (PHP 8.3 + Apache, extensions `pdo_mysql` et
+  `ldap`) et un `docker-compose.yml` prêts à l'emploi sont fournis à la racine —
+  même structure que Sentinelle. Changez le mot de passe `change-me`, puis
+  `docker compose up -d`. Les variables d'environnement priment sur les valeurs
+  de repli :
   ```yaml
   services:
     app:
@@ -101,6 +105,15 @@ Sentinelle) **priment sur la base** — le champ correspondant est alors verroui
 - Un compte provisionné depuis l'AD est marqué **🌐 AD** dans Référentiels →
   Comptes Admin : il n'a pas de mot de passe local (le champ est ignoré) et
   s'authentifie toujours via LDAP.
+
+### 2 ter. Envoi d'e-mails (SMTP)
+
+Comme le LDAP, le SMTP se configure dans **Référentiels → Paramètres** (carte
+« 📧 Envoi d'e-mails ») et peut être imposé par variables d'environnement —
+**mêmes noms que Sentinelle** : `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USE_TLS`
+(ou `MAIL_SECURE` : `tls`/`ssl`/`none`), `MAIL_USERNAME`, `MAIL_PASSWORD`,
+`MAIL_DEFAULT_SENDER` (+ `MAIL_FROM_NAME`, propre à SimCity). Une variable
+définie prime sur la base et verrouille 🔒 le champ dans l'interface.
 
 ### 3. Créer les tables
 
