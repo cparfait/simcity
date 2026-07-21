@@ -2601,11 +2601,11 @@ if ($page === 'dashboard') {
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem; margin-top:1rem; margin-bottom:1rem;">
           <div class="card" style="margin-bottom:0;">
-              <div class="card-header"><i class="bi bi-phone"></i> Répartition par marque</div>
+              <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;"><span><i class="bi bi-phone"></i> Répartition par marque</span><a href="?page=devices" class="card-see-all">Voir tout <i class="bi bi-arrow-right"></i></a></div>
               <div style="padding:1rem; height:250px;"><canvas id="chartBrand"></canvas></div>
           </div>
           <div class="card" style="margin-bottom:0;">
-              <div class="card-header"><i class="bi bi-building"></i> Top 5 Services (Lignes actives)</div>
+              <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;"><span><i class="bi bi-building"></i> Top 5 Services (Lignes actives)</span><a href="?page=refs&tab=services" class="card-see-all">Voir tout <i class="bi bi-arrow-right"></i></a></div>
               <div style="padding:1rem; height:250px;"><canvas id="chartSvc"></canvas></div>
           </div>
       </div>
@@ -3250,9 +3250,19 @@ elseif ($page === 'refs') {
         $ent = 'settings';
     }
     ?>
-    <?php if($tab !== 'settings'): ?>
+    <?php if($tab !== 'settings'):
+      $addLabels = [
+        'agents'    => 'Ajouter un(e) utilisateur(trice)',
+        'services'  => 'Ajouter un service',
+        'models'    => 'Ajouter un modèle',
+        'plans'     => 'Ajouter un forfait',
+        'operators' => 'Ajouter un opérateur',
+        'billing'   => 'Ajouter un compte de facturation',
+        'admins'    => 'Ajouter un compte admin',
+      ];
+    ?>
     <div class="page-header">
-      <button class="btn-primary" onclick="openModal('modal-add-<?=$ent?>')">+ Ajouter (<?=$tabs[$tab]?>)</button>
+      <button class="btn-primary" onclick="openModal('modal-add-<?=$ent?>')"><i class="bi bi-plus-lg"></i> <?=h($addLabels[$tab] ?? 'Ajouter')?></button>
     </div>
     <?php endif; ?>
 
@@ -4179,6 +4189,9 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 /* Cellules cliquables (numéro de ligne, nom d'utilisateur) → fiche concernée */
 .cell-link{cursor:pointer;text-decoration:none;border-bottom:1px dashed transparent;transition:border-color .15s,color .15s}
 .cell-link:hover{border-bottom-color:currentColor;color:var(--primary)}
+/* Lien « Voir tout → » dans les en-têtes de graphiques */
+.card-see-all{color:var(--primary);font-size:.8rem;font-weight:600;text-transform:none;letter-spacing:0;white-space:nowrap;display:inline-flex;align-items:center;gap:.3rem;transition:gap .15s}
+.card-see-all:hover{color:var(--primary);gap:.5rem}
 .modal-overlay{background:rgba(15,23,42,.5)!important}
 [data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.75)!important}
 </style>
