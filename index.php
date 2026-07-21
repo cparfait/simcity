@@ -2666,10 +2666,11 @@ elseif ($page === 'lines') {
     // Toutes les SIM en stock (pour le swap) — vierges ET numérotées non affectées
     $simStock = $pdo->query("SELECT id, iccid, pin, puk, IFNULL(esim,0) as esim FROM mobile_lines WHERE archived=0 AND sim_vierge=1 ORDER BY iccid")->fetchAll();
     ?>
+    <?php if(!$isArchive): ?>
     <div class="page-header">
-      <span class="page-title-txt"><i class="bi bi-sim"></i> Inventaire des Lignes & Cartes SIM</span>
-      <?php if(!$isArchive): ?><button class="btn-primary" onclick="openModal('modal-add-line')">+ Ajouter une Ligne / SIM</button><?php endif; ?>
+      <button class="btn-primary" onclick="openModal('modal-add-line')">+ Ajouter une Ligne / SIM</button>
     </div>
+    <?php endif; ?>
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
         <a href="?page=lines&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-telephone"></i> Lignes Actives & Suspendues</a>
@@ -2728,10 +2729,10 @@ elseif ($page === 'lines') {
             <?php else: ?>
               <strong><?=h($l['first_name'].' '.$l['last_name'])?></strong>
             <?php endif; ?>
-            <br><span class="muted">🏢 <?=h($l['service_name']?:'Aucun service')?></span>
+            <br><span class="muted"><i class="bi bi-building"></i> <?=h($l['service_name']?:'Aucun service')?></span>
           </td>
           <td>CF: <strong class="muted"><?=h($l['account_number']?:'-')?></strong><br>
-            <?php if($l['operator_name']): ?><span class="muted" style="font-size:.72rem;">📡 <?=h($l['operator_name'])?></span><br><?php endif; ?>
+            <?php if($l['operator_name']): ?><span class="muted" style="font-size:.72rem;"><i class="bi bi-broadcast"></i> <?=h($l['operator_name'])?></span><br><?php endif; ?>
             <span class="badge badge-muted"><?=h($l['plan_name']?:'Aucun forfait')?></span>
           </td>
           <td>
@@ -3006,10 +3007,11 @@ elseif ($page === 'devices') {
     $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     ?>
+    <?php if(!$isArchive): ?>
     <div class="page-header">
-      <span class="page-title-txt"><i class="bi bi-phone"></i> Parc Matériel Physique</span>
-      <?php if(!$isArchive): ?><button class="btn-primary" onclick="openModal('modal-add-device')">+ Ajouter un équipement</button><?php endif; ?>
+      <button class="btn-primary" onclick="openModal('modal-add-device')">+ Ajouter un équipement</button>
     </div>
+    <?php endif; ?>
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
         <a href="?page=devices&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-phone"></i> Matériels Déployés / Réparation</a>
@@ -3052,7 +3054,7 @@ elseif ($page === 'devices') {
           <td><strong><?=h($d['brand'].' '.$d['model_name'])?></strong></td>
           <td><span class="badge badge-muted"><?=h($d['category']?:'N/A')?></span></td>
           <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span><?php if($d['inventory_label']): ?><br><span class="badge badge-muted" style="font-size:.68rem;"><i class="bi bi-tag"></i> <?=h($d['inventory_label'])?></span><?php endif; ?></td>
-          <td><strong><?=h($d['first_name'].' '.$d['last_name']?:'Non affecté')?></strong><br><span class="muted">🏢 <?=h($d['service_name']?:'-')?></span></td>
+          <td><strong><?=h($d['first_name'].' '.$d['last_name']?:'Non affecté')?></strong><br><span class="muted"><i class="bi bi-building"></i> <?=h($d['service_name']?:'-')?></span></td>
           <td><?=statusBadge($d['status'])?></td>
           <td><?=$d['purchase_date']?date('d/m/Y',strtotime($d['purchase_date'])):'-'?></td>
           <td class="actions">
@@ -3184,12 +3186,11 @@ elseif ($page === 'refs') {
         $ent = 'settings';
     }
     ?>
+    <?php if($tab !== 'settings'): ?>
     <div class="page-header">
-      <span class="page-title-txt"><i class="bi bi-gear"></i> Référentiels & Paramètres</span>
-      <?php if($tab !== 'settings'): ?>
       <button class="btn-primary" onclick="openModal('modal-add-<?=$ent?>')">+ Ajouter (<?=$tabs[$tab]?>)</button>
-      <?php endif; ?>
     </div>
+    <?php endif; ?>
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
         <?php foreach($tabs as $k => $label): ?><a href="?page=refs&tab=<?=$k?>" class="tab-btn <?=$tab===$k?'active':''?>"><?=$label?></a><?php endforeach; ?>
@@ -3917,9 +3918,6 @@ elseif ($page === 'history') {
         return '<span style="background:rgba(37,99,235,.12);color:var(--info);font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏳ En attente</span>';
     }
     ?>
-    <div class="page-header">
-      <span class="page-title-txt"><i class="bi bi-file-earmark-text"></i> Historique des Bons de Remise</span>
-    </div>
 
     <div class="search-bar-wrap">
       <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span>
@@ -3945,7 +3943,7 @@ elseif ($page === 'history') {
           <?php else: ?>
             <strong style="color:var(--text3);">👤 Agent supprimé</strong>
           <?php endif; ?>
-          <span style="font-size:.8rem;color:var(--text3);">🏢 <?=h($pair['service_name'])?></span>
+          <span style="font-size:.8rem; color:var(--text3);"><i class="bi bi-building"></i> <?=h($pair['service_name'])?></span>
           <?php if($pair['agent_archived']): ?><span style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.68rem;font-weight:600;padding:.1rem .4rem;border-radius:999px;"><i class="bi bi-archive"></i> Parti</span><?php endif; ?>
         </div>
         <?php if($pair['phone_numbers']): ?>
@@ -4032,7 +4030,7 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .sidebar-section{padding:.85rem 1rem .3rem;font-size:.64rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.13em;}
 .sidebar-nav{flex:1;padding:.5rem;overflow-y:auto;}
 .nav-item{display:flex;align-items:center;gap:.75rem;padding:.6rem 1rem;border-radius:var(--radius-sm);color:var(--text2);text-decoration:none;font-size:.875rem;font-weight:500;transition:all .18s ease;}
-.nav-item:hover{background:var(--bg3);color:var(--text-strong)} .nav-item.active{background:var(--primary-dim);color:var(--primary);font-weight:600;box-shadow:inset 3px 0 0 var(--primary)}
+.nav-item:hover{background:var(--bg3);color:var(--text-strong)} .nav-item.active{color:var(--primary);font-weight:600}
 .nav-icon{width:20px;text-align:center;font-size:1.02rem;flex-shrink:0} .nav-item.active .nav-icon{color:var(--primary)}
 .btn-hamburger{display:none;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);width:38px;height:38px;font-size:1.25rem;align-items:center;justify-content:center;cursor:pointer}
 .btn-hamburger:hover{background:var(--bg3)}
@@ -4057,7 +4055,7 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .theme-toggle{cursor:pointer;color:var(--text2);font-size:1rem;padding:6px 8px;border-radius:var(--radius-sm);line-height:1;transition:background-color .18s ease,color .18s ease}
 .theme-toggle:hover{color:var(--text-strong);background:var(--bg3)}
 .content{padding:2rem;flex:1;max-width:1400px;margin:0 auto;width:100%;}
-.page-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.5rem;}
+.page-header{display:flex;align-items:center;justify-content:flex-end;margin-bottom:1.5rem;}
 .page-title-txt{font-family:var(--font-display);font-weight:700;font-size:1.4rem;color:var(--text-strong);}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:1.5rem;break-inside:avoid;box-shadow:var(--shadow);}
 .card-header{padding:.85rem 1.5rem .85rem 2.15rem;border-bottom:1px solid var(--border);background:rgba(79,70,229,.03);font-family:var(--font-display);font-weight:700;font-size:.9rem;color:var(--text);position:relative;}
@@ -4101,7 +4099,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 .shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(79,70,229,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
 .tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);margin-bottom:-2px;z-index:2;}
 @media(max-width:900px){.sidebar{transform:translateX(-100%);transition:transform .25s ease;box-shadow:var(--shadow-lg)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:inline-flex}}
-a{color:var(--primary)} a:hover{color:var(--primary-dark)}
+a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 .modal-overlay{background:rgba(15,23,42,.5)!important}
 [data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.75)!important}
 </style>
@@ -4118,13 +4116,15 @@ a{color:var(--primary)} a:hover{color:var(--primary-dark)}
     <div class="sidebar-section">Principal</div>
     <a href="?page=dashboard" class="nav-item <?=$page==='dashboard'?'active':''?>"><i class="bi bi-grid-1x2 nav-icon"></i><span class="nav-label">Tableau de bord</span></a>
 
+    <?php $navRefsTab = $page==='refs' ? ($_GET['tab'] ?? 'agents') : ''; ?>
     <div class="sidebar-section">Parc & Stocks</div>
+    <a href="?page=refs&tab=agents" class="nav-item <?=$navRefsTab==='agents'?'active':''?>"><i class="bi bi-people nav-icon"></i><span class="nav-label">Utilisateurs</span></a>
     <a href="?page=lines" class="nav-item <?=$page==='lines'?'active':''?>"><i class="bi bi-sim nav-icon"></i><span class="nav-label">Lignes & SIM</span></a>
-    <a href="?page=devices" class="nav-item <?=$page==='devices'?'active':''?>"><i class="bi bi-phone nav-icon"></i><span class="nav-label">Matériels (Mobiles)</span></a>
+    <a href="?page=devices" class="nav-item <?=$page==='devices'?'active':''?>"><i class="bi bi-phone nav-icon"></i><span class="nav-label">Matériels</span></a>
 
     <div class="sidebar-section">Outils</div>
     <a href="?page=history" class="nav-item <?=$page==='history'?'active':''?>"><i class="bi bi-file-earmark-text nav-icon"></i><span class="nav-label">Historique des bons</span></a>
-    <a href="?page=refs" class="nav-item <?=$page==='refs'?'active':''?>"><i class="bi bi-gear nav-icon"></i><span class="nav-label">Référentiels & Comptes</span></a>
+    <a href="?page=refs&tab=services" class="nav-item <?=($navRefsTab!=='' && $navRefsTab!=='agents')?'active':''?>"><i class="bi bi-gear nav-icon"></i><span class="nav-label">Référentiels & Comptes</span></a>
     <?php
     $navOperators = $pdo->query("SELECT name, website FROM operators WHERE website IS NOT NULL AND website != '' ORDER BY name")->fetchAll();
     foreach($navOperators as $op): ?>
