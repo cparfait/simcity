@@ -1329,7 +1329,7 @@ if (isset($_GET['ajax_agent_details'])) {
         <input type='hidden' name='_action' value='generate_remise'>
         <input type='hidden' name='agent_id' value='$id'>
         <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
-        <button type='submit' class='btn-primary' style='display:inline-flex; align-items:center; gap:5px; box-shadow: 0 4px 10px rgba(67, 97, 238, 0.3);'>📄 Générer le bon de remise</button>
+        <button type='submit' class='btn-primary' style='display:inline-flex; align-items:center; gap:5px; box-shadow: 0 4px 10px rgba(67, 97, 238, 0.3);'><i class='bi bi-file-earmark-arrow-down'></i> Générer le bon de remise</button>
     </form>";
     if ($lastRemise && !$cycleClosed) {
         echo "<a href='?page=pdf_bon&bon_id={$lastRemise['id']}' target='_blank' class='btn-secondary' style='text-decoration:none;display:inline-flex;align-items:center;gap:5px;'>🖨️ Voir le bon actuel</a>";
@@ -1429,13 +1429,13 @@ if (isset($_GET['ajax_agent_details'])) {
     
     // Colonne 1 : Infos & Parc actuel
     echo "<div style='flex:1; min-width:300px;'>";
-    echo "<div style='background:var(--bg3); padding:1rem; border-radius:var(--radius-sm); margin-bottom:1.5rem;'><h4 style='color:var(--text); margin-bottom:10px;'>📧 Coordonnées</h4><div><strong>Email :</strong> " . h($agt['email']?:'Non renseigné') . "</div><div><strong>Service :</strong> " . h($agt['service_name']?:'Aucun') . "</div></div>";
+    echo "<div style='background:var(--bg3); padding:1rem; border-radius:var(--radius-sm); margin-bottom:1.5rem;'><h4 style='color:var(--text); margin-bottom:10px;'><i class='bi bi-envelope'></i> Coordonnées</h4><div><strong>Email :</strong> " . h($agt['email']?:'Non renseigné') . "</div><div><strong>Service :</strong> " . h($agt['service_name']?:'Aucun') . "</div></div>";
     
-    echo "<h4 style='color:var(--primary); margin-bottom:10px; border-bottom:1px solid var(--border); padding-bottom:5px;'>📞 Lignes attribuées</h4>";
+    echo "<h4 style='color:var(--primary); margin-bottom:10px; border-bottom:1px solid var(--border); padding-bottom:5px;'><i class='bi bi-telephone'></i> Lignes attribuées</h4>";
     if(!$lines) echo "<div class='muted' style='margin-bottom:1rem;'>Aucune ligne active.</div>";
     foreach($lines as $l) {
-        $byodBadge = !empty($l['personal_device']) ? "<span class='badge' style='background:rgba(56,189,248,.15);color:var(--info);margin-left:6px;'>📲 Tél. perso (BYOD)</span>" : '';
-        $esimBadge = !empty($l['esim']) ? "<span class='badge' style='background:rgba(139,92,246,.15);color:#a78bfa;margin-left:6px;'>📲 eSIM</span>" : '';
+        $byodBadge = !empty($l['personal_device']) ? "<span class='badge' style='background:rgba(56,189,248,.15);color:var(--info);margin-left:6px;'><i class='bi bi-phone'></i> Tél. perso (BYOD)</span>" : '';
+        $esimBadge = !empty($l['esim']) ? "<span class='badge' style='background:rgba(139,92,246,.15);color:#a78bfa;margin-left:6px;'><i class='bi bi-sim'></i> eSIM</span>" : '';
         $esimExtra = '';
         if (!empty($l['esim'])) {
             if ($l['eid']) $esimExtra .= "<br><span class='muted' style='font-size:.72rem;'>EID: ".h($l['eid'])."</span>";
@@ -1463,13 +1463,13 @@ if (isset($_GET['ajax_agent_details'])) {
         }
     }
 
-    echo "<h4 style='color:var(--primary); margin-bottom:10px; margin-top:1.5rem; border-bottom:1px solid var(--border); padding-bottom:5px;'>📱 Matériels attribués</h4>";
+    echo "<h4 style='color:var(--primary); margin-bottom:10px; margin-top:1.5rem; border-bottom:1px solid var(--border); padding-bottom:5px;'><i class='bi bi-phone'></i> Matériels attribués</h4>";
     $hasAnything = $devices || $byodLines;
     if(!$hasAnything) echo "<div class='muted'>Aucun matériel.</div>";
     foreach($devices as $d) { echo "<div style='background:var(--card2); border:1px solid var(--border); padding:10px; border-radius:8px; margin-bottom:10px;'><strong>".h($d['brand'].' '.$d['name'])."</strong> ".statusBadge($d['status'])."<br><span class='muted'>IMEI: ".h($d['imei'])."</span></div>"; }
     foreach($byodLines as $l) {
         echo "<div style='background:rgba(56,189,248,.07); border:1px solid rgba(56,189,248,.25); padding:10px; border-radius:8px; margin-bottom:10px;'>
-                <strong style='color:var(--info);'>📲 Téléphone personnel (BYOD)</strong><br>
+                <strong style='color:var(--info);'><i class='bi bi-phone'></i> Téléphone personnel (BYOD)</strong><br>
                 <span class='muted'>Ligne : ".formatPhone($l['phone_number'])." — l'agent utilise son propre appareil</span>
               </div>";
     }
@@ -1498,7 +1498,7 @@ if (isset($_GET['ajax_agent_details'])) {
     // Colonne 2 : Pièces jointes & Historique
     echo "<div style='flex:1; min-width:300px; border-left:1px solid var(--border); padding-left:2rem;'>";
     
-    echo "<h4 style='color:var(--text); margin-bottom:10px;'>📎 Pièces jointes</h4>";
+    echo "<h4 style='color:var(--text); margin-bottom:10px;'><i class='bi bi-paperclip'></i> Pièces jointes</h4>";
     echo "<form method='post' enctype='multipart/form-data' style='display:flex;gap:10px;margin-bottom:1rem;padding:0;'><input type='hidden' name='_entity' value='attachment'><input type='hidden' name='agent_id' value='$id'><input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'><input type='file' name='file' required style='padding:5px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:4px; flex:1;'><button type='submit' class='btn-primary' style='padding:5px 10px'>Uploader</button></form>";
     if($att) {
         echo "<ul style='padding-left:1.5rem; margin-bottom:2rem; color:var(--text);'>";
@@ -1506,7 +1506,7 @@ if (isset($_GET['ajax_agent_details'])) {
         echo "</ul>";
     } else { echo "<div class='muted' style='margin-bottom:2rem;'>Aucun document.</div>"; }
 
-    echo "<h4 style='color:var(--text); margin-bottom:1rem;'>🕒 Journal des affectations</h4>";
+    echo "<h4 style='color:var(--text); margin-bottom:1rem;'><i class='bi bi-clock-history'></i> Journal des affectations</h4>";
     if(!$history) echo "<div class='muted'>Aucun historique pour cet utilisateur.</div>";
     else {
         // Les entrées au-delà des 10 dernières sont masquées (bouton « Afficher plus »)
@@ -1533,7 +1533,7 @@ if (isset($_GET['ajax_agent_details'])) {
 
     if ($bonsAgent) {
         echo "<div style='margin-top:1.5rem;'>";
-        echo "<h4 style='color:var(--primary); margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:5px;'>📋 Historique des bons de remise / restitution</h4>";
+        echo "<h4 style='color:var(--primary); margin-bottom:1rem; border-bottom:1px solid var(--border); padding-bottom:5px;'><i class='bi bi-file-earmark-text'></i> Historique des bons de remise / restitution</h4>";
 
         // Restitutions rattachées à leur bon de remise (la non-annulée en priorité)
         $childByParent = [];
@@ -1567,9 +1567,9 @@ if (isset($_GET['ajax_agent_details'])) {
                 if (!$b) continue;
                 $isExpired = $b['expires_at'] && strtotime($b['expires_at']) < $now;
                 if ($b['status'] === 'signed') {
-                    $badge = "<span style='background:rgba(16,185,129,.15);color:var(--success);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>✅ Signé</span>";
+                    $badge = "<span style='background:rgba(16,185,129,.15);color:var(--success);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'><i class='bi bi-check-circle-fill'></i> Signé</span>";
                 } elseif ($b['status'] === 'cancelled') {
-                    $badge = "<span style='background:rgba(148,163,184,.12);color:var(--text3);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;' title='" . h($b['cancel_reason'] ?: '') . "'>🚫 Annulé</span>";
+                    $badge = "<span style='background:rgba(148,163,184,.12);color:var(--text3);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;' title='" . h($b['cancel_reason'] ?: '') . "'><i class='bi bi-slash-circle'></i> Annulé</span>";
                 } elseif ($isExpired) {
                     $badge = "<span style='background:rgba(245,158,11,.15);color:var(--warning);font-size:.7rem;font-weight:600;padding:.1rem .45rem;border-radius:999px;'>⏰ Expiré</span>";
                 } else {
@@ -1581,14 +1581,14 @@ if (isset($_GET['ajax_agent_details'])) {
                 echo "<a href='?page=pdf_bon&bon_id={$b['id']}' target='_blank' title='Voir / imprimer ce bon' style='text-decoration:none;font-size:.85rem;'>🖨️</a>";
                 if ($b['status'] === 'pending' && !$isExpired) {
                     $signUrl = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
-                    echo "<button type='button' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Copier le lien de signature' onclick=\"copySignLink(this, '" . h($signUrl) . "')\">🔗</button>";
+                    echo "<button type='button' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Copier le lien de signature' onclick=\"copySignLink(this, '" . h($signUrl) . "')\"><i class='bi bi-link-45deg'></i></button>";
                     if ($smtpConfigured && !empty($agt['email'])) {
                         echo "<form method='post' action='index.php' target='_blank' style='display:inline;margin:0;padding:0;'>
                             <input type='hidden' name='_entity' value='bon'>
                             <input type='hidden' name='_action' value='send_mail'>
                             <input type='hidden' name='bon_id' value='{$b['id']}'>
                             <input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'>
-                            <button type='submit' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Envoyer le lien de signature à " . h($agt['email']) . "'>📧</button>
+                            <button type='submit' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Envoyer le lien de signature à " . h($agt['email']) . "'><i class='bi bi-envelope'></i></button>
                         </form>";
                     }
                 }
@@ -2463,22 +2463,22 @@ if ($page === 'dashboard') {
         
       <div style="position:relative; margin-bottom: 1rem;">
         <div class="search-bar" style="background: var(--card); border: 2px solid var(--primary-dim); box-shadow: var(--shadow);">
-          <span class="search-bar-icon" style="color:var(--primary)">🔍</span>
+          <span class="search-bar-icon" style="color:var(--primary)"><i class="bi bi-search"></i></span>
           <input type="text" id="dash-search" placeholder="Recherche globale : N° de ligne, IMEI, ICCID, Utilisateur..." oninput="doGlobalSearch(this.value)" autocomplete="off" style="font-size: 1rem; padding: .5rem;">
-          <button class="search-bar-clear" id="dash-clear" onclick="document.getElementById('dash-search').value=''; doGlobalSearch('');" style="display:none; font-size:1.2rem;">✕</button>
+          <button class="search-bar-clear" id="dash-clear" onclick="document.getElementById('dash-search').value=''; doGlobalSearch('');" style="display:none; font-size:1.2rem;"><i class="bi bi-x-lg"></i></button>
         </div>
         <div id="dash-search-results" style="display:none; position:absolute; top:100%; left:0; right:0; background:var(--card); border:1px solid var(--border); border-radius:var(--radius); margin-top:.5rem; overflow:hidden; box-shadow:var(--shadow-lg); z-index:100;"></div>
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem">
-        <a href="?page=lines&open=modal-add-line" class="shortcut-btn shortcut-order"><span class="shortcut-icon">💳</span><span class="shortcut-label">Nouvelle Ligne</span><span class="shortcut-sub">Créer abonnement ou SIM</span></a>
-        <a href="?page=devices&open=modal-add-device" class="shortcut-btn shortcut-in"><span class="shortcut-icon">📱</span><span class="shortcut-label">Nouveau Matériel</span><span class="shortcut-sub">Ajouter un téléphone en stock</span></a>
-        <a href="?page=refs&tab=agents" class="shortcut-btn shortcut-resa"><span class="shortcut-icon">👤</span><span class="shortcut-label">Nouvel Utilisateur</span><span class="shortcut-sub">Créer un agent pour attribution</span></a>
+        <a href="?page=lines&open=modal-add-line" class="shortcut-btn shortcut-order"><span class="shortcut-icon"><i class="bi bi-sim"></i></span><span class="shortcut-label">Nouvelle Ligne</span><span class="shortcut-sub">Créer abonnement ou SIM</span></a>
+        <a href="?page=devices&open=modal-add-device" class="shortcut-btn shortcut-in"><span class="shortcut-icon"><i class="bi bi-phone"></i></span><span class="shortcut-label">Nouveau Matériel</span><span class="shortcut-sub">Ajouter un téléphone en stock</span></a>
+        <a href="?page=refs&tab=agents" class="shortcut-btn shortcut-resa"><span class="shortcut-icon"><i class="bi bi-person"></i></span><span class="shortcut-label">Nouvel Utilisateur</span><span class="shortcut-sub">Créer un agent pour attribution</span></a>
       </div>
 
       <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $bonsExpired > 0 || $bonsExpSoon > 0): ?>
       <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);padding:1.25rem;border-radius:var(--radius);margin-bottom:1.5rem;">
-          <h4 style="color:var(--danger);margin-bottom:10px;display:flex;align-items:center;gap:8px;">⚠️ Points d'attention immédiats</h4>
+          <h4 style="color:var(--danger);margin-bottom:10px;display:flex;align-items:center;gap:8px;"><i class="bi bi-exclamation-triangle-fill"></i> Points d'attention immédiats</h4>
           <ul style="color:var(--text);margin:0;padding-left:1.5rem;font-size:0.9rem;line-height:1.8;">
               <?php if($cLinesStk <= $threshSim): ?>
               <li><strong>Stock SIM bas :</strong> Il ne reste que <strong style="color:var(--warning)"><?=$cLinesStk?></strong> carte(s) SIM disponible(s) (seuil : <?=$threshSim?>). <a href="?page=refs&tab=settings" style="color:var(--primary);font-size:.82rem;">Modifier le seuil →</a></li>
@@ -2501,15 +2501,15 @@ if ($page === 'dashboard') {
 
       <div class="kpi-row">
         <a href="?page=lines&tab=active" class="kpi-card kpi-blue" style="text-decoration:none">
-          <div class="kpi-icon">📞</div><div class="kpi-info"><span class="kpi-val"><?=h($cLinesAct)?></span><span class="kpi-label">Lignes Actives</span></div>
+          <div class="kpi-icon"><i class="bi bi-telephone"></i></div><div class="kpi-info"><span class="kpi-val"><?=h($cLinesAct)?></span><span class="kpi-label">Lignes Actives</span></div>
           <div class="kpi-sub"><?=$cLinesStk?> ligne<?=($cLinesStk > 1 ? 's' : '')?> en stock (non attribuée<?=($cLinesStk > 1 ? 's' : '')?>)</div>
         </a>
         <a href="?page=devices&tab=active" class="kpi-card kpi-violet" style="text-decoration:none">
-          <div class="kpi-icon">📱</div><div class="kpi-info"><span class="kpi-val"><?=h($cDevDep)?></span><span class="kpi-label">Mobiles Déployés</span></div>
+          <div class="kpi-icon"><i class="bi bi-phone"></i></div><div class="kpi-info"><span class="kpi-val"><?=h($cDevDep)?></span><span class="kpi-label">Mobiles Déployés</span></div>
           <div class="kpi-sub"><?=$cDevStk?> <?=($cDevStk > 1 ? 'terminaux' : 'terminal')?> en stock</div>
         </a>
         <a href="?page=refs&tab=agents" class="kpi-card kpi-green" style="text-decoration:none">
-          <div class="kpi-icon">🏢</div><div class="kpi-info"><span class="kpi-val"><?=$pdo->query("SELECT COUNT(*) FROM agents WHERE archived=0")->fetchColumn()?></span><span class="kpi-label">Utilisateurs</span></div>
+          <div class="kpi-icon"><i class="bi bi-building"></i></div><div class="kpi-info"><span class="kpi-val"><?=$pdo->query("SELECT COUNT(*) FROM agents WHERE archived=0")->fetchColumn()?></span><span class="kpi-label">Utilisateurs</span></div>
         </a>
       </div>
 
@@ -2546,17 +2546,17 @@ if ($page === 'dashboard') {
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem; margin-top:1rem; margin-bottom:1rem;">
           <div class="card" style="margin-bottom:0;">
-              <div class="card-header">📱 Répartition par marque</div>
+              <div class="card-header"><i class="bi bi-phone"></i> Répartition par marque</div>
               <div style="padding:1rem; height:250px;"><canvas id="chartBrand"></canvas></div>
           </div>
           <div class="card" style="margin-bottom:0;">
-              <div class="card-header">🏢 Top 5 Services (Lignes actives)</div>
+              <div class="card-header"><i class="bi bi-building"></i> Top 5 Services (Lignes actives)</div>
               <div style="padding:1rem; height:250px;"><canvas id="chartSvc"></canvas></div>
           </div>
       </div>
 
       <div class="card" style="margin-top:1rem">
-        <div class="card-header"><span class="card-title">📞 Dernières lignes enregistrées</span></div>
+        <div class="card-header"><span class="card-title"><i class="bi bi-telephone"></i> Dernières lignes enregistrées</span></div>
         <table class="data-table">
           <thead><tr><th>Numéro</th><th>Utilisateur</th><th>Forfait</th><th>Statut</th></tr></thead>
           <tbody>
@@ -2629,9 +2629,9 @@ if ($page === 'dashboard') {
                 let html = '<table class="data-table"><tbody>';
                 data.forEach(r => {
                     let badge = '';
-                    if(r.type === 'Ligne') badge = `<span class="badge" style="background:var(--success-dim);color:var(--success)">📞 Ligne</span>`;
-                    if(r.type === 'Matériel') badge = `<span class="badge" style="background:var(--primary-dim);color:var(--primary)">📱 Matériel</span>`;
-                    if(r.type === 'Agent') badge = `<span class="badge" style="background:var(--info-dim);color:var(--info)">👤 Agent</span>`;
+                    if(r.type === 'Ligne') badge = `<span class="badge" style="background:var(--success-dim);color:var(--success)"><i class="bi bi-telephone"></i> Ligne</span>`;
+                    if(r.type === 'Matériel') badge = `<span class="badge" style="background:var(--primary-dim);color:var(--primary)"><i class="bi bi-phone"></i> Matériel</span>`;
+                    if(r.type === 'Agent') badge = `<span class="badge" style="background:var(--info-dim);color:var(--info)"><i class="bi bi-person"></i> Agent</span>`;
                     
                     html += `<tr style="cursor:pointer; transition:background .15s;" onmouseover="this.style.background='rgba(0,0,0,0.03)'" onmouseout="this.style.background='none'" onclick="window.location.href='${r.link}'">
                         <td style="width:100px">${badge}</td>
@@ -2667,19 +2667,19 @@ elseif ($page === 'lines') {
     $simStock = $pdo->query("SELECT id, iccid, pin, puk, IFNULL(esim,0) as esim FROM mobile_lines WHERE archived=0 AND sim_vierge=1 ORDER BY iccid")->fetchAll();
     ?>
     <div class="page-header">
-      <span class="page-title-txt">💳 Inventaire des Lignes & Cartes SIM</span>
+      <span class="page-title-txt"><i class="bi bi-sim"></i> Inventaire des Lignes & Cartes SIM</span>
       <?php if(!$isArchive): ?><button class="btn-primary" onclick="openModal('modal-add-line')">+ Ajouter une Ligne / SIM</button><?php endif; ?>
     </div>
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
-        <a href="?page=lines&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>">📞 Lignes Actives & Suspendues</a>
-        <a href="?page=lines&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>">📦 Stock (SIM Vierges)</a>
-        <a href="?page=lines&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>">🗄️ Lignes Résiliées (Archives)</a>
+        <a href="?page=lines&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-telephone"></i> Lignes Actives & Suspendues</a>
+        <a href="?page=lines&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>"><i class="bi bi-box-seam"></i> Stock (SIM Vierges)</a>
+        <a href="?page=lines&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>"><i class="bi bi-archive"></i> Lignes Résiliées (Archives)</a>
     </div>
 
     <div class="search-bar-wrap">
       <div class="search-bar">
-        <span class="search-bar-icon">🔍</span>
+        <span class="search-bar-icon"><i class="bi bi-search"></i></span>
         <input type="text" placeholder="Rechercher numéro, nom, ICCID, compte de facturation..." oninput="tableSearch(this,'tbody-data','count')">
       </div>
       <div class="search-count" id="count"></div>
@@ -2698,7 +2698,7 @@ elseif ($page === 'lines') {
           <?php if($isArchive): ?><option value="restore">♻️ Restaurer la sélection</option><?php endif; ?>
         </select>
         <button type="button" class="btn-primary" style="padding:.45rem 1rem;font-size:.88rem;" onclick="submitBulk('line')">Appliquer</button>
-        <button type="button" class="btn-secondary" style="padding:.45rem .75rem;font-size:.88rem;" onclick="clearBulk('line')">✕ Annuler</button>
+        <button type="button" class="btn-secondary" style="padding:.45rem .75rem;font-size:.88rem;" onclick="clearBulk('line')"><i class="bi bi-x-lg"></i> Annuler</button>
       </form>
     </div>
 
@@ -2713,8 +2713,8 @@ elseif ($page === 'lines') {
         <tr>
           <td><input type="checkbox" class="bulk-chk-line" value="<?=$l['id']?>" onchange="updateBulkBar('line')" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></td>
           <td><strong style="font-family:var(--font-mono);font-size:1.05rem;color:var(--primary)"><?= !empty($l['sim_vierge']) ? '<span style="color:var(--text3);font-style:italic;font-family:var(--font);">Sans numéro</span>' : formatPhone($l['phone_number']) ?></strong><br>
-          <?php if(!empty($l['sim_vierge'])): ?><span class="badge" style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.7rem;">📦 SIM Vierge</span>
-          <?php elseif(!empty($l['esim'])): ?><span class="badge" style="background:rgba(139,92,246,.15);color:#a78bfa;font-size:.7rem;">📲 eSIM</span>
+          <?php if(!empty($l['sim_vierge'])): ?><span class="badge" style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.7rem;"><i class="bi bi-box-seam"></i> SIM Vierge</span>
+          <?php elseif(!empty($l['esim'])): ?><span class="badge" style="background:rgba(139,92,246,.15);color:#a78bfa;font-size:.7rem;"><i class="bi bi-sim"></i> eSIM</span>
           <?php endif; ?>
           <code class="ref" title="ICCID"><?=h($l['iccid']?:'Pas de SIM')?></code><?php if(!empty($l['eid'])): ?><br><span class="muted" style="font-size:.72rem;">EID: <?=h($l['eid'])?></span><?php endif; ?>
           <br><span class="muted">PIN: <?=h($l['pin']?:'-')?> | PUK: <?=h($l['puk']?:'-')?></span></td>
@@ -2736,11 +2736,11 @@ elseif ($page === 'lines') {
           </td>
           <td>
             <?php if(!empty($l['personal_device'])): ?>
-                <span class="badge" style="background:rgba(56,189,248,.15);color:var(--info);">📲 Téléphone perso</span>
+                <span class="badge" style="background:rgba(56,189,248,.15);color:var(--info);"><i class="bi bi-phone"></i> Téléphone perso</span>
             <?php elseif($l['imei']): ?>
                 <strong><?=h($l['brand'].' '.$l['model_name'])?></strong><br><span class="muted">IMEI: <?=h($l['imei'])?></span>
             <?php elseif($l['status'] === 'Active'): ?>
-                <span class="badge" style="background:rgba(245,158,11,.15);color:var(--warning);font-size:0.75rem;">⚠️ En attente de mobile</span>
+                <span class="badge" style="background:rgba(245,158,11,.15);color:var(--warning);font-size:0.75rem;"><i class="bi bi-exclamation-triangle"></i> En attente de mobile</span>
             <?php else: ?>
                 <span class="muted">Aucun appareil</span>
             <?php endif; ?>
@@ -2749,17 +2749,17 @@ elseif ($page === 'lines') {
           <td class="actions">
             <?php $hist = fetchEntityHistory($pdo, 'line', $l['id']); ?>
             <?php if(!$isArchive): ?>
-                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'>✏️</button>
-                <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
+                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'><i class="bi bi-pencil"></i></button>
+                <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
                 <?php if($l['agent_id']): ?>
                 <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Voir / générer le bon de remise" style="text-decoration:none;">🖨️</a>
                 <?php endif; ?>
                 <button class="btn-icon" title="Changer la SIM (garder le numéro)" style="color:var(--warning)"
                     onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')">🔄</button>
-                <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>, <?=(int)$l['device_id']?>, <?=json_encode($l['device_id'] ? ($l['brand'].' '.$l['model_name'].' — S/N: '.($l['serial_number']?:($l['imei']?:'—'))) : '')?>)">🗄️</button>
+                <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>, <?=(int)$l['device_id']?>, <?=json_encode($l['device_id'] ? ($l['brand'].' '.$l['model_name'].' — S/N: '.($l['serial_number']?:($l['imei']?:'—'))) : '')?>)"><i class="bi bi-archive"></i></button>
             <?php else: ?>
-                <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
-                <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$l['id']?>"><button type="submit" class="btn-icon" title="Restaurer" style="color:var(--success)">♻️</button></form>
+                <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
+                <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$l['id']?>"><button type="submit" class="btn-icon" title="Restaurer" style="color:var(--success)"><i class="bi bi-arrow-counterclockwise"></i></button></form>
             <?php endif; ?>
           </td>
         </tr>
@@ -2770,7 +2770,7 @@ elseif ($page === 'lines') {
 
     <?php foreach(['add'=>'Nouvelle Ligne / SIM', 'edit'=>'Modifier'] as $act => $title): ?>
     <div class="modal-overlay" id="modal-<?=$act?>-line">
-      <div class="modal modal-lg"><div class="modal-header"><h3><?=$title?></h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-line')">✕</button></div>
+      <div class="modal modal-lg"><div class="modal-header"><h3><?=$title?></h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-line')"><i class="bi bi-x-lg"></i></button></div>
       <form method="post" onsubmit="return lineFormCheck('<?=$act?>')"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-line">'; ?>
       <div class="form-grid">
         <div class="form-group"><label>Numéro de Ligne</label>
@@ -2780,7 +2780,7 @@ elseif ($page === 'lines') {
             <input type="checkbox" name="sim_vierge" id="<?=$act?>-sim_vierge" value="1"
               onchange="toggleSimVierge('<?=$act?>')"
               style="width:15px;height:15px;accent-color:var(--warning);cursor:pointer;flex-shrink:0;">
-            <span style="font-size:.83rem;color:var(--warning);font-weight:600;">📦 SIM vierge</span>
+            <span style="font-size:.83rem;color:var(--warning);font-weight:600;"><i class="bi bi-box-seam"></i> SIM vierge</span>
             <span style="font-size:.78rem;color:var(--text3);">— pas de numéro pour le moment</span>
           </label>
           <?php endif; ?>
@@ -2794,13 +2794,13 @@ elseif ($page === 'lines') {
             <select name="status" id="<?=$act?>-status"><option value="Active">Active</option><option value="Stock">En Stock (Non activée)</option><option value="Suspended">Suspendue</option></select>
           </div>
         </div>
-        <div class="form-group form-full"><label style="color:var(--primary)">💳 Informations SIM</label><hr style="border:0;border-top:1px solid var(--border);margin-top:-5px"></div>
+        <div class="form-group form-full"><label style="color:var(--primary)"><i class="bi bi-sim"></i> Informations SIM</label><hr style="border:0;border-top:1px solid var(--border);margin-top:-5px"></div>
         <div class="form-group form-full">
           <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;">
             <input type="checkbox" name="esim" id="<?=$act?>-esim" value="1"
               onchange="toggleEsim('<?=$act?>')"
               style="width:15px;height:15px;accent-color:#a78bfa;cursor:pointer;flex-shrink:0;">
-            <span style="font-size:.83rem;color:#a78bfa;font-weight:600;">📲 eSIM</span>
+            <span style="font-size:.83rem;color:#a78bfa;font-weight:600;"><i class="bi bi-sim"></i> eSIM</span>
             <span style="font-size:.78rem;color:var(--text3);">— profil opérateur embarqué dans l'appareil</span>
           </label>
         </div>
@@ -2815,14 +2815,14 @@ elseif ($page === 'lines') {
           <label>Code d'activation opérateur <span style="color:var(--text3);font-weight:400;text-transform:none;">(QR code ou code alphanumérique)</span></label>
           <textarea name="activation_code" id="<?=$act?>-activation_code" rows="2" placeholder="LPA:1$..."></textarea>
         </div>
-        <div class="form-group form-full"><label style="color:var(--primary)">📱 Matériel & Notes</label><hr style="border:0;border-top:1px solid var(--border);margin-top:-5px"></div>
+        <div class="form-group form-full"><label style="color:var(--primary)"><i class="bi bi-phone"></i> Matériel & Notes</label><hr style="border:0;border-top:1px solid var(--border);margin-top:-5px"></div>
         <div class="form-group form-full">
           <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.7rem 1rem;">
             <input type="checkbox" name="personal_device" id="<?=$act?>-personal_device" value="1"
               onchange="togglePersonalDevice('<?=$act?>')"
               style="width:16px;height:16px;accent-color:var(--info);cursor:pointer;flex-shrink:0;">
             <span>
-              <strong style="color:var(--info);">📲 Téléphone personnel</strong>
+              <strong style="color:var(--info);"><i class="bi bi-phone"></i> Téléphone personnel</strong>
               <span style="color:var(--text3);font-size:.82rem;margin-left:.4rem;">— L'agent utilise son propre appareil (BYOD)</span>
             </span>
           </label>
@@ -2847,8 +2847,8 @@ elseif ($page === 'lines') {
     ?>
     <div class="modal-overlay" id="modal-sim-swap">
       <div class="modal"><div class="modal-header">
-        <h3>🔄 Changement de Carte SIM</h3>
-        <button type="button" class="modal-close" onclick="closeModal('modal-sim-swap')">✕</button>
+        <h3><i class="bi bi-arrow-repeat"></i> Changement de Carte SIM</h3>
+        <button type="button" class="modal-close" onclick="closeModal('modal-sim-swap')"><i class="bi bi-x-lg"></i></button>
       </div>
       <form method="post" style="padding:1.5rem;">
         <input type="hidden" name="_entity" value="sim_swap">
@@ -2862,7 +2862,7 @@ elseif ($page === 'lines') {
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;">
             <div>
               <strong id="swap-phone" style="font-family:var(--font-mono);font-size:1.1rem;color:var(--primary)"></strong>
-              <span id="swap-esim-badge" style="display:none;background:rgba(139,92,246,.15);color:#a78bfa;font-size:.72rem;font-weight:600;padding:.15rem .5rem;border-radius:999px;margin-left:8px;">📲 eSIM</span>
+              <span id="swap-esim-badge" style="display:none;background:rgba(139,92,246,.15);color:#a78bfa;font-size:.72rem;font-weight:600;padding:.15rem .5rem;border-radius:999px;margin-left:8px;"><i class="bi bi-sim"></i> eSIM</span>
             </div>
             <span style="font-size:.82rem;color:var(--text2);">SIM actuelle : <code id="swap-old-iccid" style="color:var(--warning)"></code></span>
           </div>
@@ -2870,7 +2870,7 @@ elseif ($page === 'lines') {
 
         <!-- Bouton pour voir l'historique SIM de cette ligne -->
         <div style="text-align:right;margin-bottom:1.25rem;">
-          <button type="button" onclick="loadSimHistory()" style="background:none;border:none;color:var(--primary);font-size:.83rem;cursor:pointer;text-decoration:underline;">📋 Voir l'historique des SIM précédentes</button>
+          <button type="button" onclick="loadSimHistory()" style="background:none;border:none;color:var(--primary);font-size:.83rem;cursor:pointer;text-decoration:underline;"><i class="bi bi-clock-history"></i> Voir l'historique des SIM précédentes</button>
         </div>
         <div id="sim-history-panel" style="display:none;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.5rem;max-height:180px;overflow-y:auto;"></div>
 
@@ -2939,7 +2939,7 @@ elseif ($page === 'lines') {
 
         <div class="modal-footer">
           <button type="button" class="btn-secondary" onclick="closeModal('modal-sim-swap')">Annuler</button>
-          <button type="submit" class="btn-primary">🔄 Confirmer le changement</button>
+          <button type="submit" class="btn-primary"><i class="bi bi-arrow-repeat"></i> Confirmer le changement</button>
         </div>
       </form></div>
     </div>
@@ -2947,7 +2947,7 @@ elseif ($page === 'lines') {
     <!-- Modal archivage ligne -->
     <div class="modal-overlay" id="modal-archive-line">
       <div class="modal" style="max-width:480px;">
-        <div class="modal-header"><h3>🗄️ Archiver / Résilier une ligne</h3><button type="button" class="modal-close" onclick="closeModal('modal-archive-line')">✕</button></div>
+        <div class="modal-header"><h3><i class="bi bi-archive"></i> Archiver / Résilier une ligne</h3><button type="button" class="modal-close" onclick="closeModal('modal-archive-line')"><i class="bi bi-x-lg"></i></button></div>
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="line">
           <input type="hidden" name="_action" value="archive">
@@ -2981,7 +2981,7 @@ elseif ($page === 'lines') {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn-secondary" onclick="closeModal('modal-archive-line')">Annuler</button>
-            <button type="submit" class="btn-primary" style="background:var(--danger);box-shadow:none;">🗄️ Archiver</button>
+            <button type="submit" class="btn-primary" style="background:var(--danger);box-shadow:none;"><i class="bi bi-archive"></i> Archiver</button>
           </div>
         </form>
       </div>
@@ -3007,18 +3007,18 @@ elseif ($page === 'devices') {
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     ?>
     <div class="page-header">
-      <span class="page-title-txt">📱 Parc Matériel Physique</span>
+      <span class="page-title-txt"><i class="bi bi-phone"></i> Parc Matériel Physique</span>
       <?php if(!$isArchive): ?><button class="btn-primary" onclick="openModal('modal-add-device')">+ Ajouter un équipement</button><?php endif; ?>
     </div>
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
-        <a href="?page=devices&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>">📱 Matériels Déployés / Réparation</a>
-        <a href="?page=devices&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>">📦 Stock (Disponibles)</a>
-        <a href="?page=devices&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>">🗄️ Archives (Perdus / Cassés)</a>
+        <a href="?page=devices&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-phone"></i> Matériels Déployés / Réparation</a>
+        <a href="?page=devices&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>"><i class="bi bi-box-seam"></i> Stock (Disponibles)</a>
+        <a href="?page=devices&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>"><i class="bi bi-archive"></i> Archives (Perdus / Cassés)</a>
     </div>
 
     <div class="search-bar-wrap">
-      <div class="search-bar"><span class="search-bar-icon">🔍</span><input type="text" placeholder="Rechercher IMEI, Modèle, Agent..." oninput="tableSearch(this,'tbody-dev','count')"></div>
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Rechercher IMEI, Modèle, Agent..." oninput="tableSearch(this,'tbody-dev','count')"></div>
       <div class="search-count" id="count"></div>
     </div>
 
@@ -3035,7 +3035,7 @@ elseif ($page === 'devices') {
           <?php if($isArchive): ?><option value="restore">♻️ Restaurer la sélection</option><?php endif; ?>
         </select>
         <button type="button" class="btn-primary" style="padding:.45rem 1rem;font-size:.88rem;" onclick="submitBulk('device')">Appliquer</button>
-        <button type="button" class="btn-secondary" style="padding:.45rem .75rem;font-size:.88rem;" onclick="clearBulk('device')">✕ Annuler</button>
+        <button type="button" class="btn-secondary" style="padding:.45rem .75rem;font-size:.88rem;" onclick="clearBulk('device')"><i class="bi bi-x-lg"></i> Annuler</button>
       </form>
     </div>
 
@@ -3051,19 +3051,19 @@ elseif ($page === 'devices') {
           <td><input type="checkbox" class="bulk-chk-device" value="<?=$d['id']?>" onchange="updateBulkBar('device')" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></td>
           <td><strong><?=h($d['brand'].' '.$d['model_name'])?></strong></td>
           <td><span class="badge badge-muted"><?=h($d['category']?:'N/A')?></span></td>
-          <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span><?php if($d['inventory_label']): ?><br><span class="badge badge-muted" style="font-size:.68rem;">🏷️ <?=h($d['inventory_label'])?></span><?php endif; ?></td>
+          <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span><?php if($d['inventory_label']): ?><br><span class="badge badge-muted" style="font-size:.68rem;"><i class="bi bi-tag"></i> <?=h($d['inventory_label'])?></span><?php endif; ?></td>
           <td><strong><?=h($d['first_name'].' '.$d['last_name']?:'Non affecté')?></strong><br><span class="muted">🏢 <?=h($d['service_name']?:'-')?></span></td>
           <td><?=statusBadge($d['status'])?></td>
           <td><?=$d['purchase_date']?date('d/m/Y',strtotime($d['purchase_date'])):'-'?></td>
           <td class="actions">
             <?php $hist = fetchEntityHistory($pdo, 'device', $d['id']); ?>
             <?php if(!$isArchive): ?>
-                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($d, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"device")'>✏️</button>
-                <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
-                <button type="button" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="openArchiveDevice(<?=$d['id']?>, <?=(int)$d['line_id']?>, <?=json_encode($d['line_id'] ? formatPhone($d['line_phone']) : '')?>)">🗄️</button>
+                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($d, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"device")'><i class="bi bi-pencil"></i></button>
+                <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
+                <button type="button" class="btn-icon btn-del" title="Archiver (Casse, Perte...)" onclick="openArchiveDevice(<?=$d['id']?>, <?=(int)$d['line_id']?>, <?=json_encode($d['line_id'] ? formatPhone($d['line_phone']) : '')?>)"><i class="bi bi-archive"></i></button>
             <?php else: ?>
-                <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>🕒</button>
-                <form method="post" style="display:inline"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$d['id']?>"><button type="submit" class="btn-icon" title="Restaurer au Stock" style="color:var(--success)">♻️</button></form>
+                <button class="btn-icon" title="Historique de ce matériel" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
+                <form method="post" style="display:inline"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$d['id']?>"><button type="submit" class="btn-icon" title="Restaurer au Stock" style="color:var(--success)"><i class="bi bi-arrow-counterclockwise"></i></button></form>
             <?php endif; ?>
           </td>
         </tr>
@@ -3075,7 +3075,7 @@ elseif ($page === 'devices') {
     <!-- Modal archivage matériel -->
     <div class="modal-overlay" id="modal-archive-device">
       <div class="modal" style="max-width:480px;">
-        <div class="modal-header"><h3>🗄️ Archiver un matériel</h3><button type="button" class="modal-close" onclick="closeModal('modal-archive-device')">✕</button></div>
+        <div class="modal-header"><h3><i class="bi bi-archive"></i> Archiver un matériel</h3><button type="button" class="modal-close" onclick="closeModal('modal-archive-device')"><i class="bi bi-x-lg"></i></button></div>
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="device">
           <input type="hidden" name="_action" value="archive">
@@ -3109,7 +3109,7 @@ elseif ($page === 'devices') {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn-secondary" onclick="closeModal('modal-archive-device')">Annuler</button>
-            <button type="submit" class="btn-primary" style="background:var(--danger);box-shadow:none;">🗄️ Archiver</button>
+            <button type="submit" class="btn-primary" style="background:var(--danger);box-shadow:none;"><i class="bi bi-archive"></i> Archiver</button>
           </div>
         </form>
       </div>
@@ -3117,7 +3117,7 @@ elseif ($page === 'devices') {
 
     <?php foreach(['add'=>'Ajouter', 'edit'=>'Modifier'] as $act => $title): ?>
     <div class="modal-overlay" id="modal-<?=$act?>-device">
-      <div class="modal"><div class="modal-header"><h3><?=$title?> un Matériel</h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-device')">✕</button></div>
+      <div class="modal"><div class="modal-header"><h3><?=$title?> un Matériel</h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-device')"><i class="bi bi-x-lg"></i></button></div>
       <form method="post"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-device">'; ?>
       <div class="form-grid">
         <div class="form-group form-full"><label>Modèle *</label>
@@ -3127,7 +3127,7 @@ elseif ($page === 'devices') {
         <div class="form-group"><label>IMEI 1 *</label><input type="text" name="imei" id="<?=$act?>-imei" required></div>
         <div class="form-group"><label>IMEI 2</label><input type="text" name="imei2" id="<?=$act?>-imei2"></div>
         <div class="form-group"><label>Numéro de série</label><input type="text" name="serial_number" id="<?=$act?>-serial_number"></div>
-        <div class="form-group"><label>🏷️ Libellé d'inventaire</label><input type="text" name="inventory_label" id="<?=$act?>-inventory_label" placeholder="Ex: MOB-0042, IT-2024-001..."></div>
+        <div class="form-group"><label><i class="bi bi-tag"></i> Libellé d'inventaire</label><input type="text" name="inventory_label" id="<?=$act?>-inventory_label" placeholder="Ex: MOB-0042, IT-2024-001..."></div>
         <div class="form-group"><label>Date d'achat</label><input type="date" name="purchase_date" id="<?=$act?>-purchase_date"></div>
         <div class="form-group"><label>Statut</label>
           <select name="status" id="<?=$act?>-status"><option value="Stock">En Stock</option><option value="Deployed">Déployé</option><option value="Repair">En réparation</option></select>
@@ -3153,7 +3153,7 @@ elseif ($page === 'devices') {
 // ==================================================================
 elseif ($page === 'refs') {
     $tab = $_GET['tab'] ?? 'agents';
-    $tabs = ['agents'=>'👤 Utilisateurs', 'services'=>'🏢 Services', 'models'=>'📋 Modèles', 'plans'=>'🌐 Forfaits', 'operators'=>'📡 Opérateurs', 'billing'=>'💶 Facturation', 'admins'=>'🔐 Comptes Admin', 'settings'=>'⚙️ Paramètres'];
+    $tabs = ['agents'=>'<i class="bi bi-people"></i> Utilisateurs', 'services'=>'<i class="bi bi-building"></i> Services', 'models'=>'<i class="bi bi-list-ul"></i> Modèles', 'plans'=>'<i class="bi bi-globe2"></i> Forfaits', 'operators'=>'<i class="bi bi-broadcast"></i> Opérateurs', 'billing'=>'<i class="bi bi-cash-coin"></i> Facturation', 'admins'=>'<i class="bi bi-shield-lock"></i> Comptes Admin', 'settings'=>'<i class="bi bi-gear"></i> Paramètres'];
     
     if ($tab === 'agents') {
         $data = $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id ORDER BY a.archived ASC, a.last_name, a.first_name")->fetchAll();
@@ -3185,7 +3185,7 @@ elseif ($page === 'refs') {
     }
     ?>
     <div class="page-header">
-      <span class="page-title-txt">⚙️ Référentiels & Paramètres</span>
+      <span class="page-title-txt"><i class="bi bi-gear"></i> Référentiels & Paramètres</span>
       <?php if($tab !== 'settings'): ?>
       <button class="btn-primary" onclick="openModal('modal-add-<?=$ent?>')">+ Ajouter (<?=$tabs[$tab]?>)</button>
       <?php endif; ?>
@@ -3198,7 +3198,7 @@ elseif ($page === 'refs') {
     <?php if($tab === 'admins'): ?>
     <!-- ── Statut LDAP / Active Directory ─────────────────────── -->
     <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;background:<?=ldap_auth_enabled()?'rgba(5,150,105,.06)':'var(--bg3)'?>;border:1px solid <?=ldap_auth_enabled()?'rgba(5,150,105,.3)':'var(--border)'?>;border-radius:var(--radius-sm);padding:.75rem 1rem;margin-bottom:1rem;font-size:.85rem;">
-      <span>🌐 <strong>Authentification Active Directory :</strong>
+      <span><i class="bi bi-globe2"></i> <strong>Authentification Active Directory :</strong>
         <?php if(ldap_auth_enabled()): ?>
           <span style="color:var(--success);font-weight:600;">activée</span>
           <span class="muted">— serveur : <code style="font-family:var(--font-mono);font-size:.8rem;"><?=h(ldap_cfg('ldap_server'))?></code><?=ldap_cfg('ldap_required_group')!==''?' · groupe requis : <code style="font-family:var(--font-mono);font-size:.8rem;">'.h(ldap_cfg('ldap_required_group')).'</code>':' · <strong style="color:var(--warning);">⚠️ aucun groupe requis</strong>'?></span>
@@ -3209,7 +3209,7 @@ elseif ($page === 'refs') {
         <?php endif; ?>
       </span>
       <?php if(!empty($_SESSION['is_admin'])): ?>
-      <a href="?page=refs&tab=settings" class="btn-secondary" style="font-size:.8rem;padding:.35rem .8rem;margin-left:auto;text-decoration:none;">⚙️ Configurer</a>
+      <a href="?page=refs&tab=settings" class="btn-secondary" style="font-size:.8rem;padding:.35rem .8rem;margin-left:auto;text-decoration:none;"><i class="bi bi-gear"></i> Configurer</a>
       <?php endif; ?>
     </div>
     <?php endif; ?>
@@ -3224,7 +3224,7 @@ elseif ($page === 'refs') {
 
       <!-- Bloc logo -->
       <div class="card">
-        <div class="card-header">🖼️ Logo des bons de remise PDF</div>
+        <div class="card-header"><i class="bi bi-image"></i> Logo des bons de remise PDF</div>
         <form method="post" enctype="multipart/form-data" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="settings">
           <input type="hidden" name="_action" value="save">
@@ -3255,7 +3255,7 @@ elseif ($page === 'refs') {
               style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;color:var(--text);width:100%;">
           </div>
           <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:.5rem;">
-            <button type="submit" class="btn-primary">💾 Enregistrer</button>
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
           </div>
         </form>
       </div>
@@ -3263,7 +3263,7 @@ elseif ($page === 'refs') {
       <!-- Bloc URL du site -->
       <?php $currentSiteUrl = getSetting($pdo, 'site_url', ''); ?>
       <div class="card">
-        <div class="card-header">🔗 URL publique du site</div>
+        <div class="card-header"><i class="bi bi-link-45deg"></i> URL publique du site</div>
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="settings">
           <input type="hidden" name="_action" value="save">
@@ -3288,14 +3288,14 @@ elseif ($page === 'refs') {
           </p>
           <?php endif; ?>
           <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
-            <button type="submit" class="btn-primary">💾 Enregistrer</button>
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
           </div>
         </form>
       </div>
 
       <!-- Bloc SMTP -->
       <div class="card">
-        <div class="card-header">📧 Envoi d'e-mails (liens de signature)</div>
+        <div class="card-header"><i class="bi bi-envelope"></i> Envoi d'e-mails (liens de signature)</div>
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="settings">
           <input type="hidden" name="_action" value="save">
@@ -3325,14 +3325,14 @@ elseif ($page === 'refs') {
             <div class="form-group form-full"><label>Nom de l'expéditeur<?=$mkN('smtp_from_name')?></label><input type="text" name="smtp_from_name" value="<?=h(smtpSetting($pdo,'smtp_from_name','SimCity — DSI'))?>" <?=$mk('smtp_from_name')?>></div>
           </div>
           <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
-            <button type="submit" class="btn-primary">💾 Enregistrer</button>
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
           </div>
         </form>
       </div>
 
       <!-- Bloc LDAP / Active Directory -->
       <div class="card">
-        <div class="card-header">🌐 Authentification Active Directory (LDAP)</div>
+        <div class="card-header"><i class="bi bi-globe2"></i> Authentification Active Directory (LDAP)</div>
         <?php if(empty($_SESSION['is_admin'])): ?>
         <p style="padding:1.5rem;color:var(--text2);font-size:.88rem;">Configuration réservée aux super-administrateurs.</p>
         <?php else: ?>
@@ -3388,7 +3388,7 @@ elseif ($page === 'refs') {
             <div class="form-group"><label>Mot de passe <span style="font-weight:400;text-transform:none;">(vide = inchangé)</span><?=$lkN('ldap_bind_password')?></label><input type="password" name="ldap_bind_password" value="" autocomplete="new-password" <?=$lk('ldap_bind_password')?>></div>
           </div>
           <div style="display:flex;gap:.75rem;align-items:center;padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
-            <button type="submit" class="btn-primary">💾 Enregistrer</button>
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
           </div>
         </form>
         <form method="post" style="padding:0 1.5rem 1.5rem;">
@@ -3402,7 +3402,7 @@ elseif ($page === 'refs') {
 
       <!-- Bloc seuils -->
       <div class="card">
-        <div class="card-header">🔔 Seuils d'alerte Stock</div>
+        <div class="card-header"><i class="bi bi-bell"></i> Seuils d'alerte Stock</div>
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="settings">
           <input type="hidden" name="_action" value="save">
@@ -3420,7 +3420,7 @@ elseif ($page === 'refs') {
           </div>
           <?php endforeach; ?>
           <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:.5rem;">
-            <button type="submit" class="btn-primary">💾 Enregistrer les seuils</button>
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer les seuils</button>
           </div>
         </form>
       </div>
@@ -3437,7 +3437,7 @@ elseif ($page === 'refs') {
     ?>
     <!-- Bloc sauvegarde / restauration — super-admin uniquement -->
     <div class="card" style="margin-top:1.5rem;">
-      <div class="card-header">💾 Sauvegardes de la base de données</div>
+      <div class="card-header"><i class="bi bi-hdd"></i> Sauvegardes de la base de données</div>
       <div style="padding:1.5rem;">
         <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
           Sauvegarde complète (structure + données : lignes, matériels, agents, bons signés, signatures, historique…).
@@ -3460,13 +3460,13 @@ elseif ($page === 'refs') {
           <form method="post" style="display:inline;margin:0;padding:0;">
             <input type="hidden" name="_entity" value="backup">
             <input type="hidden" name="_action" value="run">
-            <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;">🗄️ Sauvegarder maintenant (serveur)</button>
+            <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-hdd-fill"></i> Sauvegarder maintenant (serveur)</button>
           </form>
           <a href="?page=backup_sql" class="btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;">⬇️ Télécharger un .sql</a>
         </div>
 
         <!-- Liste des sauvegardes stockées -->
-        <h4 style="font-size:.9rem;color:var(--text2);margin-bottom:.75rem;">📂 Sauvegardes présentes sur le serveur</h4>
+        <h4 style="font-size:.9rem;color:var(--text2);margin-bottom:.75rem;"><i class="bi bi-folder2-open"></i> Sauvegardes présentes sur le serveur</h4>
         <?php if(!$backups): ?>
           <div class="muted" style="font-size:.85rem;margin-bottom:1rem;">Aucune sauvegarde sur le serveur pour l'instant. Cliquez sur « Sauvegarder maintenant » ou planifiez le cron (voir ci-dessous).</div>
         <?php else: ?>
@@ -3486,13 +3486,13 @@ elseif ($page === 'refs') {
                     <input type="hidden" name="_action" value="restore">
                     <input type="hidden" name="file" value="<?=h($bk['name'])?>">
                     <input type="hidden" name="confirm_word" value="RESTAURER">
-                    <button type="submit" class="btn-icon" title="Restaurer cette sauvegarde" style="color:var(--warning);">♻️</button>
+                    <button type="submit" class="btn-icon" title="Restaurer cette sauvegarde" style="color:var(--warning);"><i class="bi bi-arrow-counterclockwise"></i></button>
                   </form>
                   <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('Supprimer définitivement cette sauvegarde ?')">
                     <input type="hidden" name="_entity" value="backup">
                     <input type="hidden" name="_action" value="delete">
                     <input type="hidden" name="file" value="<?=h($bk['name'])?>">
-                    <button type="submit" class="btn-icon btn-del" title="Supprimer">🗑️</button>
+                    <button type="submit" class="btn-icon btn-del" title="Supprimer"><i class="bi bi-trash3"></i></button>
                   </form>
                 </td>
               </tr>
@@ -3556,8 +3556,8 @@ elseif ($page === 'refs') {
     <div class="modal-overlay" id="modal-db-reset">
       <div class="modal" style="border:1px solid var(--danger);">
         <div class="modal-header" style="border-color:var(--danger);">
-          <h3 style="color:var(--danger);">⚠️ Confirmer la réinitialisation</h3>
-          <button type="button" class="modal-close" onclick="closeModal('modal-db-reset')">✕</button>
+          <h3 style="color:var(--danger);"><i class="bi bi-exclamation-triangle"></i> Confirmer la réinitialisation</h3>
+          <button type="button" class="modal-close" onclick="closeModal('modal-db-reset')"><i class="bi bi-x-lg"></i></button>
         </div>
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="db_reset">
@@ -3581,7 +3581,7 @@ elseif ($page === 'refs') {
 
     <?php else: ?>
     <div class="search-bar-wrap">
-      <div class="search-bar"><span class="search-bar-icon">🔍</span><input type="text" placeholder="Filtrer..." oninput="tableSearch(this,'tbody-refs','count')"></div>
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Filtrer..." oninput="tableSearch(this,'tbody-refs','count')"></div>
       <div class="search-count" id="count"></div>
     </div>
 
@@ -3595,16 +3595,16 @@ elseif ($page === 'refs') {
           <?php foreach($cols as $name => $k): ?>
             <td>
               <?php if($name==='Nom' && $tab==='agents' && !empty($row['archived'])): ?>
-                <?=h($row[$k])?> <span class="badge badge-danger" style="font-size:.65rem;">🗄️ Parti</span>
+                <?=h($row[$k])?> <span class="badge badge-danger" style="font-size:.65rem;"><i class="bi bi-archive"></i> Parti</span>
               <?php elseif($name==='Identifiant' && $tab==='admins'): ?>
                 <?=h($row[$k])?>
                 <?php if(($row['auth_source'] ?? 'local') === 'ldap'): ?>
-                  <span class="badge badge-info" style="font-size:.65rem;margin-left:4px;" title="Compte Active Directory : authentification via LDAP, pas de mot de passe local">🌐 AD</span>
+                  <span class="badge badge-info" style="font-size:.65rem;margin-left:4px;" title="Compte Active Directory : authentification via LDAP, pas de mot de passe local"><i class="bi bi-globe2"></i> AD</span>
                 <?php endif; ?>
                 <?php if(empty($row['active'])): ?>
-                  <span class="badge badge-warning" style="font-size:.65rem;margin-left:4px;">🔒 Désactivé</span>
+                  <span class="badge badge-warning" style="font-size:.65rem;margin-left:4px;"><i class="bi bi-lock"></i> Désactivé</span>
                 <?php elseif($row['id'] === (int)$_SESSION['user_id']): ?>
-                  <span class="badge badge-info" style="font-size:.65rem;margin-left:4px;">👤 Vous</span>
+                  <span class="badge badge-info" style="font-size:.65rem;margin-left:4px;"><i class="bi bi-person"></i> Vous</span>
                 <?php endif; ?>
               <?php else: ?>
                 <?=h($row[$k])?>
@@ -3622,21 +3622,21 @@ elseif ($page === 'refs') {
           <?php endif; ?>
           <td class="actions">
             <?php if($tab === 'agents'): ?>
-                <button class="btn-icon" title="Voir la Fiche Utilisateur" style="color:var(--primary)" onclick="viewAgent(<?=$row['id']?>, '<?=h($row['first_name'].' '.$row['last_name'])?>')">👁️</button>
+                <button class="btn-icon" title="Voir la Fiche Utilisateur" style="color:var(--primary)" onclick="viewAgent(<?=$row['id']?>, '<?=h($row['first_name'].' '.$row['last_name'])?>')"><i class="bi bi-eye"></i></button>
                 <?php if(empty($row['archived'])): ?>
-                    <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'>✏️</button>
+                    <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'><i class="bi bi-pencil"></i></button>
                     <form method="post" style="display:inline" onsubmit="return confirm('Archiver cet agent ? Son téléphone retournera en stock et sa ligne sera libérée automatiquement.')">
                         <input type="hidden" name="_entity" value="agent">
                         <input type="hidden" name="_action" value="archive">
                         <input type="hidden" name="_id" value="<?=$row['id']?>">
-                        <button type="submit" class="btn-icon btn-del" title="Archiver (Départ de la société)">🗄️</button>
+                        <button type="submit" class="btn-icon btn-del" title="Archiver (Départ de la société)"><i class="bi bi-archive"></i></button>
                     </form>
                 <?php else: ?>
                     <form method="post" style="display:inline" onsubmit="return confirm('Restaurer cet agent dans la liste active ?')">
                         <input type="hidden" name="_entity" value="agent">
                         <input type="hidden" name="_action" value="restore">
                         <input type="hidden" name="_id" value="<?=$row['id']?>">
-                        <button type="submit" class="btn-icon" title="Restaurer (Retour dans la société)" style="color:var(--success)">♻️</button>
+                        <button type="submit" class="btn-icon" title="Restaurer (Retour dans la société)" style="color:var(--success)"><i class="bi bi-arrow-counterclockwise"></i></button>
                     </form>
                 <?php endif; ?>
             <?php elseif($tab === 'admins'): ?>
@@ -3651,33 +3651,33 @@ elseif ($page === 'refs') {
                             <input type="hidden" name="_entity" value="admin">
                             <input type="hidden" name="_action" value="disable">
                             <input type="hidden" name="_id" value="<?=$row['id']?>">
-                            <button type="submit" class="btn-icon" title="Désactiver ce compte" style="color:var(--warning)">🔒</button>
+                            <button type="submit" class="btn-icon" title="Désactiver ce compte" style="color:var(--warning)"><i class="bi bi-lock"></i></button>
                         </form>
                     <?php else: ?>
                         <form method="post" style="display:inline" onsubmit="return confirm('Réactiver le compte « <?=h($row['username']) ?> » ?')">
                             <input type="hidden" name="_entity" value="admin">
                             <input type="hidden" name="_action" value="enable">
                             <input type="hidden" name="_id" value="<?=$row['id']?>">
-                            <button type="submit" class="btn-icon" title="Réactiver ce compte" style="color:var(--success)">🔓</button>
+                            <button type="submit" class="btn-icon" title="Réactiver ce compte" style="color:var(--success)"><i class="bi bi-unlock"></i></button>
                         </form>
                     <?php endif; ?>
                     </span>
                 <?php endif; ?>
                 <?php if($isSelf || !empty($_SESSION['is_admin'])): ?>
                     <button class="btn-icon" title="<?=$isSelf ? 'Ma signature (visa DSI)' : 'Signature (visa DSI) de ce compte'?>" style="color:var(--primary)"
-                      onclick='openSigModal(<?=$row['id']?>, <?=json_encode(trim($row['first_name'].' '.$row['last_name']) ?: $row['username'], JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>, <?=json_encode($sigMap[$row['id']] ?? '', JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'>✍️</button>
+                      onclick='openSigModal(<?=$row['id']?>, <?=json_encode(trim($row['first_name'].' '.$row['last_name']) ?: $row['username'], JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>, <?=json_encode($sigMap[$row['id']] ?? '', JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-pencil-square"></i></button>
                 <?php endif; ?>
-                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'>✏️</button>
+                <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'><i class="bi bi-pencil"></i></button>
                 <?php if(!$isSelf): ?>
                     <form method="post" style="display:inline" onsubmit="return confirm('Supprimer définitivement le compte « <?=h($row['username']) ?> » ?')">
                         <input type="hidden" name="_entity" value="admin">
                         <input type="hidden" name="_action" value="delete">
                         <input type="hidden" name="_id" value="<?=$row['id']?>">
-                        <button type="submit" class="btn-icon btn-del" title="Supprimer ce compte">🗑️</button>
+                        <button type="submit" class="btn-icon btn-del" title="Supprimer ce compte"><i class="bi bi-trash3"></i></button>
                     </form>
                 <?php endif; ?>
             <?php else: ?>
-            <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'>✏️</button>
+            <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'><i class="bi bi-pencil"></i></button>
             <?php endif; ?>
           </td>
         </tr>
@@ -3691,8 +3691,8 @@ elseif ($page === 'refs') {
     <div class="modal-overlay" id="modal-signature">
       <div class="modal">
         <div class="modal-header">
-          <h3>✍️ Signature (visa DSI) — <span id="sig-admin-name"></span></h3>
-          <button type="button" class="modal-close" onclick="closeModal('modal-signature')">✕</button>
+          <h3><i class="bi bi-pencil-square"></i> Signature (visa DSI) — <span id="sig-admin-name"></span></h3>
+          <button type="button" class="modal-close" onclick="closeModal('modal-signature')"><i class="bi bi-x-lg"></i></button>
         </div>
         <form method="post" id="dsi-sig-form" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="admin_signature">
@@ -3706,15 +3706,15 @@ elseif ($page === 'refs') {
           <div id="sig-current" style="display:none;align-items:center;gap:1.5rem;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;">
             <img id="sig-current-img" src="" alt="Signature actuelle" style="max-height:70px;max-width:220px;object-fit:contain;background:#fff;border-radius:4px;padding:4px;">
             <button type="submit" name="delete_signature" value="1" class="btn-secondary" style="color:var(--danger);font-size:.82rem;padding:.4rem .9rem;"
-              onclick="return confirm('Supprimer cette signature ?')">🗑️ Supprimer cette signature</button>
+              onclick="return confirm('Supprimer cette signature ?')"><i class="bi bi-trash3"></i> Supprimer cette signature</button>
           </div>
           <label style="margin-bottom:.4rem;" id="sig-canvas-label">Dessiner la signature</label>
           <div style="border:2px dashed var(--border2);border-radius:8px;background:#fff;touch-action:none;">
             <canvas id="dsiSigCanvas" height="140" style="display:block;width:100%;border-radius:8px;"></canvas>
           </div>
           <div class="modal-footer" style="margin-top:1rem;">
-            <button type="button" class="btn-secondary" onclick="dsiSigClear()">🗑️ Effacer le cadre</button>
-            <button type="submit" class="btn-primary" id="dsi-sig-save" disabled>💾 Enregistrer la signature</button>
+            <button type="button" class="btn-secondary" onclick="dsiSigClear()"><i class="bi bi-trash3"></i> Effacer le cadre</button>
+            <button type="submit" class="btn-primary" id="dsi-sig-save" disabled><i class="bi bi-save"></i> Enregistrer la signature</button>
           </div>
         </form>
       </div>
@@ -3762,7 +3762,7 @@ elseif ($page === 'refs') {
 
     <?php foreach(['add'=>'Ajouter', 'edit'=>'Modifier'] as $act => $title): ?>
     <div class="modal-overlay" id="modal-<?=$act?>-<?=$ent?>">
-      <div class="modal"><div class="modal-header"><h3><?=$title?></h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-<?=$ent?>')">✕</button></div>
+      <div class="modal"><div class="modal-header"><h3><?=$title?></h3><button type="button" class="modal-close" onclick="closeModal('modal-<?=$act?>-<?=$ent?>')"><i class="bi bi-x-lg"></i></button></div>
       <form method="post"><input type="hidden" name="_entity" value="<?=$ent?>"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-'.$ent.'">'; ?>
       <div class="form-grid">
         <?php if ($ent === 'agent'): $svcs=$pdo->query("SELECT id,name FROM services")->fetchAll(); ?>
@@ -3918,11 +3918,11 @@ elseif ($page === 'history') {
     }
     ?>
     <div class="page-header">
-      <span class="page-title-txt">📋 Historique des Bons de Remise</span>
+      <span class="page-title-txt"><i class="bi bi-file-earmark-text"></i> Historique des Bons de Remise</span>
     </div>
 
     <div class="search-bar-wrap">
-      <div class="search-bar"><span class="search-bar-icon">🔍</span>
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span>
         <input type="text" id="history-search" placeholder="Rechercher agent, service, numéro de ligne..." oninput="historySearch(this.value)">
       </div>
       <div class="search-count" id="count-history"></div>
@@ -3946,7 +3946,7 @@ elseif ($page === 'history') {
             <strong style="color:var(--text3);">👤 Agent supprimé</strong>
           <?php endif; ?>
           <span style="font-size:.8rem;color:var(--text3);">🏢 <?=h($pair['service_name'])?></span>
-          <?php if($pair['agent_archived']): ?><span style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.68rem;font-weight:600;padding:.1rem .4rem;border-radius:999px;">🗄️ Parti</span><?php endif; ?>
+          <?php if($pair['agent_archived']): ?><span style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.68rem;font-weight:600;padding:.1rem .4rem;border-radius:999px;"><i class="bi bi-archive"></i> Parti</span><?php endif; ?>
         </div>
         <?php if($pair['phone_numbers']): ?>
         <div style="font-family:var(--font-mono);font-size:.85rem;color:var(--primary);font-weight:600;">
@@ -4162,14 +4162,14 @@ a{color:var(--primary)} a:hover{color:var(--primary-dark)}
 </div>
 
 <div class="modal-overlay" id="modal-history">
-  <div class="modal"><div class="modal-header"><h3>🕒 Historique des affectations</h3><button type="button" class="modal-close" onclick="closeModal('modal-history')">✕</button></div>
+  <div class="modal"><div class="modal-header"><h3><i class="bi bi-clock-history"></i> Historique des affectations</h3><button type="button" class="modal-close" onclick="closeModal('modal-history')"><i class="bi bi-x-lg"></i></button></div>
   <div style="padding:1.5rem;" id="history-content"></div>
   </div>
 </div>
 
 <div class="modal-overlay" id="modal-view-agent">
   <div class="modal modal-lg" style="max-width:900px">
-    <div class="modal-header"><h3 id="agent-view-title">👤 Fiche Utilisateur</h3><button type="button" class="modal-close" onclick="closeModal('modal-view-agent')">✕</button></div>
+    <div class="modal-header"><h3 id="agent-view-title"><i class="bi bi-person-vcard"></i> Fiche Utilisateur</h3><button type="button" class="modal-close" onclick="closeModal('modal-view-agent')"><i class="bi bi-x-lg"></i></button></div>
     <div id="agent-view-content" style="padding:1.5rem; max-height: 70vh; overflow-y:auto;"></div>
   </div>
 </div>
@@ -4527,7 +4527,7 @@ function showHistory(data) {
     if (!data || !data.length) { c.innerHTML = '<span style="color:var(--text3)">Aucun historique disponible.</span>'; }
     else {
         c.innerHTML = '<ul style="list-style:none;padding:0;margin:0;">' + data.map(h => {
-            let badge = h.agent_name ? `<span class="badge badge-muted" style="margin-left:8px;font-size:0.7rem">👤 ${h.agent_name}</span>` : '';
+            let badge = h.agent_name ? `<span class="badge badge-muted" style="margin-left:8px;font-size:0.7rem"><i class="bi bi-person"></i> ${h.agent_name}</span>` : '';
             return `<li style="padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--border)">
                 <strong style="color:var(--primary);font-size:.8rem">${h.dt}</strong>${badge}<br>
                 <span style="font-size:.9rem">${h.action_desc}</span><br>
