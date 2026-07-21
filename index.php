@@ -3192,9 +3192,13 @@ elseif ($page === 'refs') {
     </div>
     <?php endif; ?>
 
+    <?php if($tab !== 'agents'): // « Utilisateurs » a son propre menu à gauche : pas de bandeau d'onglets sur cette page ?>
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
-        <?php foreach($tabs as $k => $label): ?><a href="?page=refs&tab=<?=$k?>" class="tab-btn <?=$tab===$k?'active':''?>"><?=$label?></a><?php endforeach; ?>
+        <?php foreach($tabs as $k => $label): if($k === 'agents') continue; // masqué du bandeau (accessible via le menu de gauche) ?>
+        <a href="?page=refs&tab=<?=$k?>" class="tab-btn <?=$tab===$k?'active':''?>"><?=$label?></a>
+        <?php endforeach; ?>
     </div>
+    <?php endif; ?>
 
     <?php if($tab === 'admins'): ?>
     <!-- ── Statut LDAP / Active Directory ─────────────────────── -->
@@ -4154,7 +4158,11 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 <main class="main">
   <div class="topbar">
     <button class="btn-hamburger" onclick="openSidebar()" aria-label="Ouvrir le menu"><i class="bi bi-list"></i></button>
-    <span class="topbar-title"><?=h($pageTitles[$page]??'Accueil')?></span>
+    <span class="topbar-title"><?php
+      // « Utilisateurs » a son propre menu : titre dédié quand on y accède
+      if ($page === 'refs' && ($_GET['tab'] ?? 'agents') === 'agents') echo 'Utilisateurs';
+      else echo h($pageTitles[$page] ?? 'Accueil');
+    ?></span>
   </div>
   <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): $isErr=($f['type']??'')==='error'; ?><div style="display:flex;align-items:center;gap:.6rem;padding:.85rem 1rem;border-radius:var(--radius);margin-bottom:1rem;box-shadow:var(--shadow);border:1px solid transparent;border-left-width:4px;<?=$isErr ? 'background:var(--danger-dim);color:var(--danger);border-left-color:var(--danger)' : 'background:var(--success-dim);color:var(--success);border-left-color:var(--success)'?>"><i class="bi bi-<?=$isErr?'exclamation-octagon-fill':'check-circle-fill'?>" style="flex-shrink:0;"></i><div><?=h($f['msg'])?></div></div><?php endforeach; ?></div><?php endif; ?>
   <div class="content"><?=$content?></div>
