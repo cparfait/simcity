@@ -1132,6 +1132,56 @@ function getSetting($pdo, $key, $default=0) {
     return $v !== false ? $v : $default;
 }
 
+// ─── AJAX : AJOUT RAPIDE (+) D'UNE ENTITÉ LIÉE ───────────────
+// Crée une entité de référentiel (service, modèle, agent, forfait, compte de
+// facturation, opérateur) sans quitter le formulaire courant. Renvoie
+// {ok, id, label} en JSON ; le JS injecte l'option dans le <select> cible.
+if (isset($_GET['ajax_quickadd'])) {
+    header('Content-Type: application/json');
+    if (!isset($_SESSION['user_id'])) { http_response_code(403); echo json_encode(['ok'=>false,'error'=>'Non authentifié']); exit; }
+    if (!csrf_verify()) { http_response_code(400); echo json_encode(['ok'=>false,'error'=>'Session expirée, rechargez la page.']); exit; }
+    $ent = $_POST['_entity'] ?? '';
+    $g = fn($k) => trim($_POST[$k] ?? '');
+    try {
+        switch ($ent) {
+            case 'service':
+                if ($g('name') === '') throw new Exception('Le nom du service est obligatoire.');
+                $pdo->prepare("INSERT INTO services(name,direction,notes) VALUES(?,?,'')")->execute([$g('name'), $g('direction')]);
+                $id = (int)$pdo->lastInsertId(); $label = $g('name'); break;
+            case 'model':
+                if ($g('brand') === '' || $g('name') === '') throw new Exception('Marque et modèle sont obligatoires.');
+                $cat = $g('category') ?: 'Smartphone';
+                $pdo->prepare("INSERT INTO models(brand,name,category) VALUES(?,?,?)")->execute([$g('brand'), $g('name'), $cat]);
+                $id = (int)$pdo->lastInsertId(); $label = $g('brand').' '.$g('name'); break;
+            case 'agent':
+                if ($g('last_name') === '') throw new Exception('Le nom est obligatoire.');
+                $pdo->prepare("INSERT INTO agents(first_name,last_name,email,service_id) VALUES(?,?,?,?)")
+                    ->execute([$g('first_name') ?: null, $g('last_name'), $g('email') ?: null, ($g('service_id') !== '' ? (int)$g('service_id') : null)]);
+                $id = (int)$pdo->lastInsertId(); $label = trim($g('last_name').' '.$g('first_name')); break;
+            case 'plan':
+                if ($g('name') === '') throw new Exception('Le nom du forfait est obligatoire.');
+                $pdo->prepare("INSERT INTO plan_types(name,data_limit,notes,operator_id) VALUES(?,?,'',NULL)")->execute([$g('name'), $g('data_limit')]);
+                $id = (int)$pdo->lastInsertId(); $label = $g('name'); break;
+            case 'billing':
+                if ($g('account_number') === '') throw new Exception('Le numéro de compte est obligatoire.');
+                $pdo->prepare("INSERT INTO billing_accounts(account_number,name,notes) VALUES(?,?,'')")->execute([$g('account_number'), $g('name')]);
+                $id = (int)$pdo->lastInsertId(); $label = trim($g('account_number').' '.($g('name') !== '' ? '— '.$g('name') : '')); break;
+            case 'operator':
+                if ($g('name') === '') throw new Exception('Le nom de l\'opérateur est obligatoire.');
+                $pdo->prepare("INSERT INTO operators(name,website,notes) VALUES(?,'','')")->execute([$g('name')]);
+                $id = (int)$pdo->lastInsertId(); $label = $g('name'); break;
+            default:
+                throw new Exception('Type non pris en charge.');
+        }
+        logHistory($pdo, $ent, $id, "Ajout rapide depuis un formulaire : ".$label);
+        echo json_encode(['ok'=>true, 'id'=>$id, 'label'=>$label]);
+    } catch (Exception $e) {
+        http_response_code(422);
+        echo json_encode(['ok'=>false, 'error'=>$e->getMessage()]);
+    }
+    exit;
+}
+
 // ─── AJAX : HISTORIQUE SIM D'UNE LIGNE ───────────────────────
 if (isset($_GET['ajax_sim_history'])) {
     header('Content-Type: application/json');
@@ -2786,10 +2836,10 @@ elseif ($page === 'lines') {
           </label>
           <?php endif; ?>
         </div>
-        <div class="form-group"><label>Utilisateur affecté</label><select name="agent_id" id="<?=$act?>-agent_id"><option value="">-- Sélectionner dans le référentiel --</option><?php foreach($agents as $a): ?><option value="<?=$a['id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select></div>
-        <div class="form-group"><label>Compte de Facturation</label><select name="billing_id" id="<?=$act?>-billing_id"><option value="">-- Sélectionner --</option><?php foreach($billings as $b): ?><option value="<?=$b['id']?>"><?=h($b['account_number'].' - '.$b['name'])?></option><?php endforeach; ?></select></div>
-        <div class="form-group"><label>Forfait</label><select name="plan_id" id="<?=$act?>-plan_id"><option value="">-- Sélectionner --</option><?php foreach($plans as $p): ?><option value="<?=$p['id']?>"><?= $p['operator_name'] ? h($p['operator_name']).' — ' : '' ?><?=h($p['name'])?></option><?php endforeach; ?></select></div>
-        <div class="form-group"><label>Service / Direction</label><select name="service_id" id="<?=$act?>-service_id"><option value="">-- Sélectionner --</option><?php foreach($services as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select></div>
+        <div class="form-group"><label>Utilisateur affecté</label><div class="qa-row"><select name="agent_id" id="<?=$act?>-agent_id"><option value="">-- Sélectionner dans le référentiel --</option><?php foreach($agents as $a): ?><option value="<?=$a['id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('agent','<?=$act?>-agent_id')" title="Ajouter un utilisateur"><i class="bi bi-plus-lg"></i></button></div></div>
+        <div class="form-group"><label>Compte de Facturation</label><div class="qa-row"><select name="billing_id" id="<?=$act?>-billing_id"><option value="">-- Sélectionner --</option><?php foreach($billings as $b): ?><option value="<?=$b['id']?>"><?=h($b['account_number'].' - '.$b['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('billing','<?=$act?>-billing_id')" title="Ajouter un compte de facturation"><i class="bi bi-plus-lg"></i></button></div></div>
+        <div class="form-group"><label>Forfait</label><div class="qa-row"><select name="plan_id" id="<?=$act?>-plan_id"><option value="">-- Sélectionner --</option><?php foreach($plans as $p): ?><option value="<?=$p['id']?>"><?= $p['operator_name'] ? h($p['operator_name']).' — ' : '' ?><?=h($p['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('plan','<?=$act?>-plan_id')" title="Ajouter un forfait"><i class="bi bi-plus-lg"></i></button></div></div>
+        <div class="form-group"><label>Service / Direction</label><div class="qa-row"><select name="service_id" id="<?=$act?>-service_id"><option value="">-- Sélectionner --</option><?php foreach($services as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('service','<?=$act?>-service_id')" title="Ajouter un service"><i class="bi bi-plus-lg"></i></button></div></div>
         <div class="form-group"><label>Statut de la ligne</label>
           <div id="<?=$act?>-status-wrapper" style="position:relative;">
             <select name="status" id="<?=$act?>-status"><option value="Active">Active</option><option value="Stock">En Stock (Non activée)</option><option value="Suspended">Suspendue</option></select>
@@ -3123,8 +3173,11 @@ elseif ($page === 'devices') {
       <form method="post"><input type="hidden" name="_entity" value="device"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-device">'; ?>
       <div class="form-grid">
         <div class="form-group form-full"><label>Modèle *</label>
+          <div class="qa-row">
           <select name="model_id" id="<?=$act?>-model_id" required><option value="">-- Choisir le modèle --</option>
           <?php foreach($models as $m): ?><option value="<?=$m['id']?>"><?=h($m['brand'].' '.$m['name'])?></option><?php endforeach; ?></select>
+          <button type="button" class="btn-quickadd" onclick="quickAddOpen('model','<?=$act?>-model_id')" title="Ajouter un modèle"><i class="bi bi-plus-lg"></i></button>
+          </div>
         </div>
         <div class="form-group"><label>IMEI 1 *</label><input type="text" name="imei" id="<?=$act?>-imei" required></div>
         <div class="form-group"><label>IMEI 2</label><input type="text" name="imei2" id="<?=$act?>-imei2"></div>
@@ -3135,12 +3188,18 @@ elseif ($page === 'devices') {
           <select name="status" id="<?=$act?>-status"><option value="Stock">En Stock</option><option value="Deployed">Déployé</option><option value="Repair">En réparation</option></select>
         </div>
         <div class="form-group"><label>Utilisateur (Agent)</label>
+          <div class="qa-row">
           <select name="agent_id" id="<?=$act?>-agent_id"><option value="">-- Aucun --</option>
           <?php foreach($agents as $a): ?><option value="<?=$a['id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select>
+          <button type="button" class="btn-quickadd" onclick="quickAddOpen('agent','<?=$act?>-agent_id')" title="Ajouter un utilisateur"><i class="bi bi-plus-lg"></i></button>
+          </div>
         </div>
         <div class="form-group form-full"><label>Service</label>
+          <div class="qa-row">
           <select name="service_id" id="<?=$act?>-service_id"><option value="">-- Sélectionner --</option>
           <?php foreach($services as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select>
+          <button type="button" class="btn-quickadd" onclick="quickAddOpen('service','<?=$act?>-service_id')" title="Ajouter un service"><i class="bi bi-plus-lg"></i></button>
+          </div>
         </div>
         <div class="form-group form-full"><label>Notes</label><textarea name="notes" id="<?=$act?>-notes" rows="2"></textarea></div>
       </div>
@@ -3774,7 +3833,7 @@ elseif ($page === 'refs') {
             <div class="form-group"><label>Nom *</label><input type="text" name="last_name" id="<?=$act?>-last_name" required></div>
             <div class="form-group"><label>Prénom *</label><input type="text" name="first_name" id="<?=$act?>-first_name" required></div>
             <div class="form-group form-full"><label>Adresse e-mail</label><input type="email" name="email" id="<?=$act?>-email"></div>
-            <div class="form-group form-full"><label>Service / Direction</label><select name="service_id" id="<?=$act?>-service_id"><option value="">-- Aucun --</option><?php foreach($svcs as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select></div>
+            <div class="form-group form-full"><label>Service / Direction</label><div class="qa-row"><select name="service_id" id="<?=$act?>-service_id"><option value="">-- Aucun --</option><?php foreach($svcs as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('service','<?=$act?>-service_id')" title="Ajouter un service"><i class="bi bi-plus-lg"></i></button></div></div>
         <?php elseif ($ent === 'service'): ?>
             <div class="form-group"><label>Nom</label><input type="text" name="name" id="<?=$act?>-name" required></div>
             <div class="form-group"><label>Direction</label><input type="text" name="direction" id="<?=$act?>-direction"></div>
@@ -3785,10 +3844,13 @@ elseif ($page === 'refs') {
             <div class="form-group form-full"><label>Catégorie</label><select name="category" id="<?=$act?>-category"><option>Smartphone</option><option>Tablette</option><option>Borne 4G</option></select></div>
         <?php elseif ($ent === 'plan'): ?>
             <div class="form-group form-full"><label>Opérateur *</label>
+              <div class="qa-row">
               <select name="operator_id" id="<?=$act?>-operator_id" required>
                 <option value="">-- Sélectionner un opérateur --</option>
                 <?php foreach(($operators??[]) as $op): ?><option value="<?=$op['id']?>"><?=h($op['name'])?></option><?php endforeach; ?>
               </select>
+              <button type="button" class="btn-quickadd" onclick="quickAddOpen('operator','<?=$act?>-operator_id')" title="Ajouter un opérateur"><i class="bi bi-plus-lg"></i></button>
+              </div>
             </div>
             <div class="form-group"><label>Nom du Forfait *</label><input type="text" name="name" id="<?=$act?>-name" required></div>
             <div class="form-group"><label>Data Limit</label><input type="text" name="data_limit" id="<?=$act?>-data_limit" placeholder="ex: 50 Go"></div>
@@ -4104,6 +4166,11 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 .tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);margin-bottom:-2px;z-index:2;}
 @media(max-width:900px){.sidebar{transform:translateX(-100%);transition:transform .25s ease;box-shadow:var(--shadow-lg)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:inline-flex}}
 a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
+/* Ajout rapide (+) : select accolé à un bouton d'ajout d'entité liée */
+.qa-row{display:flex;gap:.5rem;align-items:stretch}
+.qa-row select{flex:1;min-width:0}
+.btn-quickadd{flex-shrink:0;width:42px;display:inline-flex;align-items:center;justify-content:center;background:var(--primary-dim);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:1rem;transition:background-color .15s,color .15s}
+.btn-quickadd:hover{background:var(--primary);color:#fff}
 .modal-overlay{background:rgba(15,23,42,.5)!important}
 [data-theme="dark"] .modal-overlay{background:rgba(0,0,0,.75)!important}
 </style>
@@ -4179,6 +4246,21 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
   <div class="modal modal-lg" style="max-width:900px">
     <div class="modal-header"><h3 id="agent-view-title"><i class="bi bi-person-vcard"></i> Fiche Utilisateur</h3><button type="button" class="modal-close" onclick="closeModal('modal-view-agent')"><i class="bi bi-x-lg"></i></button></div>
     <div id="agent-view-content" style="padding:1.5rem; max-height: 70vh; overflow-y:auto;"></div>
+  </div>
+</div>
+
+<!-- Ajout rapide (+) : mini-formulaire générique, champs injectés par le JS -->
+<div class="modal-overlay" id="modal-quickadd">
+  <div class="modal" style="max-width:440px;">
+    <div class="modal-header"><h3 id="qa-title"><i class="bi bi-plus-lg"></i> Ajout rapide</h3><button type="button" class="modal-close" onclick="closeModal('modal-quickadd')"><i class="bi bi-x-lg"></i></button></div>
+    <div style="padding:1.5rem;">
+      <div id="qa-fields" class="form-grid" style="grid-template-columns:1fr;"></div>
+      <div id="qa-error" style="display:none;margin-top:1rem;padding:.7rem .9rem;border-radius:var(--radius-sm);background:var(--danger-dim);color:var(--danger);font-size:.85rem;"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn-secondary" onclick="closeModal('modal-quickadd')">Annuler</button>
+        <button type="button" class="btn-primary" id="qa-save" onclick="quickAddSave()">Enregistrer</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -4424,6 +4506,69 @@ function openModal(id){
 }
 function closeModal(id){ const e=document.getElementById(id); if(e){e.classList.remove('open');document.body.style.overflow='';} }
 document.querySelectorAll('.modal-overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)closeModal(o.id)}));
+
+// ── Ajout rapide (+) : crée une entité liée sans quitter le formulaire ──
+const QA_CSRF = { name: <?= json_encode(CSRF_TOKEN_NAME) ?>, token: <?= json_encode($CSRF_TOKEN) ?> };
+const QA_CONFIG = {
+  service:  { title:'Ajouter un service',  icon:'building',  fields:[{name:'name',label:'Nom du service',required:true}] },
+  model:    { title:'Ajouter un modèle',   icon:'phone',     fields:[{name:'brand',label:'Marque',required:true},{name:'name',label:'Modèle',required:true},{name:'category',label:'Catégorie',type:'select',options:['Smartphone','Tablette','Clé 4G','Modem','Autre']}] },
+  agent:    { title:'Ajouter un utilisateur', icon:'person', fields:[{name:'first_name',label:'Prénom'},{name:'last_name',label:'Nom',required:true}] },
+  plan:     { title:'Ajouter un forfait',  icon:'globe2',    fields:[{name:'name',label:'Nom du forfait',required:true},{name:'data_limit',label:'Enveloppe data (ex : 100 Go)'}] },
+  billing:  { title:'Ajouter un compte de facturation', icon:'cash-coin', fields:[{name:'account_number',label:'N° de compte',required:true},{name:'name',label:'Nom / Entité'}] },
+  operator: { title:'Ajouter un opérateur',icon:'broadcast', fields:[{name:'name',label:"Nom de l'opérateur",required:true}] },
+};
+let _qaEntity=null, _qaTarget=null;
+function qaError(msg){ const b=document.getElementById('qa-error'); if(b){ b.textContent=msg||''; b.style.display=msg?'block':'none'; } }
+function quickAddOpen(entity, targetSelectId){
+  const cfg = QA_CONFIG[entity]; if(!cfg) return;
+  _qaEntity = entity; _qaTarget = targetSelectId;
+  document.getElementById('qa-title').innerHTML = '<i class="bi bi-'+(cfg.icon||'plus-lg')+'"></i> ' + cfg.title;
+  qaError('');
+  const wrap = document.getElementById('qa-fields');
+  wrap.innerHTML = cfg.fields.map(f => {
+    const req = f.required ? ' <span style="color:var(--danger)">*</span>' : '';
+    let input;
+    if(f.type === 'select'){
+      input = '<select data-qa="'+f.name+'">' + f.options.map(o=>'<option value="'+o+'">'+o+'</option>').join('') + '</select>';
+    } else {
+      input = '<input type="text" data-qa="'+f.name+'"'+(f.required?' data-req="1"':'')+'>';
+    }
+    return '<div class="form-group"><label>'+f.label+req+'</label>'+input+'</div>';
+  }).join('');
+  openModal('modal-quickadd');
+  const first = wrap.querySelector('[data-qa]'); if(first) setTimeout(()=>first.focus(), 50);
+}
+function quickAddSave(){
+  qaError('');
+  const wrap = document.getElementById('qa-fields');
+  const inputs = [...wrap.querySelectorAll('[data-qa]')];
+  const fd = new FormData();
+  fd.append('_entity', _qaEntity);
+  fd.append(QA_CSRF.name, QA_CSRF.token);
+  let missing = false;
+  inputs.forEach(inp => {
+    const v = (inp.value||'').trim();
+    if(inp.hasAttribute('data-req') && !v) missing = true;
+    fd.append(inp.getAttribute('data-qa'), v);
+  });
+  if(missing){ qaError('Veuillez remplir les champs obligatoires.'); return; }
+  const btn = document.getElementById('qa-save'); btn.disabled = true;
+  fetch('index.php?ajax_quickadd=1', { method:'POST', body:fd })
+    .then(r => r.json().catch(()=>({ok:false,error:'Réponse invalide du serveur.'})))
+    .then(j => {
+      btn.disabled = false;
+      if(!j || !j.ok){ qaError((j&&j.error)||'Échec de la création.'); return; }
+      const sel = document.getElementById(_qaTarget);
+      if(sel){
+        const opt = document.createElement('option');
+        opt.value = j.id; opt.textContent = j.label; opt.selected = true;
+        sel.appendChild(opt);
+        sel.dispatchEvent(new Event('change', {bubbles:true}));
+      }
+      closeModal('modal-quickadd');
+    })
+    .catch(()=>{ btn.disabled = false; qaError('Erreur réseau.'); });
+}
 
 function openEditModal(data, ent){
   if(document.getElementById('edit-id-'+ent)) document.getElementById('edit-id-'+ent).value=data.id;
