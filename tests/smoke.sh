@@ -39,7 +39,7 @@ curl -s -b "$CJ" -d "_entity=service&_action=add&name=TEST_$STAMP&direction=&not
 curl -s -b "$CJ" -d "_entity=agent&_action=add&first_name=Test&last_name=Smoke$STAMP&email=&service_id=&_csrf=$CSRF" -o /dev/null "$BASE_URL?page=refs&tab=agents"
 curl -s -b "$CJ" -d "_entity=model&_action=add&brand=TestBrand&name=Model$STAMP&category=Smartphone&_csrf=$CSRF" -o /dev/null "$BASE_URL?page=refs&tab=models"
 AGENT_ID=$(curl -s -b "$CJ" "$BASE_URL?ajax_global_search=1&q=Smoke$STAMP" | grep -o '"link":"[^"]*"' | head -1 > /dev/null; \
-           curl -s -b "$CJ" "$BASE_URL?page=refs&tab=agents" | grep -o "viewAgent([0-9]*, 'Test Smoke$STAMP')" | grep -o '[0-9]\+' | head -1)
+           curl -s -b "$CJ" "$BASE_URL?page=refs&tab=agents" | grep -io "viewAgent([0-9]*, 'Test Smoke$STAMP')" | grep -o '[0-9]\+' | head -1)
 [ -n "$AGENT_ID" ] && ok "agent de test créé (id $AGENT_ID)" || { ko "agent introuvable"; exit 1; }
 MODEL_ID=$(curl -s -b "$CJ" "$BASE_URL?page=devices" | grep -o "<option value=\"[0-9]*\">TestBrand Model$STAMP</option>" | grep -o '[0-9]\+' | head -1)
 curl -s -b "$CJ" -d "_entity=device&_action=add&imei=$STAMP&imei2=&serial_number=SN$STAMP&inventory_label=&model_id=${MODEL_ID:-1}&status=Stock&agent_id=$AGENT_ID&service_id=&purchase_date=&notes=&_csrf=$CSRF" -o /dev/null "$BASE_URL?page=devices"
@@ -78,7 +78,7 @@ echo "$FICHE2" | grep -q "Aucun matériel" && ok "matériel retourné en stock" 
 echo "$FICHE2" | grep -q "Aucune ligne active" && ok "ligne retournée en stock" || ko "ligne toujours attribuée"
 
 step "6. Historique"
-curl -s -b "$CJ" "$BASE_URL?page=history" | grep -q "Smoke$STAMP" && ok "cycle visible dans l'historique" || ko "cycle absent de l'historique"
+curl -s -b "$CJ" "$BASE_URL?page=history" | grep -qi "Smoke$STAMP" && ok "cycle visible dans l'historique" || ko "cycle absent de l'historique"
 
 echo
 echo "════════════════════════════════════"

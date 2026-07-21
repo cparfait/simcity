@@ -1004,9 +1004,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                         ->execute([
                             $loginUser,
                             password_hash(bin2hex(random_bytes(24)), PASSWORD_DEFAULT),
-                            $ldapInfo['first_name'] ?: null,
-                            $ldapInfo['last_name']  ?: ($ldapInfo['display_name'] ?: null),
-                            $ldapInfo['email']      ?: null,
+                            fmtFirstName($ldapInfo['first_name'] ?: null),
+                            fmtLastName($ldapInfo['last_name']  ?: ($ldapInfo['display_name'] ?: null)),
+                            fmtEmail($ldapInfo['email']      ?: null),
                         ]);
                     $newId = (int)$pdo->lastInsertId();
                     logHistory($pdo, 'admin', $newId, "Compte provisionné automatiquement depuis l'Active Directory : {$loginUser}");
@@ -1078,6 +1078,10 @@ function h($str) { return htmlspecialchars((string)$str, ENT_QUOTES); }
 function S(array $d, string $k, string $def=''): string { return trim(strip_tags((string)($d[$k] ?? $def))); }
 function IV(array $d, string $k) { return !empty($d[$k]) ? (int)$d[$k] : null; }
 function NV(array $d, string $k) { $v=trim($d[$k]??''); return $v?:null; }
+
+// Normalisation des noms / e-mails (fmtLastName / fmtFirstName / fmtEmail)
+require_once __DIR__ . '/lib_format.php';
+
 function flash($type, $msg) { $_SESSION['flashes'][] = ['type'=>$type, 'msg'=>$msg]; }
 function getFlashes() { $f = $_SESSION['flashes'] ?? []; $_SESSION['flashes'] = []; return $f; }
 
@@ -1155,9 +1159,10 @@ if (isset($_GET['ajax_quickadd'])) {
                 $id = (int)$pdo->lastInsertId(); $label = $g('brand').' '.$g('name'); break;
             case 'agent':
                 if ($g('last_name') === '') throw new Exception('Le nom est obligatoire.');
+                $fn = fmtFirstName($g('first_name')); $ln = fmtLastName($g('last_name'));
                 $pdo->prepare("INSERT INTO agents(first_name,last_name,email,service_id) VALUES(?,?,?,?)")
-                    ->execute([$g('first_name') ?: null, $g('last_name'), $g('email') ?: null, ($g('service_id') !== '' ? (int)$g('service_id') : null)]);
-                $id = (int)$pdo->lastInsertId(); $label = trim($g('last_name').' '.$g('first_name')); break;
+                    ->execute([$fn, $ln, fmtEmail($g('email')), ($g('service_id') !== '' ? (int)$g('service_id') : null)]);
+                $id = (int)$pdo->lastInsertId(); $label = trim($ln.' '.$fn); break;
             case 'plan':
                 if ($g('name') === '') throw new Exception('Le nom du forfait est obligatoire.');
                 $pdo->prepare("INSERT INTO plan_types(name,data_limit,notes,operator_id) VALUES(?,?,'',NULL)")->execute([$g('name'), $g('data_limit')]);
@@ -2126,7 +2131,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($managingOther && !$isSuper) {
                 flash('error', "Action réservée aux super-administrateurs.");
             } elseif ($act === 'add') {
-                $pdo->prepare("INSERT INTO users(username, password, first_name, last_name, email, is_admin) VALUES(?,?,?,?,?,?)")->execute([S($d,'username'), password_hash(S($d,'password'), PASSWORD_DEFAULT), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email'), $isAdminVal ?? 0]);
+                $pdo->prepare("INSERT INTO users(username, password, first_name, last_name, email, is_admin) VALUES(?,?,?,?,?,?)")->execute([S($d,'username'), password_hash(S($d,'password'), PASSWORD_DEFAULT), fmtFirstName(NV($d,'first_name')), fmtLastName(NV($d,'last_name')), fmtEmail(NV($d,'email')), $isAdminVal ?? 0]);
                 logHistory($pdo, 'admin', $pdo->lastInsertId(), "Création de l'administrateur ".S($d,'username'));
                 flash('success', 'Compte créé.');
             } elseif ($act === 'edit') {
@@ -2140,7 +2145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $targetSource->execute([$id]);
                     if ($targetSource->fetchColumn() === 'ldap') $d['password'] = '';
                     $isAdminSet = $isAdminVal !== null ? ', is_admin=?' : '';
-                    $params = [S($d,'username'), NV($d,'first_name'), NV($d,'last_name'), NV($d,'email')];
+                    $params = [S($d,'username'), fmtFirstName(NV($d,'first_name')), fmtLastName(NV($d,'last_name')), fmtEmail(NV($d,'email'))];
                     if (!empty($d['password'])) {
                         $sql = "UPDATE users SET username=?, password=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
                         array_splice($params, 1, 0, [password_hash(S($d,'password'), PASSWORD_DEFAULT)]);
@@ -2196,10 +2201,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } elseif ($ent === 'agent') {
             if ($act === 'add') {
-                $pdo->prepare("INSERT INTO agents(first_name,last_name,email,service_id)VALUES(?,?,?,?)")->execute([S($d,'first_name'),S($d,'last_name'),NV($d,'email'),IV($d,'service_id')]);
+                $pdo->prepare("INSERT INTO agents(first_name,last_name,email,service_id)VALUES(?,?,?,?)")->execute([fmtFirstName(S($d,'first_name')),fmtLastName(S($d,'last_name')),fmtEmail(NV($d,'email')),IV($d,'service_id')]);
                 logHistory($pdo, 'agent', $pdo->lastInsertId(), "Création de la fiche utilisateur");
             } elseif ($act === 'edit') {
-                $pdo->prepare("UPDATE agents SET first_name=?,last_name=?,email=?,service_id=? WHERE id=?")->execute([S($d,'first_name'),S($d,'last_name'),NV($d,'email'),IV($d,'service_id'),$id]);
+                $pdo->prepare("UPDATE agents SET first_name=?,last_name=?,email=?,service_id=? WHERE id=?")->execute([fmtFirstName(S($d,'first_name')),fmtLastName(S($d,'last_name')),fmtEmail(NV($d,'email')),IV($d,'service_id'),$id]);
                 logHistory($pdo, 'agent', $id, "Mise à jour des coordonnées", $id);
             } elseif ($act === 'archive') {
                 $agtRow = $pdo->query("SELECT first_name, last_name FROM agents WHERE id=$id")->fetch();

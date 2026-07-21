@@ -408,6 +408,27 @@ function simcity_apply_schema(PDO $pdo): void
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);
     }
+
+    // ── Normalisation unique des noms / e-mails existants ────────
+    // Nom en MAJUSCULES, prénom en Casse-Titre (composés gérés), e-mail en
+    // minuscules. Exécutée une seule fois (verrou en base) ; les écritures
+    // ultérieures sont normalisées à la volée par index.php / import.php.
+    require_once __DIR__ . '/lib_format.php';
+    $done = $pdo->query("SELECT setting_value FROM settings WHERE setting_key='names_normalized_v1'")->fetchColumn();
+    if ($done === false || $done === '' || $done === '0') {
+        foreach (['agents', 'users'] as $tbl) {
+            $rows = $pdo->query("SELECT id, first_name, last_name, email FROM $tbl")->fetchAll();
+            $upd = $pdo->prepare("UPDATE $tbl SET first_name=?, last_name=?, email=? WHERE id=?");
+            foreach ($rows as $r) {
+                $fn = fmtFirstName($r['first_name']); $ln = fmtLastName($r['last_name']); $em = fmtEmail($r['email']);
+                if ($fn !== $r['first_name'] || $ln !== $r['last_name'] || $em !== $r['email']) {
+                    $upd->execute([$fn, $ln, $em, $r['id']]);
+                }
+            }
+        }
+        $pdo->prepare("INSERT INTO settings (setting_key, setting_value, label) VALUES ('names_normalized_v1','1','Normalisation initiale des noms/e-mails effectuée')
+                       ON DUPLICATE KEY UPDATE setting_value='1'")->execute();
+    }
 }
 
 // Appel immédiat si inclus depuis index.php ou import.php

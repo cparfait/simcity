@@ -12,6 +12,7 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/lib_format.php';
 date_default_timezone_set(defined('APP_TIMEZONE') ? APP_TIMEZONE : 'Europe/Paris');
 
 // ─── Connexion DB ─────────────────────────────────────────────
@@ -140,8 +141,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $imei    = preg_replace('/[^0-9]/', '', $row[10] ?? '');
                 if (empty($phone) && empty($imei)) continue;
 
-                $nom     = trim($row[2] ?? '');
-                $prenom  = trim($row[3] ?? '');
+                $nom     = (string) fmtLastName($row[2] ?? '');
+                $prenom  = (string) fmtFirstName($row[3] ?? '');
                 $notes   = trim($row[4] ?? '');
                 $cf      = trim($row[5] ?? '');
                 $service = trim($row[6] ?? '');
