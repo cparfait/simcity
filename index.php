@@ -5398,6 +5398,7 @@ elseif ($page === 'refs') {
       // Aperçu : envoie les valeurs COURANTES du formulaire (non enregistrées)
       // à ajax_mail_preview, et affiche le rendu dans une iframe sandboxée.
       const MAIL_TPL_LABELS = <?= json_encode(array_map(fn($t) => $t['label'], mailTemplates())) ?>;
+      const MAIL_TPL_VARS   = <?= json_encode(array_map(fn($t) => $t['vars'], mailTemplates())) ?>;
       function mailTplPreview(tk){
         const det  = document.querySelector('details[data-tpl="'+tk+'"]');
         const form = det.closest('form');
@@ -5444,6 +5445,11 @@ elseif ($page === 'refs') {
         const sync = () => { ta.value = ed.innerHTML; };
         ed.addEventListener('input', sync);
         ed.addEventListener('blur', sync);
+        // Position du curseur mémorisée : l'insertion de variable retombe au
+        // bon endroit même après un clic dans la barre d'outils.
+        let savedRange = null;
+        const saveRange = () => { const s = getSelection(); if(s.rangeCount && ed.contains(s.anchorNode)) savedRange = s.getRangeAt(0).cloneRange(); };
+        ed.addEventListener('keyup', saveRange); ed.addEventListener('mouseup', saveRange); ed.addEventListener('blur', saveRange);
         const cmd = (c, v) => { document.execCommand('styleWithCSS', false, true); document.execCommand(c, false, v || null); ed.focus(); sync(); };
         const mkBtn = (html, title, fn) => {
           const b = document.createElement('button');
@@ -5474,6 +5480,32 @@ elseif ($page === 'refs') {
         });
         mkBtn('<i class="bi bi-list-ul"></i>', 'Liste à puces', () => cmd('insertUnorderedList'));
         mkBtn('<i class="bi bi-eraser"></i>', 'Effacer la mise en forme', () => cmd('removeFormat'));
+        // Insertion des variables du gabarit, avec leur explication.
+        const tplKey = (ta.name.match(/tpl_body\[(.+)\]/) || [])[1];
+        const tplVars = MAIL_TPL_VARS[tplKey] || {};
+        if(Object.keys(tplVars).length){
+          const vsel = document.createElement('select');
+          vsel.style.cssText = 'font-size:.78rem;padding:.2rem;border:1px solid var(--border);border-radius:4px;background:#fff;color:var(--primary);width:auto;max-width:220px;font-weight:600;';
+          vsel.title = 'Insérer une variable — remplacée automatiquement à l\'envoi';
+          vsel.innerHTML = '<option value="">{ } Variable…</option>'
+            + Object.entries(tplVars).map(([k, d]) => '<option value="{'+k+'}">{'+k+'} — '+d.replace(/</g,'&lt;')+'</option>').join('');
+          vsel.addEventListener('mousedown', e => e.stopPropagation());
+          vsel.addEventListener('change', () => {
+            if(!vsel.value) return;
+            if(ta.style.display !== 'none'){
+              // Mode code HTML : insertion à la position du curseur du textarea
+              const p = ta.selectionStart ?? ta.value.length;
+              ta.value = ta.value.slice(0, p) + vsel.value + ta.value.slice(ta.selectionEnd ?? p);
+              ta.focus(); ta.selectionStart = ta.selectionEnd = p + vsel.value.length;
+            } else {
+              ed.focus();
+              if(savedRange){ const s = getSelection(); s.removeAllRanges(); s.addRange(savedRange); }
+              document.execCommand('insertText', false, vsel.value); sync(); saveRange();
+            }
+            vsel.value = '';
+          });
+          bar.appendChild(vsel);
+        }
         const spacer = document.createElement('span'); spacer.style.flex = '1'; bar.appendChild(spacer);
         const tgl = mkBtn('<i class="bi bi-code-slash"></i>', 'Basculer visuel / code HTML', () => {
           const showingHtml = ta.style.display !== 'none';
