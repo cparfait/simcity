@@ -4519,7 +4519,7 @@ elseif ($page === 'lines') {
     </div>
     <?php endif; ?>
 
-    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
+    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:1px solid var(--primary)">
         <a href="?page=lines&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-telephone"></i> Lignes Actives & Suspendues</a>
         <a href="?page=lines&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>"><i class="bi bi-box-seam"></i> Stock (SIM Vierges)</a>
         <a href="?page=lines&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>"><i class="bi bi-archive"></i> Lignes Résiliées (Archives)</a>
@@ -4863,7 +4863,7 @@ elseif ($page === 'devices') {
     </div>
     <?php endif; ?>
 
-    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
+    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:1px solid var(--primary)">
         <a href="?page=devices&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-phone"></i> Matériels Déployés / Réparation</a>
         <a href="?page=devices&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>"><i class="bi bi-box-seam"></i> Stock (Disponibles)</a>
         <a href="?page=devices&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>"><i class="bi bi-archive"></i> Archives (Perdus / Cassés)</a>
@@ -5070,7 +5070,7 @@ elseif ($page === 'refs') {
     <?php endif; ?>
 
     <?php if($tab !== 'agents'): // « Utilisateurs » a son propre menu à gauche : pas de bandeau d'onglets sur cette page ?>
-    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
+    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:1px solid var(--primary); flex-wrap:wrap;">
         <?php foreach($tabs as $k => $label): if($k === 'agents') continue; // masqué du bandeau (accessible via le menu de gauche) ?>
         <a href="?page=refs&tab=<?=$k?>" class="tab-btn <?=$tab===$k?'active':''?>"><?=$label?></a>
         <?php endforeach; ?>
@@ -5111,7 +5111,7 @@ elseif ($page === 'refs') {
     ?>
     <!-- ── ONGLET PARAMÈTRES ───────────────────────────────────── -->
     <!-- Sous-menu : chaque section regroupe des réglages proches. -->
-    <div style="display:flex; gap:10px; margin-bottom:1.5rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
+    <div style="display:flex; gap:10px; margin-bottom:1.5rem; border-bottom:1px solid var(--primary); flex-wrap:wrap;">
       <?php foreach($subMenu as $sk => $slabel): ?>
       <a href="?page=refs&tab=settings&sub=<?=$sk?>" class="tab-btn <?=$settingsSub===$sk?'active':''?>"><?=$slabel?></a>
       <?php endforeach; ?>
@@ -6038,7 +6038,7 @@ elseif ($page === 'refs') {
 
     <?php else: ?>
     <?php if($tab === 'agents'): ?>
-    <div style="display:flex;gap:10px;margin-bottom:1rem;border-bottom:2px solid var(--border);flex-wrap:wrap;">
+    <div style="display:flex;gap:10px;margin-bottom:1rem;border-bottom:1px solid var(--primary);flex-wrap:wrap;">
       <a href="?page=refs&tab=agents" class="tab-btn <?=!$agentArchived?'active':''?>"><i class="bi bi-people"></i> Actifs <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($agCounts['actifs'] ?? 0)?></span></a>
       <a href="?page=refs&tab=agents&arch=1" class="tab-btn <?=$agentArchived?'active':''?>"><i class="bi bi-archive"></i> Partis <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($agCounts['partis'] ?? 0)?></span></a>
     </div>
@@ -6842,7 +6842,7 @@ elseif ($page === 'requests') {
       <a href="<?=h($publicUrl)?>" target="_blank" class="btn-primary" style="text-decoration:none;">➕ Nouvelle demande (formulaire)</a>
     </div>
 
-    <div style="display:flex;gap:10px;margin-bottom:1rem;border-bottom:2px solid var(--border);flex-wrap:wrap;">
+    <div style="display:flex;gap:10px;margin-bottom:1rem;border-bottom:1px solid var(--primary);flex-wrap:wrap;">
       <a href="?page=requests" class="tab-btn <?=!$reqClosed?'active':''?>"><i class="bi bi-hourglass-split"></i> En cours <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($reqCounts['en_cours'] ?? 0)?></span></a>
       <a href="?page=requests&closed=1" class="tab-btn <?=$reqClosed?'active':''?>"><i class="bi bi-check2-circle"></i> Terminées <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($reqCounts['terminees'] ?? 0)?></span></a>
     </div>
@@ -7148,7 +7148,7 @@ input::placeholder,textarea::placeholder{color:var(--text3);opacity:.75;font-sty
 .kpi-add:hover{background:var(--primary);color:#fff;}
 .shortcut-btn{display:flex;flex-direction:column;gap:.35rem;padding:1.25rem;border-radius:var(--radius);border:1px solid var(--border);text-decoration:none;transition:border-color .2s;} .shortcut-btn:hover{border-color:var(--primary);}
 .shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(79,70,229,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
-.tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);font-weight:700;margin-bottom:-2px;z-index:2;box-shadow:inset 0 2px 0 var(--primary);}
+.tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--primary);border-bottom-color:var(--card);color:var(--primary);font-weight:700;margin-bottom:-1px;z-index:2;}
 @media(max-width:900px){.sidebar{transform:translateX(-100%);transition:transform .25s ease;box-shadow:var(--shadow-lg)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:inline-flex}}
 a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 /* Ajout rapide (+) : select accolé à un bouton d'ajout d'entité liée */
