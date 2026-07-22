@@ -523,8 +523,9 @@ function requestAdvance($pdo, $reqId) {
 
 // Dotation actuelle d'un agent, en HTML autonome (affichable sur les pages
 // publiques sans le CSS de l'application) — la plus-value vs le papier.
-// $compact=true : version allégée pour le formulaire public (sans IMEI/ICCID,
-// identifiants sensibles inutiles au demandeur).
+// $compact=true : version ANONYMISÉE pour le formulaire public — seul un
+// comptage est révélé (nb de lignes, nb de matériels par type), jamais le
+// détail (modèles, numéros, IMEI) : les demandeurs n'ont pas à voir qui a quoi.
 function requestEquipmentHtml($pdo, $agentId, $compact = false) {
     if (!$agentId) return '';
     $dot = bonSnapshotItems($pdo, (int)$agentId);
@@ -532,8 +533,22 @@ function requestEquipmentHtml($pdo, $agentId, $compact = false) {
         return '<div style="font-size:.85rem;color:#64748b;font-style:italic;">Aucun équipement actuellement attribué à cet agent.</div>';
     }
     $html = '';
+    if ($compact) {
+        if ($n = count($dot['lines'])) {
+            $html .= '<div style="margin-bottom:.3rem;font-size:.88rem;">📞 ' . $n . ' ligne' . ($n > 1 ? 's' : '') . ' mobile' . ($n > 1 ? 's' : '') . '</div>';
+        }
+        $byCat = [];
+        foreach ($dot['devices'] as $it) {
+            $cat = trim((string)($it['category'] ?? '')) ?: 'Matériel';
+            $byCat[$cat] = ($byCat[$cat] ?? 0) + 1;
+        }
+        foreach ($byCat as $cat => $n) {
+            $html .= '<div style="margin-bottom:.3rem;font-size:.88rem;">📱 ' . $n . ' × ' . h($cat) . '</div>';
+        }
+        return $html;
+    }
     foreach ($dot['devices'] as $it) {
-        $id = $compact ? '' : ' <span style="color:#94a3b8;font-size:.78rem;">IMEI ' . h($it['imei'] ?? '') . '</span>';
+        $id = ' <span style="color:#94a3b8;font-size:.78rem;">IMEI ' . h($it['imei'] ?? '') . '</span>';
         $html .= '<div style="margin-bottom:.3rem;font-size:.88rem;">📱 ' . h(trim(($it['brand'] ?? '') . ' ' . ($it['name'] ?? ''))) . $id . '</div>';
     }
     foreach ($dot['lines'] as $it) {
@@ -787,12 +802,15 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
         $agentName     = trim($firstName . ' ' . $lastName);
         $agentEmail    = fmtEmail(NV($_POST, 'agent_email'));
         $fonction      = trim(strip_tags($_POST['agent_fonction'] ?? ''));
-        // E-mail du demandeur : sert UNIQUEMENT à lui envoyer l'accusé de
-        // réception + le lien de suivi. N'intervient pas dans le circuit.
+        // Identité + e-mail du demandeur : l'e-mail sert UNIQUEMENT à lui envoyer
+        // l'accusé de réception + le lien de suivi. N'intervient pas dans le circuit.
+        $requesterName  = trim(strip_tags($_POST['requester_name'] ?? ''));
         $requesterEmail = fmtEmail(NV($_POST, 'requester_email'));
         $serviceId     = (int)($_POST['service_id'] ?? 0);
         $replAgent     = !empty($_POST['replace_agent']) ? 1 : 0;
         $replAgentName = $replAgent ? trim(strip_tags($_POST['replaced_agent_name'] ?? '')) : '';
+        $replAgentEmail = $replAgent ? fmtEmail(NV($_POST, 'replaced_agent_email')) : null;
+        if ($replAgentEmail !== null && !filter_var($replAgentEmail, FILTER_VALIDATE_EMAIL)) $replAgentEmail = null;
         $replDevice    = !empty($_POST['replace_device']) ? 1 : 0;
         // Motifs paramétrables (un par ligne dans les réglages)
         $motifsOk      = array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', getSetting($pdo, 'request_form_motifs', "Panne\nCasse\nPerte\nVol\nObsolescence")))));
@@ -802,6 +820,8 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
 
         if ($lastName === '' || !$svcRow || $motivation === '') {
             $formError = "Veuillez remplir tous les champs obligatoires (nom du bénéficiaire, service et motivation).";
+        } elseif ($requesterName === '') {
+            $formError = "Indiquez vos prénom et nom (demandeur).";
         } elseif (!filter_var((string)$requesterEmail, FILTER_VALIDATE_EMAIL)) {
             $formError = "Indiquez votre adresse e-mail (demandeur) pour recevoir l'accusé de réception.";
         } elseif ($agentEmail !== null && !filter_var($agentEmail, FILTER_VALIDATE_EMAIL)) {
@@ -816,13 +836,13 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
 
             $type  = $replDevice ? 'renouvellement' : 'attribution';
             $track = bin2hex(random_bytes(32));
-            $ins = $pdo->prepare("INSERT INTO requests (numero, type, agent_id, agent_name, agent_fonction, agent_email, service_id, service_name, replace_agent, replaced_agent_name, replace_device, replace_motif, motivation, requester_email, track_token)
-                                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+            $ins = $pdo->prepare("INSERT INTO requests (numero, type, agent_id, agent_name, agent_fonction, agent_email, service_id, service_name, replace_agent, replaced_agent_name, replaced_agent_email, replace_device, replace_motif, motivation, requester_name, requester_email, track_token)
+                                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
             // Numéro MAX+1 sans verrou : on réessaie sur collision (comme les bons)
             for ($attempt = 0; ; $attempt++) {
                 try {
                     $ins->execute([requestNumero($pdo), $type, $agentId, $agentName, $fonction ?: null, $agentEmail, (int)$svcRow['id'], $svcRow['name'],
-                                   $replAgent, $replAgentName ?: null, $replDevice, $motif, $motivation, $requesterEmail, $track]);
+                                   $replAgent, $replAgentName ?: null, $replAgentEmail, $replDevice, $motif, $motivation, $requesterName, $requesterEmail, $track]);
                     break;
                 } catch (PDOException $e) {
                     if ($e->getCode() === '23000' && $attempt < 5) continue;
@@ -844,7 +864,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
                 $adm = baseUrl($pdo) . '?page=requests&view=' . $reqId;
                 smtpSendMail($pdo, $notify, "Nouvelle demande de téléphone $numero — $agentName",
                     requestMailShell('Nouvelle demande', '<p>Une nouvelle demande de téléphone vient d\'être déposée :</p>'
-                    . '<p><strong>' . h($numero) . '</strong> — ' . h(requestTypeLabel($type)) . '<br>Bénéficiaire : <strong>' . h($agentName) . '</strong>' . ($fonction ? ' (' . h($fonction) . ')' : '') . ($agentEmail ? '<br>E-mail : ' . h($agentEmail) : '') . '<br>Service : ' . h($svcRow['name']) . '<br>Demandeur : ' . h($requesterEmail) . '</p>'
+                    . '<p><strong>' . h($numero) . '</strong> — ' . h(requestTypeLabel($type)) . '<br>Bénéficiaire : <strong>' . h($agentName) . '</strong>' . ($fonction ? ' (' . h($fonction) . ')' : '') . ($agentEmail ? '<br>E-mail : ' . h($agentEmail) : '') . '<br>Service : ' . h($svcRow['name']) . '<br>Demandeur : <strong>' . h($requesterName) . '</strong> (' . h($requesterEmail) . ')</p>'
                     . '<p style="margin:24px 0;text-align:center;"><a href="' . h($adm) . '" style="background:#4f46e5;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Qualifier la demande</a></p>'));
             }
             // 2) Accusé de réception au demandeur (l'e-mail qu'il a saisi) : simple
@@ -894,6 +914,8 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
     <?php if ($formError): ?><div class="error"><span>⚠️</span><span><?=h($formError)?></span></div><?php endif; ?>
     <form method="post" autocomplete="off">
         <input type="text" name="website" value="" style="display:none" tabindex="-1" aria-hidden="true">
+        <label>Vos prénom et nom (demandeur) *</label>
+        <input type="text" name="requester_name" required placeholder="Prénom Nom" value="<?=h($_POST['requester_name'] ?? '')?>">
         <label>Votre e-mail (demandeur) *</label>
         <input type="email" name="requester_email" id="req-email" required placeholder="prenom.nom@collectivite.fr" value="<?=h($_POST['requester_email'] ?? '')?>">
         <div class="field-hint">Pour recevoir l'accusé de réception et le lien de suivi. N'intervient pas dans le circuit de validation.</div>
@@ -931,7 +953,15 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
         </div>
         <div id="repl-agent-name" style="display:<?=!empty($_POST['replace_agent']) ? 'block' : 'none'?>;">
             <label>Nom de l'agent remplacé</label>
-            <input type="text" name="replaced_agent_name" placeholder="Prénom Nom" value="<?=h($_POST['replaced_agent_name'] ?? '')?>">
+            <?php if (ldap_auth_enabled()): ?>
+            <div class="field-hint" style="margin:-.2rem 0 .5rem;">🔎 Commencez à taper le nom : l'annuaire propose l'agent remplacé.</div>
+            <?php endif; ?>
+            <div style="position:relative;">
+                <input type="text" name="replaced_agent_name" id="repl-name" placeholder="Prénom Nom" autocomplete="off" value="<?=h($_POST['replaced_agent_name'] ?? '')?>">
+                <div id="repl-suggest" class="suggest"></div>
+            </div>
+            <input type="hidden" name="replaced_agent_email" id="repl-email" value="<?=h($_POST['replaced_agent_email'] ?? '')?>">
+            <div id="repl-equip" class="equip-panel" style="display:none;"></div>
         </div>
 
         <label>Remplacement d'un téléphone existant ?</label>
@@ -1019,6 +1049,65 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
       last.addEventListener('blur', ()=>{ setTimeout(hideSug,150); loadEquip(); });
       email.addEventListener('blur', loadEquip);
       if (last.value.trim() || email.value.trim()) loadEquip();
+    })();
+
+    // ── Agent remplacé : recherche AD/référentiel + dotation actuelle ──
+    //    Même annuaire que le bénéficiaire ; la dotation affichée est un
+    //    simple comptage (nb lignes / matériels), jamais le détail.
+    (function(){
+      const name  = document.getElementById('repl-name'),
+            email = document.getElementById('repl-email'),
+            sug   = document.getElementById('repl-suggest'),
+            equip = document.getElementById('repl-equip');
+      if (!name) return;
+      const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+      const hideSug = () => { sug.style.display='none'; sug.innerHTML=''; };
+      let timer=null, equipTimer=null;
+
+      function loadEquip(){
+        clearTimeout(equipTimer);
+        equipTimer = setTimeout(async ()=>{
+          const em = email.value.trim(), nm = name.value.trim();
+          if (!em && !nm){ equip.style.display='none'; equip.innerHTML=''; return; }
+          try {
+            const r = await fetch('index.php?ajax_request_equipment=1&email='+encodeURIComponent(em)+'&name='+encodeURIComponent(nm));
+            const j = await r.json();
+            if (j && j.found){ equip.innerHTML = '<div class="equip-title">📦 Équipement déjà attribué à '+esc(j.name)+'</div>'+(j.html||''); equip.style.display='block'; }
+            else { equip.style.display='none'; equip.innerHTML=''; }
+          } catch(e){ equip.style.display='none'; }
+        }, 300);
+      }
+      function pick(p){
+        name.value  = p.name || ((p.first_name||'')+' '+(p.last_name||'')).trim();
+        email.value = p.email || '';
+        hideSug(); loadEquip();
+      }
+      name.addEventListener('input', ()=>{
+        email.value = '';   // saisie manuelle : l'e-mail mémorisé ne vaut plus
+        const q = name.value.trim();
+        clearTimeout(timer);
+        if (q.length < 2){ hideSug(); return; }
+        timer = setTimeout(async ()=>{
+          try {
+            const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
+            const items = await r.json();
+            if (!Array.isArray(items) || !items.length){ hideSug(); return; }
+            sug.innerHTML = items.map((p,i) =>
+              '<div class="suggest-item" data-i="'+i+'">'
+              + '<div class="s-name">'+esc(p.name || ((p.first_name||'')+' '+(p.last_name||'')))
+              + (p.in_tool ? ' <span class="s-badge">déjà dans l\'outil</span>' : '')
+              + (p.source==='ad' ? ' <span class="s-badge s-ad">AD</span>' : '')+'</div>'
+              + '<div class="s-meta">'+esc([p.fonction, p.email].filter(Boolean).join(' · '))+'</div>'
+              + '</div>').join('');
+            sug.style.display='block';
+            [...sug.querySelectorAll('.suggest-item')].forEach(el=>{
+              el.addEventListener('mousedown', e=>{ e.preventDefault(); pick(items[+el.dataset.i]); });
+            });
+          } catch(e){ hideSug(); }
+        }, 250);
+      });
+      name.addEventListener('blur', ()=>{ setTimeout(hideSug,150); loadEquip(); });
+      if (name.value.trim() || email.value.trim()) loadEquip();
     })();
 
     // ── Garde-fou anti-doublon : à la saisie de l'e-mail demandeur, on signale
@@ -1168,8 +1257,10 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
                         // Le demandeur n'est pas notifié à chaque étape : il suit via son lien.
                         $notify = trim(getSetting($pdo, 'request_notify_email', ''));
                         if ($notify) {
+                            $adm = baseUrl($pdo) . '?page=requests&view=' . (int)$req['id'];
                             smtpSendMail($pdo, $notify, "Demande {$req['numero']} refusée",
-                                requestMailShell('Demande refusée', '<p>La demande <strong>' . h($req['numero']) . '</strong> (' . h($req['agent_name']) . ') a été refusée au visa « ' . h($step['label']) . ' »' . ($name ? ' par ' . h($name) : '') . '.</p><p>Avis : ' . h($avis) . '</p>'));
+                                requestMailShell('Demande refusée', '<p>La demande <strong>' . h($req['numero']) . '</strong> (' . h($req['agent_name']) . ') a été refusée au visa « ' . h($step['label']) . ' »' . ($name ? ' par ' . h($name) : '') . '.</p><p>Avis : ' . h($avis) . '</p>'
+                                . '<p style="font-size:13px;color:#666;"><a href="' . h($adm) . '">Ouvrir la demande dans SimCity</a></p>'));
                         }
                     }
                 }
@@ -1258,6 +1349,13 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
     <div class="info">
         <div style="font-size:.75rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.5rem;">📦 Équipement actuel de l'agent (parc DSI)</div>
         <?=requestEquipmentHtml($pdo, (int)$req['agent_id'])?>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($req['replace_agent'] && ($replacedForVisa = requestMatchAgent($pdo, $req['replaced_agent_email'] ?? '', $req['replaced_agent_name'] ?? ''))): ?>
+    <div class="info">
+        <div style="font-size:.75rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.5rem;">♻️ Équipement de l'agent remplacé (<?=h(trim($replacedForVisa['first_name'] . ' ' . $replacedForVisa['last_name']))?>)</div>
+        <?=requestEquipmentHtml($pdo, (int)$replacedForVisa['id'])?>
     </div>
     <?php endif; ?>
 
@@ -1375,7 +1473,7 @@ th{background:#f5f5f5;}
     <tr><th>Remplacement d'un téléphone existant</th><td><?=$req['replace_device'] ? '☑ Oui — motif : ' . h($req['replace_motif'] ?: 'non précisé') : '☐ Non'?></td></tr>
     <tr><th>Motivation du besoin</th><td style="white-space:pre-line;"><?=h($req['motivation'])?></td></tr>
     <tr><th>E-mail du bénéficiaire</th><td><?=h($req['agent_email'] ?: '—')?></td></tr>
-    <tr><th>E-mail du demandeur</th><td><?=h($req['requester_email'] ?: '—')?></td></tr>
+    <tr><th>Demandeur</th><td><?=h($req['requester_name'] ?: '—')?><?=$req['requester_email'] ? ' — ' . h($req['requester_email']) : ''?></td></tr>
 </table>
 </div>
 <div class="section"><h3>🖊️ Circuit de validation</h3>
@@ -1434,7 +1532,7 @@ function bonSnapshotItems($pdo, $agentId) {
     $agentId = (int)$agentId;
     $agt = $pdo->query("SELECT a.first_name, a.last_name, a.email, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=$agentId")->fetch() ?: [];
     $lines = $pdo->query("SELECT l.id as line_id, l.phone_number, l.iccid, l.eid, l.activation_code, p.name as plan_name, COALESCE(l.personal_device,0) as personal_device, COALESCE(l.esim,0) as esim FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.agent_id=$agentId AND l.archived=0 ORDER BY l.id")->fetchAll();
-    $devices = $pdo->query("SELECT DISTINCT d.id as device_id, d.imei, d.serial_number, d.inventory_label, m.brand, m.name FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$agentId OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$agentId AND device_id IS NOT NULL)) AND d.archived=0 ORDER BY d.id")->fetchAll();
+    $devices = $pdo->query("SELECT DISTINCT d.id as device_id, d.imei, d.serial_number, d.inventory_label, m.brand, m.name, m.category FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$agentId OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$agentId AND device_id IS NOT NULL)) AND d.archived=0 ORDER BY d.id")->fetchAll();
     return [
         'agent'   => ['name' => trim(($agt['first_name'] ?? '') . ' ' . ($agt['last_name'] ?? '')), 'service' => $agt['service_name'] ?? '', 'email' => $agt['email'] ?? ''],
         'devices' => $devices,
@@ -3162,6 +3260,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             if ($pdo->inTransaction()) $pdo->commit();
             header('Location: ' . $backTo); exit;
+        } elseif ($ent === 'req_circuit') {
+            // ── Circuits de validation enregistrés (Paramètres → Demandes) ──
+            // Modèles réutilisables proposés à la qualification d'une demande.
+            if ($act === 'save') {
+                $name = trim(strip_tags($d['circuit_name'] ?? ''));
+                // Même parsing que le lancement d'un circuit sur une demande
+                $labels = (array)($d['step_label'] ?? []); $names = (array)($d['step_name'] ?? []); $emails = (array)($d['step_email'] ?? []);
+                $steps = [];
+                foreach ($labels as $i => $lbl) {
+                    $lbl = trim(strip_tags((string)$lbl));
+                    $nm  = trim(strip_tags((string)($names[$i] ?? '')));
+                    $em  = trim((string)($emails[$i] ?? ''));
+                    if ($lbl === '' && $nm === '' && $em === '') continue;   // ligne vide : ignorée
+                    if ($lbl === '' || !filter_var($em, FILTER_VALIDATE_EMAIL)) { $steps = null; break; }
+                    $steps[] = ['label' => $lbl, 'name' => $nm, 'email' => $em];
+                }
+                if ($name === '') {
+                    flash('error', 'Donnez un nom au circuit (ex : « Circuit standard », « Direction générale »).');
+                } elseif ($steps === null || !$steps) {
+                    flash('error', 'Circuit invalide : chaque étape doit avoir un libellé et une adresse e-mail valide (retirez les lignes inutiles).');
+                } else {
+                    $json = json_encode($steps, JSON_UNESCAPED_UNICODE);
+                    if ($id) {
+                        $pdo->prepare("UPDATE request_circuits SET name=?, steps=? WHERE id=?")->execute([$name, $json, $id]);
+                        flash('success', "Circuit « $name » mis à jour (" . count($steps) . " étape(s)). Les demandes déjà lancées ne sont pas modifiées.");
+                    } else {
+                        $pdo->prepare("INSERT INTO request_circuits (name, steps) VALUES (?,?)")->execute([$name, $json]);
+                        flash('success', "Circuit « $name » enregistré (" . count($steps) . " étape(s)) — il est maintenant proposé à la qualification des demandes.");
+                    }
+                }
+            } elseif ($act === 'delete' && $id) {
+                $pdo->prepare("DELETE FROM request_circuits WHERE id=?")->execute([$id]);
+                flash('success', 'Circuit supprimé. Les demandes déjà lancées avec ce circuit ne sont pas modifiées.');
+            }
+            if ($pdo->inTransaction()) $pdo->commit();
+            header('Location: index.php?page=refs&tab=settings&sub=requests'); exit;
         } elseif ($ent === 'backup') {
             // Sauvegarde / restauration — super-admin uniquement
             if (empty($_SESSION['is_admin'])) {
@@ -4810,6 +4944,146 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
+      <!-- Bloc circuits de validation enregistrés -->
+      <?php $reqCircuits = $pdo->query("SELECT * FROM request_circuits ORDER BY name")->fetchAll(); ?>
+      <div class="card">
+        <div class="card-header"><i class="bi bi-diagram-3"></i> Circuits de validation enregistrés</div>
+        <div style="padding:1.5rem;">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
+            Enregistrez ici vos circuits types (étapes + valideurs) : ils sont ensuite <strong>proposés à la
+            qualification</strong> de chaque demande pour pré-remplir le circuit en un clic — qui reste
+            ajustable au cas par cas. Modifier ou supprimer un circuit ne touche pas les demandes déjà lancées.
+          </p>
+
+          <?php if ($reqCircuits): ?>
+          <table class="data-table" style="font-size:.85rem;margin-bottom:1.25rem;">
+            <thead><tr><th>Nom</th><th>Étapes</th><th style="width:90px;">Actions</th></tr></thead>
+            <tbody>
+            <?php foreach ($reqCircuits as $c): $cSteps = json_decode($c['steps'] ?: '[]', true) ?: []; ?>
+            <tr>
+              <td><strong><?=h($c['name'])?></strong></td>
+              <td class="muted" style="font-size:.8rem;"><?=h(implode(' → ', array_column($cSteps, 'label')) ?: '—')?></td>
+              <td style="white-space:nowrap;">
+                <button type="button" class="btn-icon" title="Modifier ce circuit" style="color:var(--primary);"
+                  onclick='circuitPresetEdit(<?=json_encode(['id' => (int)$c['id'], 'name' => $c['name'], 'steps' => $cSteps], JSON_UNESCAPED_UNICODE | JSON_HEX_APOS | JSON_HEX_TAG)?>)'><i class="bi bi-pencil"></i></button>
+                <form method="post" style="display:inline;" onsubmit="return confirm('Supprimer le circuit « <?=h(addslashes($c['name']))?> » ? Les demandes déjà lancées ne sont pas modifiées.')">
+                  <?=csrf_field()?>
+                  <input type="hidden" name="_entity" value="req_circuit">
+                  <input type="hidden" name="_action" value="delete">
+                  <input type="hidden" name="_id" value="<?=(int)$c['id']?>">
+                  <button type="submit" class="btn-icon btn-del" title="Supprimer"><i class="bi bi-trash"></i></button>
+                </form>
+              </td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+          <?php else: ?>
+          <div style="background:var(--bg3);border:1px dashed var(--border);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;text-align:center;color:var(--text3);font-size:.88rem;">
+            Aucun circuit enregistré pour l'instant — créez le premier ci-dessous.
+          </div>
+          <?php endif; ?>
+
+          <form method="post" id="circuit-preset-form">
+            <?=csrf_field()?>
+            <input type="hidden" name="_entity" value="req_circuit">
+            <input type="hidden" name="_action" value="save">
+            <input type="hidden" name="_id" id="cp-id" value="">
+            <div class="form-group form-full" style="margin-bottom:.75rem;">
+              <label id="cp-form-title">Nouveau circuit</label>
+              <input type="text" name="circuit_name" id="cp-name" placeholder="ex : Circuit standard, Direction générale…" required>
+            </div>
+            <table class="data-table" id="preset-table" style="font-size:.85rem;">
+              <thead><tr><th style="width:30px;"></th><th>Visa (libellé)</th><th>Valideur</th><th>E-mail</th><th style="width:40px;"></th></tr></thead>
+              <tbody></tbody>
+            </table>
+            <div style="display:flex;gap:.75rem;margin-top:1rem;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="btn-secondary" onclick="presetAddRow()">➕ Ajouter une étape</button>
+              <button type="submit" class="btn-primary"><i class="bi bi-save"></i> <span id="cp-submit-label">Enregistrer le circuit</span></button>
+              <button type="button" class="btn-secondary" id="cp-cancel" style="display:none;" onclick="circuitPresetReset()">Annuler la modification</button>
+            </div>
+          </form>
+          <script>
+          function presetAddRow(step) {
+            const tb = document.querySelector('#preset-table tbody');
+            const tr = document.createElement('tr');
+            tr.innerHTML = '<td style="color:var(--text3);">＋</td>'
+              + '<td><input type="text" name="step_label[]" placeholder="ex : Direction du service"></td>'
+              + '<td style="position:relative;"><input type="text" class="circuit-name" name="step_name[]" placeholder="Prénom Nom" autocomplete="off"><div class="adp-box circuit-suggest"></div></td>'
+              + '<td><input type="email" class="circuit-email" name="step_email[]" placeholder="valideur@collectivite.fr"></td>'
+              + '<td><button type="button" class="btn-icon btn-del" title="Retirer cette étape" onclick="this.closest(\'tr\').remove()"><i class="bi bi-x-lg"></i></button></td>';
+            if (step) {
+              tr.querySelector('[name="step_label[]"]').value = step.label || '';
+              tr.querySelector('[name="step_name[]"]').value  = step.name  || '';
+              tr.querySelector('[name="step_email[]"]').value = step.email || '';
+            }
+            tb.appendChild(tr);
+          }
+          function circuitPresetEdit(c) {
+            document.getElementById('cp-id').value = c.id;
+            document.getElementById('cp-name').value = c.name || '';
+            document.getElementById('cp-form-title').textContent = 'Modifier le circuit « ' + (c.name || '') + ' »';
+            document.getElementById('cp-submit-label').textContent = 'Mettre à jour le circuit';
+            document.getElementById('cp-cancel').style.display = '';
+            document.querySelector('#preset-table tbody').innerHTML = '';
+            (c.steps || []).forEach(s => presetAddRow(s));
+            if (!(c.steps || []).length) presetAddRow();
+            document.getElementById('circuit-preset-form').scrollIntoView({behavior: 'smooth', block: 'center'});
+          }
+          function circuitPresetReset() {
+            document.getElementById('cp-id').value = '';
+            document.getElementById('cp-name').value = '';
+            document.getElementById('cp-form-title').textContent = 'Nouveau circuit';
+            document.getElementById('cp-submit-label').textContent = 'Enregistrer le circuit';
+            document.getElementById('cp-cancel').style.display = 'none';
+            document.querySelector('#preset-table tbody').innerHTML = '';
+            presetAddRow();
+          }
+          presetAddRow();
+          // ── Autocomplétion annuaire (AD + référentiel) sur le champ Valideur ──
+          // Même pattern que la fiche demande : délégation sur la table.
+          (function(){
+            const table = document.getElementById('preset-table');
+            if (!table) return;
+            const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+            table.addEventListener('input', e => {
+              const inp = e.target;
+              if (!inp.classList || !inp.classList.contains('circuit-name')) return;
+              const box = inp.parentElement.querySelector('.circuit-suggest');
+              const q = inp.value.trim();
+              clearTimeout(inp._t);
+              if (q.length < 2) { box.style.display='none'; box.innerHTML=''; return; }
+              inp._t = setTimeout(async () => {
+                try {
+                  const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
+                  const items = await r.json();
+                  if (!Array.isArray(items) || !items.length) { box.style.display='none'; box.innerHTML=''; return; }
+                  box.innerHTML = items.map((p,i) =>
+                    '<div class="adp-item" data-i="'+i+'"><strong>'+esc(p.name)+'</strong>'
+                    + (p.source==='ad' ? ' <span style="color:var(--info);font-size:.7rem;">AD</span>' : '')
+                    + '<br><span class="muted" style="font-size:.75rem;">'+esc([p.fonction,p.email].filter(Boolean).join(' · '))+'</span></div>').join('');
+                  box.style.display='block';
+                  const emailInp = inp.closest('tr').querySelector('.circuit-email');
+                  [...box.querySelectorAll('.adp-item')].forEach(el => el.addEventListener('mousedown', ev => {
+                    ev.preventDefault(); const p = items[+el.dataset.i];
+                    inp.value = p.name || '';
+                    if (emailInp && p.email) emailInp.value = p.email;
+                    box.style.display='none'; box.innerHTML='';
+                  }));
+                } catch(err) { box.style.display='none'; }
+              }, 250);
+            });
+            table.addEventListener('focusout', e => {
+              if (e.target.classList && e.target.classList.contains('circuit-name')) {
+                const box = e.target.parentElement.querySelector('.circuit-suggest');
+                setTimeout(() => { if (box) { box.style.display='none'; } }, 150);
+              }
+            });
+          })();
+          </script>
+        </div>
+      </div>
+
     </div><!-- fin section « Demandes de téléphone » -->
     <?php endif; ?>
 
@@ -5583,6 +5857,13 @@ elseif ($page === 'requests') {
             $smtpConfigured = trim(smtpSetting($pdo, 'smtp_host', '')) !== '';
             // Circuit proposé (statut « à qualifier ») : valideurs du service + paramètres
             $draftSteps = ($req['status'] === 'a_qualifier') ? requestDefaultSteps($pdo, $req['service_id']) : [];
+            // Circuits enregistrés (Paramètres → Demandes) proposés à la qualification
+            $savedCircuits = ($req['status'] === 'a_qualifier')
+                ? $pdo->query("SELECT id, name, steps FROM request_circuits ORDER BY name")->fetchAll() : [];
+            // Agent remplacé : rapprochement avec le référentiel (e-mail prioritaire,
+            // sinon nom exact unique) pour afficher sa dotation actuelle.
+            $replacedAgent = $req['replace_agent']
+                ? requestMatchAgent($pdo, $req['replaced_agent_email'] ?? '', $req['replaced_agent_name'] ?? '') : null;
     ?>
     <div style="margin-bottom:1rem;"><a href="?page=requests" style="color:var(--primary);font-size:.85rem;">← Toutes les demandes</a></div>
 
@@ -5594,6 +5875,12 @@ elseif ($page === 'requests') {
           <a href="?page=pdf_demande&id=<?=$viewId?>" target="_blank" class="btn-icon" title="Récapitulatif imprimable (pièce justificative)" style="text-decoration:none;">🖨️</a>
         </span>
       </div>
+      <div style="padding:.7rem 1.5rem;background:var(--bg3);border-bottom:1px solid var(--border);font-size:.88rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
+        🙋 <strong>Demandeur :</strong> <?=h($req['requester_name'] ?: '—')?>
+        <?php if ($req['requester_email']): ?>
+        — <a href="mailto:<?=h($req['requester_email'])?>" style="color:var(--primary);"><?=h($req['requester_email'])?></a>
+        <?php endif; ?>
+      </div>
       <div style="padding:1.5rem;display:flex;gap:2rem;flex-wrap:wrap;">
         <div style="flex:1;min-width:300px;">
           <h4 style="color:var(--primary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px;">📋 La demande</h4>
@@ -5601,7 +5888,7 @@ elseif ($page === 'requests') {
             <tr><td style="color:var(--text2);width:190px;">Type</td><td><?=h(requestTypeLabel($req['type']))?></td></tr>
             <tr><td style="color:var(--text2);">Bénéficiaire</td><td><strong><?=h($req['agent_name'])?></strong><?=$req['agent_fonction'] ? ' — ' . h($req['agent_fonction']) : ''?></td></tr>
             <tr><td style="color:var(--text2);">E-mail bénéficiaire</td><td><?=h($req['agent_email'] ?: '—')?></td></tr>
-            <tr><td style="color:var(--text2);">E-mail demandeur</td><td><?=h($req['requester_email'] ?: '—')?></td></tr>
+            <tr><td style="color:var(--text2);">Demandeur</td><td><?=h($req['requester_name'] ?: '—')?><?=$req['requester_email'] ? ' — ' . h($req['requester_email']) : ''?></td></tr>
             <tr><td style="color:var(--text2);">Service</td><td><?=h($req['service_name'] ?: '—')?></td></tr>
             <tr><td style="color:var(--text2);">Remplacement d'agent</td><td><?=$req['replace_agent'] ? 'Oui' . ($req['replaced_agent_name'] ? ' — ' . h($req['replaced_agent_name']) : '') : 'Non'?></td></tr>
             <tr><td style="color:var(--text2);">Remplacement de téléphone</td><td><?=$req['replace_device'] ? 'Oui — <strong>' . h($req['replace_motif'] ?: 'motif non précisé') . '</strong>' : 'Non'?></td></tr>
@@ -5625,6 +5912,20 @@ elseif ($page === 'requests') {
           <?php else: ?>
           <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.25);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:.75rem;font-size:.85rem;color:var(--text2);">
             ⚠️ Demande non rattachée au référentiel — l'équipement actuel n'est pas visible des valideurs. Liez l'agent (ou créez-le d'abord dans « Utilisateurs »).
+          </div>
+          <?php endif; ?>
+          <?php if ($req['replace_agent']): ?>
+          <div style="background:var(--bg3);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:.75rem;">
+            <div style="font-size:.72rem;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:.35rem;">♻️ Agent remplacé</div>
+            <?php if ($replacedAgent): ?>
+            <strong class="cell-link" onclick="viewAgent(<?=(int)$replacedAgent['id']?>, '<?=h(addslashes(trim($replacedAgent['first_name'] . ' ' . $replacedAgent['last_name'])))?>')" title="Ouvrir la fiche"><?=h(trim($replacedAgent['first_name'] . ' ' . $replacedAgent['last_name']))?></strong>
+            <?php if ($req['replaced_agent_email']): ?><span class="muted" style="font-size:.8rem;"> — <?=h($req['replaced_agent_email'])?></span><?php endif; ?>
+            <div style="margin-top:.6rem;"><?=requestEquipmentHtml($pdo, (int)$replacedAgent['id'])?></div>
+            <div class="muted" style="font-size:.75rem;margin-top:.5rem;">💡 Matériel / lignes à récupérer ou transférer au nouvel agent.</div>
+            <?php else: ?>
+            <span><?=h($req['replaced_agent_name'] ?: 'Nom non précisé')?></span>
+            <div class="muted" style="font-size:.78rem;margin-top:.4rem;">Agent introuvable au référentiel — aucune dotation connue dans l'outil.</div>
+            <?php endif; ?>
           </div>
           <?php endif; ?>
           <?php if (in_array($req['status'], ['a_qualifier', 'en_validation', 'validee'], true)): ?>
@@ -5652,6 +5953,18 @@ elseif ($page === 'requests') {
       <div style="padding:1.5rem;">
       <?php if ($req['status'] === 'a_qualifier'): ?>
         <p class="muted" style="margin-bottom:1rem;">Circuit pré-rempli depuis le service (« <?=h($req['service_name'] ?: '—')?> ») et les paramètres. Ajustez librement (libellé, valideur, e-mail, ordre), puis lancez : chaque valideur recevra un lien personnel, l'un après l'autre. <a href="?page=refs&tab=services" style="color:var(--primary);">Compléter les valideurs des services →</a></p>
+        <?php if ($savedCircuits): ?>
+        <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem .9rem;">
+          <span style="font-size:.82rem;color:var(--text2);white-space:nowrap;">📚 Circuit enregistré :</span>
+          <select id="circuit-preset" style="flex:1;min-width:220px;">
+            <option value="">— Circuit par défaut (service + paramètres) —</option>
+            <?php foreach ($savedCircuits as $c): $cSteps = json_decode($c['steps'] ?: '[]', true) ?: []; ?>
+            <option value="<?=(int)$c['id']?>"><?=h($c['name'])?> (<?=count($cSteps)?> étape<?=count($cSteps) > 1 ? 's' : ''?>)</option>
+            <?php endforeach; ?>
+          </select>
+          <span class="muted" style="font-size:.75rem;">Remplace les étapes ci-dessous (modifiables ensuite). <a href="?page=refs&tab=settings&sub=requests" style="color:var(--primary);">Gérer les circuits →</a></span>
+        </div>
+        <?php endif; ?>
         <form method="post" action="index.php">
           <?=csrf_field()?>
           <input type="hidden" name="_entity" value="request">
@@ -5679,7 +5992,7 @@ elseif ($page === 'requests') {
           </div>
         </form>
         <script>
-        function circuitAddRow() {
+        function circuitAddRow(step) {
           const tb = document.querySelector('#circuit-table tbody');
           const tr = document.createElement('tr');
           tr.innerHTML = '<td style="color:var(--text3);">＋</td>'
@@ -5687,8 +6000,26 @@ elseif ($page === 'requests') {
             + '<td style="position:relative;"><input type="text" class="circuit-name" name="step_name[]" placeholder="Prénom Nom" autocomplete="off"><div class="adp-box circuit-suggest"></div></td>'
             + '<td><input type="email" class="circuit-email" name="step_email[]" placeholder="valideur@collectivite.fr"></td>'
             + '<td><button type="button" class="btn-icon btn-del" onclick="this.closest(\'tr\').remove()"><i class="bi bi-x-lg"></i></button></td>';
+          if (step) {
+            tr.querySelector('[name="step_label[]"]').value = step.label || '';
+            tr.querySelector('[name="step_name[]"]').value  = step.name  || '';
+            tr.querySelector('[name="step_email[]"]').value = step.email || '';
+          }
           tb.appendChild(tr);
         }
+        // ── Circuits enregistrés (Paramètres) : recharge le tableau d'étapes ──
+        (function(){
+          const sel = document.getElementById('circuit-preset');
+          if (!sel) return;
+          const CIRCUITS = <?=json_encode(array_column(array_map(fn($c) => ['id' => (int)$c['id'], 'steps' => json_decode($c['steps'] ?: '[]', true) ?: []], $savedCircuits), null, 'id'), JSON_UNESCAPED_UNICODE)?>;
+          const DEFAULT_STEPS = <?=json_encode(array_map(fn($ds) => ['label' => $ds['label'], 'name' => $ds['name'], 'email' => $ds['email']], $draftSteps), JSON_UNESCAPED_UNICODE)?>;
+          sel.addEventListener('change', function(){
+            const steps = this.value ? ((CIRCUITS[this.value] || {}).steps || []) : DEFAULT_STEPS;
+            document.querySelector('#circuit-table tbody').innerHTML = '';
+            steps.forEach(s => circuitAddRow(s));
+            if (!steps.length) circuitAddRow();
+          });
+        })();
         // ── Autocomplétion annuaire (AD + référentiel) sur le champ Valideur ──
         // Délégation : couvre les lignes initiales ET celles ajoutées ensuite.
         // Sélectionner une personne remplit le valideur ET son e-mail sur la ligne.

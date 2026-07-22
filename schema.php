@@ -264,6 +264,17 @@ function simcity_apply_schema(PDO $pdo): void
         INDEX idx_reqsteps_email (validator_email)
     ) ENGINE=InnoDB;");
 
+    // Circuits de validation réutilisables (modèles proposés à la
+    // qualification d'une demande) : steps = JSON [{label, name, email}, …].
+    // Le circuit reste FIGÉ sur la demande (request_steps) : modifier un
+    // modèle ne touche pas les demandes déjà lancées.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS request_circuits (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        name       VARCHAR(100) NOT NULL,
+        steps      TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB;");
+
     // ── Tentatives de connexion (anti-brute-force) ───────────
     $pdo->exec("CREATE TABLE IF NOT EXISTS login_attempts (
         id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -379,6 +390,19 @@ function simcity_apply_schema(PDO $pdo): void
     // notification (le circuit part sur l'adresse de base paramétrée).
     if (empty($pdo->query("SHOW COLUMNS FROM requests LIKE 'agent_email'")->fetchAll())) {
         $pdo->exec("ALTER TABLE requests ADD COLUMN agent_email VARCHAR(150) NULL AFTER agent_fonction");
+    }
+
+    // requests.requester_name : identité du demandeur (affichée sur la fiche
+    // admin à côté de son e-mail).
+    if (empty($pdo->query("SHOW COLUMNS FROM requests LIKE 'requester_name'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE requests ADD COLUMN requester_name VARCHAR(200) NULL AFTER motivation");
+    }
+
+    // requests.replaced_agent_email : e-mail de l'agent remplacé (pré-rempli
+    // depuis l'AD) — rapprochement fiable avec le référentiel pour afficher
+    // sa dotation actuelle à la DSI.
+    if (empty($pdo->query("SHOW COLUMNS FROM requests LIKE 'replaced_agent_email'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE requests ADD COLUMN replaced_agent_email VARCHAR(150) NULL AFTER replaced_agent_name");
     }
 
     // agents.fonction : intitulé de poste de la fiche utilisateur (pré-rempli
