@@ -466,12 +466,23 @@ function requestMailButton($url, $label) {
 // Gabarit d'e-mail commun (demandes, bons, notifications) : structure en
 // tables imbriquées — le rendu HTML moderne (flex, max-width sur div) est
 // ignoré par Outlook, qui reste le client des destinataires internes.
-function requestMailShell($title, $inner) {
+// Avec $pdo, le logo uploadé (celui des bons PDF) est affiché dans le
+// bandeau — jamais le logo SVG embarqué, qu'Outlook ne sait pas afficher.
+function requestMailShell($title, $inner, $pdo = null) {
+    $logoImg = '';
+    if ($pdo) {
+        $lp = getSetting($pdo, 'pdf_logo_path', '');
+        if ($lp && file_exists($lp) && !preg_match('/\.svg$/i', $lp)) {
+            $root = preg_replace('~/index\.php$~', '', baseUrl($pdo));
+            $logoImg = '<img src="' . h($root . '/' . str_replace('\\', '/', $lp)) . '" alt="" style="max-height:44px;display:block;margin-bottom:12px;">';
+        }
+    }
     return '<!DOCTYPE html><html lang="fr"><body style="margin:0;padding:0;background-color:#eef1f6;">'
          . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef1f6"><tr><td align="center" style="padding:32px 12px;">'
          . '<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;">'
          // Bandeau
          . '<tr><td bgcolor="#4f46e5" style="background:#4f46e5;background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);border-radius:12px 12px 0 0;padding:26px 36px;">'
+         . $logoImg
          . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:bold;color:#ffffff;">📱 SimCity</div>'
          . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#c7d2fe;letter-spacing:1px;text-transform:uppercase;margin-top:4px;">Gestion de la flotte mobile</div>'
          . '</td></tr>'
@@ -485,6 +496,60 @@ function requestMailShell($title, $inner) {
          . '<p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#94a3b8;">Message automatique envoyé par SimCity — merci de ne pas répondre.</p>'
          . '</td></tr>'
          . '</table></td></tr></table></body></html>';
+}
+
+// ─── Gabarits d'e-mails personnalisables ──────────────────────
+// Chaque e-mail de l'application a un gabarit par défaut (sujet, titre,
+// corps HTML) surchargé par les réglages mail_tpl_<clé>_* de la table
+// settings (Paramètres → Envoi d'e-mails). Les variables {xxx} sont
+// remplacées à l'envoi ; celles marquées « peut être vide » arrivent
+// déjà formatées (préfixe/suffixe inclus) ou vides.
+function mailTemplates(): array {
+    return [
+        'test' => ['label' => 'E-mail de test SMTP', 'vars' => [],
+            'subject' => 'Test SMTP — SimCity', 'title' => 'E-mail de test',
+            'body' => '<p>Ceci est un e-mail de test envoyé depuis <strong>SimCity</strong> pour vérifier la configuration SMTP.</p><p>Si vous recevez ce message, l\'envoi d\'e-mails fonctionne correctement.</p>'],
+        'accuse' => ['label' => 'Accusé de réception au demandeur',
+            'vars' => ['numero' => 'n° de la demande', 'beneficiaire' => 'nom du bénéficiaire', 'bouton' => 'bouton « Suivre ma demande »'],
+            'subject' => 'Demande de téléphone {numero} enregistrée', 'title' => 'Demande enregistrée',
+            'body' => '<p>Bonjour,</p><p>Votre demande de téléphone <strong>{numero}</strong> pour <strong>{beneficiaire}</strong> a bien été enregistrée.</p><p>Elle va être examinée par la DSI puis suivre le circuit de validation. Vous pouvez suivre son avancement à tout moment :</p>{bouton}'],
+        'nouvelle' => ['label' => 'Nouvelle demande (notification DSI)',
+            'vars' => ['numero' => 'n° de la demande', 'type' => 'type de demande', 'beneficiaire' => 'nom du bénéficiaire', 'fonction' => 'fonction entre parenthèses (peut être vide)', 'email_beneficiaire' => 'ligne e-mail (peut être vide)', 'service' => 'service', 'demandeur' => 'nom du demandeur', 'email_demandeur' => 'e-mail du demandeur', 'bouton' => 'bouton « Qualifier la demande »'],
+            'subject' => 'Nouvelle demande de téléphone {numero} — {beneficiaire}', 'title' => 'Nouvelle demande',
+            'body' => '<p>Une nouvelle demande de téléphone vient d\'être déposée :</p><p><strong>{numero}</strong> — {type}<br>Bénéficiaire : <strong>{beneficiaire}</strong>{fonction}{email_beneficiaire}<br>Service : {service}<br>Demandeur : <strong>{demandeur}</strong> ({email_demandeur})</p>{bouton}'],
+        'visa' => ['label' => 'Visa requis (valideur du circuit)',
+            'vars' => ['validateur' => 'nom du valideur, précédé d\'une espace (peut être vide)', 'rappel' => 'paragraphe de rappel (vide hors relance)', 'numero' => 'n° de la demande', 'type' => 'type de demande', 'beneficiaire' => 'nom du bénéficiaire', 'service' => 'service, précédé de « — service » (peut être vide)', 'etape' => 'libellé du visa', 'bouton' => 'bouton « Examiner et viser »', 'lien' => 'URL du lien de visa'],
+            'subject' => 'Visa requis — Demande de téléphone {numero}', 'title' => 'Visa requis',
+            'body' => '<p>Bonjour{validateur},</p>{rappel}<p>La demande de téléphone <strong>{numero}</strong> ({type}) pour <strong>{beneficiaire}</strong>{service} attend votre visa <strong>« {etape} »</strong>.</p>{bouton}<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="{lien}" style="color:#4f46e5;">{lien}</a></p><p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>'],
+        'validee' => ['label' => 'Demande validée (notification DSI)',
+            'vars' => ['numero' => 'n° de la demande', 'beneficiaire' => 'nom du bénéficiaire', 'lien' => 'URL de la demande dans SimCity'],
+            'subject' => 'Demande {numero} validée — à traiter', 'title' => 'Demande validée',
+            'body' => '<p>La demande <strong>{numero}</strong> ({beneficiaire}) a terminé son circuit de validation.</p><p>Vous pouvez attribuer le matériel et générer le bon de remise.</p><p style="font-size:13px;color:#666;"><a href="{lien}" style="color:#4f46e5;">Ouvrir la demande dans SimCity</a></p>'],
+        'refusee' => ['label' => 'Demande refusée (notification DSI)',
+            'vars' => ['numero' => 'n° de la demande', 'beneficiaire' => 'nom du bénéficiaire', 'etape' => 'libellé du visa', 'valideur' => 'nom du valideur, précédé de « par » (peut être vide)', 'avis' => 'avis motivé', 'lien' => 'URL de la demande dans SimCity'],
+            'subject' => 'Demande {numero} refusée', 'title' => 'Demande refusée',
+            'body' => '<p>La demande <strong>{numero}</strong> ({beneficiaire}) a été refusée au visa « {etape} »{valideur}.</p><p>Avis : {avis}</p><p style="font-size:13px;color:#666;"><a href="{lien}" style="color:#4f46e5;">Ouvrir la demande dans SimCity</a></p>'],
+        'suivi' => ['label' => 'Liens de suivi (rappel au demandeur)',
+            'vars' => ['liste' => 'liste HTML des demandes en cours'],
+            'subject' => 'Vos demandes de téléphone en cours', 'title' => 'Vos liens de suivi',
+            'body' => '<p>Voici les demandes de téléphone en cours associées à votre adresse et leur lien de suivi :</p>{liste}<p style="font-size:13px;color:#666;">Ces liens sont personnels — ne les partagez pas.</p>'],
+        'bon' => ['label' => 'Signature d\'un bon (remise/restitution)',
+            'vars' => ['prenom' => 'prénom du signataire', 'type_bon' => '« remise » ou « restitution »', 'numero' => 'n° du bon', 'bouton' => 'bouton « Signer le bon »', 'lien' => 'URL du lien de signature', 'expiration' => 'paragraphe de validité (peut être vide)'],
+            'subject' => 'Signature requise — Bon de {type_bon} {numero}', 'title' => 'Signature requise',
+            'body' => '<p>Bonjour {prenom},</p><p>Le bon de <strong>{type_bon} de matériel</strong> n° <strong>{numero}</strong> vous attend pour signature électronique.</p>{bouton}<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="{lien}" style="color:#4f46e5;">{lien}</a></p>{expiration}'],
+    ];
+}
+
+// Rendu d'un gabarit : [sujet, corps HTML complet]. Les valeurs de $vars
+// sont déjà échappées/HTML par l'appelant.
+function mailRender($pdo, $key, array $vars = []): array {
+    $t = mailTemplates()[$key];
+    $subject = trim(getSetting($pdo, "mail_tpl_{$key}_subject", '')) ?: $t['subject'];
+    $title   = trim(getSetting($pdo, "mail_tpl_{$key}_title", ''))   ?: $t['title'];
+    $body    = trim(getSetting($pdo, "mail_tpl_{$key}_body", ''))    ?: $t['body'];
+    $repl = [];
+    foreach ($vars as $k => $v) $repl['{' . $k . '}'] = (string)$v;
+    return [strtr($subject, $repl), requestMailShell(strtr($title, $repl), strtr($body, $repl), $pdo)];
 }
 
 // Circuit par défaut : les 4 visas du formulaire papier. Les valideurs
@@ -505,14 +570,18 @@ function requestDefaultSteps($pdo, $serviceId) {
 function requestSendStepEmail($pdo, $req, $step, $isReminder = false) {
     if (empty($step['validator_email'])) return "Aucune adresse e-mail pour l'étape « {$step['label']} ».";
     $url = baseUrl($pdo) . '?page=valider&token=' . $step['token'];
-    $inner = '<p>Bonjour' . ($step['validator_name'] ? ' ' . h($step['validator_name']) : '') . ',</p>'
-           . ($isReminder ? '<p style="color:#c2410c;"><strong>Rappel :</strong> cette demande attend votre avis depuis plusieurs jours.</p>' : '')
-           . '<p>La demande de téléphone <strong>' . h($req['numero']) . '</strong> (' . h(requestTypeLabel($req['type'])) . ') pour <strong>' . h($req['agent_name']) . '</strong>'
-           . ($req['service_name'] ? ' — service ' . h($req['service_name']) : '') . ' attend votre visa <strong>« ' . h($step['label']) . ' »</strong>.</p>'
-           . requestMailButton($url, '👁️ Examiner et viser la demande')
-           . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '">' . h($url) . '</a></p>'
-           . '<p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>';
-    $res = smtpSendMail($pdo, $step['validator_email'], ($isReminder ? 'Rappel — ' : '') . "Visa requis — Demande de téléphone {$req['numero']}", requestMailShell('Visa requis', $inner));
+    [$subject, $html] = mailRender($pdo, 'visa', [
+        'validateur'   => $step['validator_name'] ? ' ' . h($step['validator_name']) : '',
+        'rappel'       => $isReminder ? '<p style="color:#c2410c;"><strong>Rappel :</strong> cette demande attend votre avis depuis plusieurs jours.</p>' : '',
+        'numero'       => h($req['numero']),
+        'type'         => h(requestTypeLabel($req['type'])),
+        'beneficiaire' => h($req['agent_name']),
+        'service'      => $req['service_name'] ? ' — service ' . h($req['service_name']) : '',
+        'etape'        => h($step['label']),
+        'bouton'       => requestMailButton($url, '👁️ Examiner et viser la demande'),
+        'lien'         => h($url),
+    ]);
+    $res = smtpSendMail($pdo, $step['validator_email'], ($isReminder ? 'Rappel — ' : '') . $subject, $html);
     if ($res === true) {
         $pdo->prepare("UPDATE request_steps SET " . ($isReminder ? 'reminded_at' : 'notified_at') . "=NOW() WHERE id=?")->execute([(int)$step['id']]);
     }
@@ -541,8 +610,8 @@ function requestAdvance($pdo, $reqId) {
     $notify = trim(getSetting($pdo, 'request_notify_email', ''));
     if ($notify) {
         $adm = baseUrl($pdo) . '?page=requests&view=' . (int)$reqId;
-        smtpSendMail($pdo, $notify, "Demande {$req['numero']} validée — à traiter",
-            requestMailShell('Demande validée', '<p>La demande <strong>' . h($req['numero']) . '</strong> (' . h($req['agent_name']) . ') a terminé son circuit de validation.</p><p>Vous pouvez attribuer le matériel et générer le bon de remise.</p><p style="font-size:13px;color:#666;"><a href="' . h($adm) . '">Ouvrir la demande dans SimCity</a></p>'));
+        [$subject, $html] = mailRender($pdo, 'validee', ['numero' => h($req['numero']), 'beneficiaire' => h($req['agent_name']), 'lien' => h($adm)]);
+        smtpSendMail($pdo, $notify, $subject, $html);
     }
 }
 
@@ -802,8 +871,8 @@ if (isset($_GET['ajax_request_send_links'])) {
                 $url = baseUrl($pdo) . '?page=demande_suivi&token=' . $r['track_token'];
                 $items .= '<p style="margin:.5rem 0;"><strong>' . h($r['numero']) . '</strong> — ' . h($r['agent_name']) . ' <span style="color:#666;">(' . h($lbl) . ')</span><br><a href="' . h($url) . '">' . h($url) . '</a></p>';
             }
-            smtpSendMail($pdo, $email, "Vos demandes de téléphone — liens de suivi",
-                requestMailShell('Vos liens de suivi', '<p>Voici les demandes de téléphone en cours associées à votre adresse et leur lien de suivi :</p>' . $items . '<p style="font-size:13px;color:#666;">Ces liens sont personnels — ne les partagez pas.</p>'));
+            [$subject, $html] = mailRender($pdo, 'suivi', ['liste' => $items]);
+            smtpSendMail($pdo, $email, $subject, $html);
             $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('req_links', 0, ?, 'Formulaire public')")->execute([$email]);
         }
     }
@@ -887,18 +956,24 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
             $notify = trim(getSetting($pdo, 'request_notify_email', ''));
             if ($notify) {
                 $adm = baseUrl($pdo) . '?page=requests&view=' . $reqId;
-                smtpSendMail($pdo, $notify, "Nouvelle demande de téléphone $numero — $agentName",
-                    requestMailShell('Nouvelle demande', '<p>Une nouvelle demande de téléphone vient d\'être déposée :</p>'
-                    . '<p><strong>' . h($numero) . '</strong> — ' . h(requestTypeLabel($type)) . '<br>Bénéficiaire : <strong>' . h($agentName) . '</strong>' . ($fonction ? ' (' . h($fonction) . ')' : '') . ($agentEmail ? '<br>E-mail : ' . h($agentEmail) : '') . '<br>Service : ' . h($svcRow['name']) . '<br>Demandeur : <strong>' . h($requesterName) . '</strong> (' . h($requesterEmail) . ')</p>'
-                    . requestMailButton($adm, 'Qualifier la demande')));
+                [$subject, $html] = mailRender($pdo, 'nouvelle', [
+                    'numero' => h($numero), 'type' => h(requestTypeLabel($type)),
+                    'beneficiaire' => h($agentName),
+                    'fonction' => $fonction ? ' (' . h($fonction) . ')' : '',
+                    'email_beneficiaire' => $agentEmail ? '<br>E-mail : ' . h($agentEmail) : '',
+                    'service' => h($svcRow['name']),
+                    'demandeur' => h($requesterName), 'email_demandeur' => h($requesterEmail),
+                    'bouton' => requestMailButton($adm, 'Qualifier la demande'),
+                ]);
+                smtpSendMail($pdo, $notify, $subject, $html);
             }
             // 2) Accusé de réception au demandeur (l'e-mail qu'il a saisi) : simple
             //    confirmation + lien de suivi. N'intervient pas dans le circuit.
-            smtpSendMail($pdo, $requesterEmail, "Demande de téléphone $numero enregistrée",
-                requestMailShell('Demande enregistrée', '<p>Bonjour,</p>'
-                . '<p>Votre demande de téléphone <strong>' . h($numero) . '</strong> pour <strong>' . h($agentName) . '</strong> a bien été enregistrée.</p>'
-                . '<p>Elle va être examinée par la DSI puis suivre le circuit de validation. Vous pouvez suivre son avancement à tout moment :</p>'
-                . requestMailButton($suivi, '📍 Suivre ma demande')));
+            [$subject, $html] = mailRender($pdo, 'accuse', [
+                'numero' => h($numero), 'beneficiaire' => h($agentName),
+                'bouton' => requestMailButton($suivi, '📍 Suivre ma demande'),
+            ]);
+            smtpSendMail($pdo, $requesterEmail, $subject, $html);
 
             header('Location: ?page=demande&ok=' . urlencode($numero) . '&t=' . $track); exit;
         }
@@ -1326,9 +1401,12 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
                         $notify = trim(getSetting($pdo, 'request_notify_email', ''));
                         if ($notify) {
                             $adm = baseUrl($pdo) . '?page=requests&view=' . (int)$req['id'];
-                            smtpSendMail($pdo, $notify, "Demande {$req['numero']} refusée",
-                                requestMailShell('Demande refusée', '<p>La demande <strong>' . h($req['numero']) . '</strong> (' . h($req['agent_name']) . ') a été refusée au visa « ' . h($step['label']) . ' »' . ($name ? ' par ' . h($name) : '') . '.</p><p>Avis : ' . h($avis) . '</p>'
-                                . '<p style="font-size:13px;color:#666;"><a href="' . h($adm) . '">Ouvrir la demande dans SimCity</a></p>'));
+                            [$subject, $html] = mailRender($pdo, 'refusee', [
+                                'numero' => h($req['numero']), 'beneficiaire' => h($req['agent_name']),
+                                'etape' => h($step['label']), 'valideur' => $name ? ' par ' . h($name) : '',
+                                'avis' => h($avis), 'lien' => h($adm),
+                            ]);
+                            smtpSendMail($pdo, $notify, $subject, $html);
                         }
                     }
                 }
@@ -3258,13 +3336,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $typeLbl = $b['type'] === 'remise' ? 'remise' : 'restitution';
                     $url     = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
                     $expFmt  = $b['expires_at'] ? date('d/m/Y', strtotime($b['expires_at'])) : null;
-                    $html = requestMailShell('Signature requise',
-                            '<p>Bonjour ' . h($b['first_name']) . ',</p>'
-                          . '<p>Le bon de <strong>' . $typeLbl . ' de matériel</strong> n° <strong>' . h($b['numero']) . '</strong> vous attend pour signature électronique.</p>'
-                          . requestMailButton($url, '✍️ Signer le bon')
-                          . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '" style="color:#4f46e5;">' . h($url) . '</a></p>'
-                          . ($expFmt ? '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . $expFmt . '</strong>.</p>' : ''));
-                    $res = smtpSendMail($pdo, $b['email'], "Signature requise — Bon de $typeLbl {$b['numero']}", $html);
+                    [$subject, $html] = mailRender($pdo, 'bon', [
+                        'prenom' => h($b['first_name']), 'type_bon' => $typeLbl, 'numero' => h($b['numero']),
+                        'bouton' => requestMailButton($url, '✍️ Signer le bon'), 'lien' => h($url),
+                        'expiration' => $expFmt ? '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . $expFmt . '</strong>.</p>' : '',
+                    ]);
+                    $res = smtpSendMail($pdo, $b['email'], $subject, $html);
                     if ($res === true) {
                         logHistory($pdo, 'agent', (int)$b['agent_id'], "📧 Lien de signature du bon {$b['numero']} envoyé à {$b['email']}", (int)$b['agent_id']);
                         flash('success', "Lien de signature envoyé à {$b['email']}.");
@@ -3556,57 +3633,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 [$ok, $msg] = ldap_test_connection();
                 flash($ok ? 'success' : 'error', ($ok ? '🔌 ' : '') . $msg);
             }
+        } elseif ($ent === 'mail_tpl') {
+            // Personnalisation des gabarits d'e-mails : un champ vide efface
+            // la surcharge (retour au gabarit par défaut).
+            $up = $pdo->prepare("INSERT INTO settings (setting_key, setting_value, label) VALUES (?,?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)");
+            foreach (array_keys(mailTemplates()) as $tk) {
+                foreach (['subject' => 'Sujet', 'title' => 'Titre', 'body' => 'Corps'] as $part => $lbl) {
+                    $val = trim((string)($d["tpl_{$part}"][$tk] ?? ''));
+                    $up->execute(["mail_tpl_{$tk}_{$part}", $val, "$lbl e-mail « {$tk} » (vide = défaut)"]);
+                }
+            }
+            logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "Modification des gabarits d'e-mails");
+            flash('success', 'Gabarits d\'e-mails enregistrés.');
         } elseif ($ent === 'smtp_test') {
             // Envoi d'un e-mail de test avec la configuration SMTP enregistrée
             $to = fmtEmail(trim($d['test_email'] ?? ''));
             if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
                 flash('error', "Renseignez une adresse e-mail de destination valide pour le test.");
             } else {
-                // Le test envoie un exemplaire de CHAQUE gabarit d'e-mail de
-                // l'application, avec des données fictives [DÉMO] : on juge le
-                // rendu réel dans le client de messagerie, pas un aperçu.
-                $url = baseUrl($pdo);
-                $samples = [
-                    ['[DÉMO] Test SMTP — SimCity', 'E-mail de test',
-                        '<p>Ceci est un e-mail de test envoyé depuis <strong>SimCity</strong> pour vérifier la configuration SMTP.</p>'
-                      . '<p>Si vous recevez ce message, l\'envoi d\'e-mails fonctionne correctement.</p>'],
-                    ['[DÉMO] Demande de téléphone DEM-0000 enregistrée', 'Demande enregistrée',
-                        '<p>Bonjour,</p><p>Votre demande de téléphone <strong>DEM-0000</strong> pour <strong>Jean EXEMPLE</strong> a bien été enregistrée.</p>'
-                      . '<p>Elle va être examinée par la DSI puis suivre le circuit de validation. Vous pouvez suivre son avancement à tout moment :</p>'
-                      . requestMailButton($url, '📍 Suivre ma demande')],
-                    ['[DÉMO] Nouvelle demande de téléphone DEM-0000 — Jean EXEMPLE', 'Nouvelle demande',
-                        '<p>Une nouvelle demande de téléphone vient d\'être déposée :</p>'
-                      . '<p><strong>DEM-0000</strong> — Première attribution<br>Bénéficiaire : <strong>Jean EXEMPLE</strong> (Chargé de mission)<br>Service : DSI<br>Demandeur : <strong>Marie DÉMO</strong> (marie.demo@exemple.fr)</p>'
-                      . requestMailButton($url, 'Qualifier la demande')],
-                    ['[DÉMO] Visa requis — Demande de téléphone DEM-0000', 'Visa requis',
-                        '<p>Bonjour Marie DÉMO,</p>'
-                      . '<p>La demande de téléphone <strong>DEM-0000</strong> (Première attribution) pour <strong>Jean EXEMPLE</strong> — service DSI attend votre visa <strong>« Direction du service »</strong>.</p>'
-                      . requestMailButton($url, '👁️ Examiner et viser la demande')
-                      . '<p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>'],
-                    ['[DÉMO] Demande DEM-0000 validée — à traiter', 'Demande validée',
-                        '<p>La demande <strong>DEM-0000</strong> (Jean EXEMPLE) a terminé son circuit de validation.</p>'
-                      . '<p>Vous pouvez attribuer le matériel et générer le bon de remise.</p>'
-                      . '<p style="font-size:13px;color:#666;"><a href="' . h($url) . '" style="color:#4f46e5;">Ouvrir la demande dans SimCity</a></p>'],
-                    ['[DÉMO] Demande DEM-0000 refusée', 'Demande refusée',
-                        '<p>La demande <strong>DEM-0000</strong> (Jean EXEMPLE) a été refusée au visa « D.G.A. de secteur » par Paul DÉMO.</p>'
-                      . '<p>Avis : dotation existante suffisante.</p>'],
-                    ['[DÉMO] Signature requise — Bon de remise BR-0000', 'Signature requise',
-                        '<p>Bonjour Jean,</p>'
-                      . '<p>Le bon de <strong>remise de matériel</strong> n° <strong>BR-0000</strong> vous attend pour signature électronique.</p>'
-                      . requestMailButton($url, '✍️ Signer le bon')
-                      . '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
+                // Envoie les gabarits cochés avec des données fictives [DÉMO] :
+                // on juge le rendu réel (et les personnalisations) dans le
+                // client de messagerie, pas un aperçu.
+                $url = h(baseUrl($pdo));
+                $demoVars = [
+                    'test'     => [],
+                    'accuse'   => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'bouton' => requestMailButton($url, '📍 Suivre ma demande')],
+                    'nouvelle' => ['numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'fonction' => ' (Chargé de mission)', 'email_beneficiaire' => '<br>E-mail : jean.exemple@exemple.fr', 'service' => 'DSI', 'demandeur' => 'Marie DÉMO', 'email_demandeur' => 'marie.demo@exemple.fr', 'bouton' => requestMailButton($url, 'Qualifier la demande')],
+                    'visa'     => ['validateur' => ' Marie DÉMO', 'rappel' => '', 'numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'service' => ' — service DSI', 'etape' => 'Direction du service', 'bouton' => requestMailButton($url, '👁️ Examiner et viser la demande'), 'lien' => $url],
+                    'validee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'lien' => $url],
+                    'refusee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'etape' => 'D.G.A. de secteur', 'valideur' => ' par Paul DÉMO', 'avis' => 'Dotation existante suffisante.', 'lien' => $url],
+                    'suivi'    => ['liste' => '<p style="margin:.5rem 0;"><strong>DEM-0000</strong> — Jean EXEMPLE <span style="color:#666;">(🟡 En validation)</span><br><a href="' . $url . '" style="color:#4f46e5;">' . $url . '</a></p>'],
+                    'bon'      => ['prenom' => 'Jean', 'type_bon' => 'remise', 'numero' => 'BR-0000', 'bouton' => requestMailButton($url, '✍️ Signer le bon'), 'lien' => $url, 'expiration' => '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
                 ];
-                $sent = 0; $err = null;
-                foreach ($samples as [$subject, $title, $inner]) {
-                    $res = smtpSendMail($pdo, $to, $subject, requestMailShell($title, $inner));
-                    if ($res === true) $sent++; elseif ($err === null) $err = $res;
-                }
-                if ($sent === count($samples)) {
-                    flash('success', "📧 $sent e-mails de démonstration envoyés à $to (un par gabarit) — vérifiez la boîte de réception (et les indésirables).");
-                } elseif ($sent > 0) {
-                    flash('error', "Envoi partiel : $sent/" . count($samples) . " e-mails partis. Première erreur : $err");
+                $keys = array_values(array_intersect(array_keys($demoVars), (array)($d['tpl'] ?? [])));
+                if (!$keys) {
+                    flash('error', "Cochez au moins un e-mail à tester.");
                 } else {
-                    flash('error', "Échec de l'envoi : $err");
+                    $sent = 0; $err = null;
+                    foreach ($keys as $key) {
+                        [$subject, $html] = mailRender($pdo, $key, $demoVars[$key]);
+                        $res = smtpSendMail($pdo, $to, '[DÉMO] ' . $subject, $html);
+                        if ($res === true) $sent++; elseif ($err === null) $err = $res;
+                    }
+                    if ($sent === count($keys)) {
+                        flash('success', "📧 $sent e-mail(s) de démonstration envoyé(s) à $to — vérifiez la boîte de réception (et les indésirables).");
+                    } elseif ($sent > 0) {
+                        flash('error', "Envoi partiel : $sent/" . count($keys) . " e-mails partis. Première erreur : $err");
+                    } else {
+                        flash('error', "Échec de l'envoi : $err");
+                    }
                 }
             }
         } elseif ($ent === 'admin') {
@@ -3954,7 +4029,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'ldap_test', 'smtp_test'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -5043,11 +5118,64 @@ elseif ($page === 'refs') {
           <input type="hidden" name="_entity" value="smtp_test">
           <input type="hidden" name="_action" value="test">
           <label style="display:block;font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.4rem;">Tester l'envoi</label>
+          <div style="display:flex;flex-wrap:wrap;gap:.35rem 1.1rem;margin-bottom:.75rem;">
+            <?php foreach (mailTemplates() as $tk => $tpl): ?>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.84rem;cursor:pointer;">
+              <input type="checkbox" name="tpl[]" value="<?=h($tk)?>" <?=$tk==='test'?'checked':''?> style="width:14px;height:14px;accent-color:var(--primary);">
+              <span><?=h($tpl['label'])?></span>
+            </label>
+            <?php endforeach; ?>
+          </div>
           <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;">
             <input type="email" name="test_email" placeholder="destinataire@exemple.fr" required value="<?=h($smtpTestTo)?>" style="flex:1;min-width:220px;">
-            <button type="submit" class="btn-secondary">📧 Envoyer les e-mails de test</button>
+            <button type="submit" class="btn-secondary">📧 Envoyer les e-mails cochés</button>
           </div>
-          <small style="color:var(--text3);">Utilise la configuration <strong>enregistrée</strong> (enregistrez d'abord vos modifications). Envoie un exemplaire de chaque gabarit avec des données fictives [DÉMO].</small>
+          <small style="color:var(--text3);">Utilise la configuration <strong>enregistrée</strong> (enregistrez d'abord vos modifications). Chaque e-mail part avec des données fictives, sujet préfixé [DÉMO].</small>
+        </form>
+      </div>
+
+      <!-- Personnalisation des gabarits d'e-mails -->
+      <div class="card" style="break-inside:avoid;">
+        <div class="card-header"><i class="bi bi-envelope-paper"></i> Personnalisation des e-mails</div>
+        <form method="post" style="padding:1.25rem 1.5rem 1.5rem;">
+          <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+          <input type="hidden" name="_entity" value="mail_tpl">
+          <input type="hidden" name="_action" value="save">
+          <p style="color:var(--text2);font-size:.85rem;line-height:1.6;margin-bottom:1rem;">
+            Sujet, titre et corps (HTML) de chaque e-mail. Un champ laissé <strong>vide</strong> reprend le gabarit par défaut.
+            Les variables <code style="font-family:var(--font-mono);">{xxx}</code> sont remplacées à l'envoi.
+          </p>
+          <?php foreach (mailTemplates() as $tk => $tpl):
+              $ovS = getSetting($pdo, "mail_tpl_{$tk}_subject", '');
+              $ovT = getSetting($pdo, "mail_tpl_{$tk}_title", '');
+              $ovB = getSetting($pdo, "mail_tpl_{$tk}_body", '');
+              $customized = trim($ovS) !== '' || trim($ovT) !== '' || trim($ovB) !== '';
+          ?>
+          <details style="border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:.6rem;">
+            <summary style="cursor:pointer;padding:.65rem .9rem;font-size:.88rem;font-weight:600;">
+              <?=h($tpl['label'])?><?=$customized ? ' <span class="badge badge-info" style="font-size:.68rem;">personnalisé</span>' : ''?>
+            </summary>
+            <div style="padding:.35rem .9rem .9rem;">
+              <div class="form-group form-full"><label>Sujet</label>
+                <input type="text" name="tpl_subject[<?=h($tk)?>]" value="<?=h($ovS)?>" placeholder="<?=h($tpl['subject'])?>"></div>
+              <div class="form-group form-full"><label>Titre (bandeau du message)</label>
+                <input type="text" name="tpl_title[<?=h($tk)?>]" value="<?=h($ovT)?>" placeholder="<?=h($tpl['title'])?>"></div>
+              <div class="form-group form-full"><label>Corps (HTML)</label>
+                <textarea name="tpl_body[<?=h($tk)?>]" rows="5" style="font-family:var(--font-mono);font-size:.78rem;" placeholder="<?=h($tpl['body'])?>"><?=h($ovB)?></textarea></div>
+              <?php if ($tpl['vars']): ?>
+              <div style="font-size:.76rem;color:var(--text3);line-height:1.7;">
+                <strong>Variables :</strong>
+                <?php foreach ($tpl['vars'] as $vk => $vd): ?>
+                  <code style="font-family:var(--font-mono);">{<?=h($vk)?>}</code> <?=h($vd)?> ·
+                <?php endforeach; ?>
+              </div>
+              <?php endif; ?>
+            </div>
+          </details>
+          <?php endforeach; ?>
+          <div style="margin-top:1rem;text-align:right;">
+            <button type="submit" class="btn-primary">💾 Enregistrer les gabarits</button>
+          </div>
         </form>
       </div>
 
