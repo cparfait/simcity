@@ -3690,10 +3690,29 @@ if ($page === 'dashboard') {
         <div id="dash-search-results" style="display:none; position:absolute; top:100%; left:0; right:0; background:var(--card); border:1px solid var(--border); border-radius:var(--radius); margin-top:.5rem; overflow:hidden; box-shadow:var(--shadow-lg); z-index:100;"></div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem">
-        <a href="?page=refs&tab=agents" class="shortcut-btn shortcut-resa"><span class="shortcut-icon"><i class="bi bi-person"></i></span><span class="shortcut-label">Nouvel Utilisateur</span><span class="shortcut-sub">Créer un agent pour attribution</span></a>
-        <a href="?page=lines&open=modal-add-line" class="shortcut-btn shortcut-order"><span class="shortcut-icon"><i class="bi bi-sim"></i></span><span class="shortcut-label">Nouvelle Ligne</span><span class="shortcut-sub">Créer abonnement ou SIM</span></a>
-        <a href="?page=devices&open=modal-add-device" class="shortcut-btn shortcut-in"><span class="shortcut-icon"><i class="bi bi-phone"></i></span><span class="shortcut-label">Nouveau Matériel</span><span class="shortcut-sub">Ajouter un téléphone en stock</span></a>
+      <!-- Blocs fusionnés : chiffre clé (→ liste) + action d'ajout, par entité -->
+      <div class="kpi-row">
+        <div class="kpi-card kpi-green">
+          <a href="?page=refs&tab=agents" class="kpi-main">
+            <div class="kpi-icon"><i class="bi bi-building"></i></div>
+            <div class="kpi-info"><span class="kpi-val"><?=$pdo->query("SELECT COUNT(*) FROM agents WHERE archived=0")->fetchColumn()?></span><span class="kpi-label">Utilisateurs</span></div>
+          </a>
+          <a href="?page=refs&tab=agents&open=modal-add-agent" class="kpi-add" title="Créer un utilisateur"><i class="bi bi-plus-lg"></i> Nouvel utilisateur</a>
+        </div>
+        <div class="kpi-card kpi-blue">
+          <a href="?page=lines&tab=active" class="kpi-main">
+            <div class="kpi-icon"><i class="bi bi-telephone"></i></div>
+            <div class="kpi-info"><span class="kpi-val"><?=h($cLinesAct)?></span><span class="kpi-label">Lignes actives</span><span class="kpi-sub"><?=$cLinesStk?> en stock (non attribuée<?=($cLinesStk > 1 ? 's' : '')?>)</span></div>
+          </a>
+          <a href="?page=lines&open=modal-add-line" class="kpi-add" title="Créer une ligne / SIM"><i class="bi bi-plus-lg"></i> Nouvelle ligne</a>
+        </div>
+        <div class="kpi-card kpi-violet">
+          <a href="?page=devices&tab=active" class="kpi-main">
+            <div class="kpi-icon"><i class="bi bi-phone"></i></div>
+            <div class="kpi-info"><span class="kpi-val"><?=h($cDevDep)?></span><span class="kpi-label">Mobiles déployés</span><span class="kpi-sub"><?=$cDevStk?> <?=($cDevStk > 1 ? 'terminaux' : 'terminal')?> en stock</span></div>
+          </a>
+          <a href="?page=devices&open=modal-add-device" class="kpi-add" title="Ajouter un matériel"><i class="bi bi-plus-lg"></i> Nouveau matériel</a>
+        </div>
       </div>
 
       <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $bonsExpired > 0 || $bonsExpSoon > 0 || $reqToQualify > 0 || $reqValidated > 0 || $reqStalled > 0): ?>
@@ -3727,20 +3746,6 @@ if ($page === 'dashboard') {
           </ul>
       </div>
       <?php endif; ?>
-
-      <div class="kpi-row">
-        <a href="?page=lines&tab=active" class="kpi-card kpi-blue" style="text-decoration:none">
-          <div class="kpi-icon"><i class="bi bi-telephone"></i></div><div class="kpi-info"><span class="kpi-val"><?=h($cLinesAct)?></span><span class="kpi-label">Lignes Actives</span></div>
-          <div class="kpi-sub"><?=$cLinesStk?> ligne<?=($cLinesStk > 1 ? 's' : '')?> en stock (non attribuée<?=($cLinesStk > 1 ? 's' : '')?>)</div>
-        </a>
-        <a href="?page=devices&tab=active" class="kpi-card kpi-violet" style="text-decoration:none">
-          <div class="kpi-icon"><i class="bi bi-phone"></i></div><div class="kpi-info"><span class="kpi-val"><?=h($cDevDep)?></span><span class="kpi-label">Mobiles Déployés</span></div>
-          <div class="kpi-sub"><?=$cDevStk?> <?=($cDevStk > 1 ? 'terminaux' : 'terminal')?> en stock</div>
-        </a>
-        <a href="?page=refs&tab=agents" class="kpi-card kpi-green" style="text-decoration:none">
-          <div class="kpi-icon"><i class="bi bi-building"></i></div><div class="kpi-info"><span class="kpi-val"><?=$pdo->query("SELECT COUNT(*) FROM agents WHERE archived=0")->fetchColumn()?></span><span class="kpi-label">Utilisateurs</span></div>
-        </a>
-      </div>
 
       <?php if($pendingBons): ?>
       <div class="card">
@@ -3803,11 +3808,19 @@ if ($page === 'dashboard') {
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem; margin-top:1rem; margin-bottom:1rem;">
           <div class="card" style="margin-bottom:0;">
               <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;"><span><i class="bi bi-phone"></i> Répartition par marque</span><a href="?page=devices" class="card-see-all">Voir tout <i class="bi bi-arrow-right"></i></a></div>
-              <div style="padding:1rem; height:250px;"><canvas id="chartBrand"></canvas></div>
+              <div style="padding:1rem; height:250px;">
+                <?php if(empty($brands)): ?>
+                <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--text3);font-size:.88rem;gap:.35rem;"><i class="bi bi-bar-chart" style="font-size:1.6rem;opacity:.5;"></i>Aucun matériel enregistré.</div>
+                <?php else: ?><canvas id="chartBrand"></canvas><?php endif; ?>
+              </div>
           </div>
           <div class="card" style="margin-bottom:0;">
               <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;"><span><i class="bi bi-building"></i> Top 5 Services (Lignes actives)</span><a href="?page=refs&tab=services" class="card-see-all">Voir tout <i class="bi bi-arrow-right"></i></a></div>
-              <div style="padding:1rem; height:250px;"><canvas id="chartSvc"></canvas></div>
+              <div style="padding:1rem; height:250px;">
+                <?php if(empty($svcs)): ?>
+                <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--text3);font-size:.88rem;gap:.35rem;padding:0 1rem;"><i class="bi bi-building" style="font-size:1.6rem;opacity:.5;"></i>Aucune ligne active rattachée à un service.<br><span style="font-size:.8rem;">Assignez un service aux lignes pour voir la répartition.</span></div>
+                <?php else: ?><canvas id="chartSvc"></canvas><?php endif; ?>
+              </div>
           </div>
       </div>
 
@@ -3834,8 +3847,11 @@ if ($page === 'dashboard') {
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-        if(document.getElementById('chartBrand')){
-            new Chart(document.getElementById('chartBrand'), {
+        // Chaque graphique est indépendant : un canvas absent (aucune donnée →
+        // message affiché à la place) n'empêche pas l'autre de s'initialiser.
+        const elBrand = document.getElementById('chartBrand');
+        if(elBrand){
+            new Chart(elBrand, {
                 type: 'doughnut',
                 data: {
                     labels: <?php echo json_encode($brands); ?>,
@@ -3847,8 +3863,10 @@ if ($page === 'dashboard') {
                 },
                 options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } } }
             });
-
-            new Chart(document.getElementById('chartSvc'), {
+        }
+        const elSvc = document.getElementById('chartSvc');
+        if(elSvc){
+            new Chart(elSvc, {
                 type: 'bar',
                 data: {
                     labels: <?php echo json_encode($svcs); ?>,
@@ -5852,12 +5870,17 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary)
 .modal-header{padding:1.25rem 1.5rem;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;position:sticky;top:0;background:var(--card);z-index:1} .modal-close{background:none;border:none;color:var(--text3);font-size:1.1rem;cursor:pointer} .modal-close:hover{color:var(--text);}
 .modal form{padding:1.5rem;} .modal-footer{display:flex;justify-content:flex-end;gap:.75rem;padding-top:1.25rem;border-top:1px solid var(--border);margin-top:1.25rem}
 .dashboard-grid{display:flex;flex-direction:column;gap:1.5rem;} .kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem;}
-.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;display:flex;align-items:center;gap:1rem;position:relative;overflow:hidden;cursor:pointer;box-shadow:var(--shadow);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
+.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;display:flex;align-items:center;gap:1rem;position:relative;overflow:hidden;box-shadow:var(--shadow);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
 .kpi-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;} .kpi-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--border2);}
 .kpi-blue::before{background:#4f46e5;}
 .kpi-violet::before{background:#7c3aed;}
 .kpi-green::before{background:#059669;}
 .kpi-icon{font-size:2rem;} .kpi-val{font-family:var(--font-mono);font-size:1.7rem;font-weight:600;line-height:1.1;color:var(--text-strong);letter-spacing:-.01em;} .kpi-label{font-size:.74rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;}
+.kpi-main{display:flex;align-items:center;gap:1rem;flex:1;min-width:0;text-decoration:none;color:inherit;}
+.kpi-info{display:flex;flex-direction:column;min-width:0;}
+.kpi-sub{font-size:.75rem;color:var(--text2);margin-top:.15rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.kpi-add{flex-shrink:0;display:inline-flex;align-items:center;gap:.35rem;padding:.45rem .85rem;border-radius:999px;background:var(--primary-dim);color:var(--primary);font-size:.76rem;font-weight:600;text-decoration:none;white-space:nowrap;transition:background-color .15s,color .15s;}
+.kpi-add:hover{background:var(--primary);color:#fff;}
 .shortcut-btn{display:flex;flex-direction:column;gap:.35rem;padding:1.25rem;border-radius:var(--radius);border:1px solid var(--border);text-decoration:none;transition:border-color .2s;} .shortcut-btn:hover{border-color:var(--primary);}
 .shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(79,70,229,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
 .tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);margin-bottom:-2px;z-index:2;}
