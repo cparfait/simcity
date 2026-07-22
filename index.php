@@ -2420,14 +2420,22 @@ if (!isset($_SESSION['user_id'])) {
     <link rel="icon" type="image/svg+xml" href="index.php?logo=1"><?php echo uiPrimaryCssOverride($pdo); ?>
     <link href="vendor/plex.css" rel="stylesheet">
     <style>
-        :root{--primary:#4f46e5;--primary-dark:#4338ca;--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
+        :root{--primary:#4f46e5;--primary-dark:#4338ca;--primary-glow:rgba(79,70,229,.35);--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
         .login-logo{height:56px;width:56px;object-fit:contain;display:block;margin:0 auto 8px;}
-        body{background:linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#1e3a6b 100%);color:var(--text);font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box;}
+        <?php
+            // Fond du login : dégradé sombre dérivé de la couleur du site si
+            // définie, sinon le bleu nuit d'origine.
+            $lc = uiPrimaryColor($pdo);
+            $loginBg = $lc !== ''
+                ? 'linear-gradient(135deg,' . uiColorMix($lc, -0.85) . ' 0%,' . uiColorMix($lc, -0.7) . ' 55%,' . uiColorMix($lc, -0.45) . ' 100%)'
+                : 'linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#1e3a6b 100%)';
+        ?>
+        body{background:<?=$loginBg?>;color:var(--text);font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box;}
         .login-box{background:var(--card);padding:36px 32px;border-radius:14px;border:1px solid var(--border);width:100%;max-width:400px;box-shadow:0 12px 28px rgba(15,23,42,.35),0 4px 10px rgba(15,23,42,.2);}
         h2{text-align:center;margin-top:0;font-size:1.6rem;font-weight:700;color:var(--text-strong);}
         label{font-size:.82rem;font-weight:600;color:var(--text);}
         input{width:100%;padding:9px 12px;margin-top:5px;background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:.9rem;box-sizing:border-box;transition:border-color .18s ease,box-shadow .18s ease;}
-        input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.35);}
+        input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-glow);}
         input::placeholder{color:var(--text-light);opacity:.75;font-style:italic;}
         button{width:100%;padding:11px;background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:var(--radius);font-weight:600;font-size:.95rem;margin-top:1.5rem;cursor:pointer;transition:background-color .18s ease;}
         button:hover{background:var(--primary-dark);}
