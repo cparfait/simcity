@@ -228,6 +228,11 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
             <p class="ts">Signé le <?=date('d/m/Y à H:i')?></p>
             <p class="close-hint">👍 Vous pouvez fermer cet onglet.</p>
           </div>
+          <script>
+          // Prévient les autres onglets SimCity (Historique, fiche agent, tableau
+          // de bord) qu'une signature vient d'aboutir → ils se rechargent.
+          try { localStorage.setItem('simcity_bon_signed', String(Date.now())); } catch(e) {}
+          </script>
         </body></html>
         <?php exit;
         }
@@ -2664,6 +2669,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         flash('error', 'Erreur de sécurité (jeton CSRF invalide). Veuillez recharger la page et réessayer.');
         $redirect = 'index.php?page=' . ($_GET['page'] ?? 'dashboard');
         if (isset($_GET['tab'])) $redirect .= '&tab=' . $_GET['tab'];
+        if (isset($_GET['sub'])) $redirect .= '&sub=' . preg_replace('/[^a-z]/', '', $_GET['sub']);
         header('Location: ' . $redirect); exit;
     }
 
@@ -3202,7 +3208,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         } catch (Throwable $e) {
                             flash('error', "Échec de la restauration : " . $e->getMessage() . " — la base peut être incohérente ; restaurez la sauvegarde de sécurité.");
                         }
-                        header('Location: index.php?page=refs&tab=settings'); exit;
+                        header('Location: index.php?page=refs&tab=settings' . (isset($_GET['sub']) ? '&sub=' . preg_replace('/[^a-z]/', '', $_GET['sub']) : '')); exit;
                     }
                 }
             }
@@ -3612,7 +3618,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $detail = (defined('APP_DEBUG') && APP_DEBUG) ? ' — ' . $e->getMessage() : '';
         flash('error', "L'opération a échoué et a été annulée (aucune donnée modifiée)$detail.");
     }
-    $redirect = 'index.php?page=' . ($_GET['page'] ?? 'dashboard'); if(isset($_GET['tab'])) $redirect .= '&tab='.$_GET['tab']; header('Location: ' . $redirect); exit;
+    $redirect = 'index.php?page=' . ($_GET['page'] ?? 'dashboard'); if(isset($_GET['tab'])) $redirect .= '&tab='.$_GET['tab']; if(isset($_GET['sub'])) $redirect .= '&sub='.preg_replace('/[^a-z]/', '', $_GET['sub']); header('Location: ' . $redirect); exit;
 }
 
 // ─── 7. ROUTAGE & VUES ────────────────────────────────────────
@@ -3685,9 +3691,9 @@ if ($page === 'dashboard') {
       </div>
 
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1rem">
+        <a href="?page=refs&tab=agents" class="shortcut-btn shortcut-resa"><span class="shortcut-icon"><i class="bi bi-person"></i></span><span class="shortcut-label">Nouvel Utilisateur</span><span class="shortcut-sub">Créer un agent pour attribution</span></a>
         <a href="?page=lines&open=modal-add-line" class="shortcut-btn shortcut-order"><span class="shortcut-icon"><i class="bi bi-sim"></i></span><span class="shortcut-label">Nouvelle Ligne</span><span class="shortcut-sub">Créer abonnement ou SIM</span></a>
         <a href="?page=devices&open=modal-add-device" class="shortcut-btn shortcut-in"><span class="shortcut-icon"><i class="bi bi-phone"></i></span><span class="shortcut-label">Nouveau Matériel</span><span class="shortcut-sub">Ajouter un téléphone en stock</span></a>
-        <a href="?page=refs&tab=agents" class="shortcut-btn shortcut-resa"><span class="shortcut-icon"><i class="bi bi-person"></i></span><span class="shortcut-label">Nouvel Utilisateur</span><span class="shortcut-sub">Créer un agent pour attribution</span></a>
       </div>
 
       <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $bonsExpired > 0 || $bonsExpSoon > 0 || $reqToQualify > 0 || $reqValidated > 0 || $reqStalled > 0): ?>
@@ -3908,7 +3914,7 @@ elseif ($page === 'lines') {
 
     $lines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.pin, l.puk, l.agent_id, l.billing_id, l.plan_id, l.service_id, l.device_id, l.activation_date, l.options_details, l.status, l.notes, l.archived, l.created_at, IFNULL(l.personal_device,0) as personal_device, IFNULL(l.sim_vierge,0) as sim_vierge, IFNULL(l.esim,0) as esim, l.eid, l.activation_code, a.first_name, a.last_name, s.name as service_name, b.account_number, p.name as plan_name, IFNULL(o.name,'') as operator_name, d.imei, d.serial_number, m.brand, m.name as model_name FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id LEFT JOIN billing_accounts b ON l.billing_id=b.id LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id LEFT JOIN devices d ON l.device_id=d.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY l.created_at DESC")->fetchAll();
     
-    $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
+    $agents = $pdo->query("SELECT id, first_name, last_name, service_id FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     $plans = $pdo->query("SELECT p.id, p.name, IFNULL(o.name,'') as operator_name FROM plan_types p LEFT JOIN operators o ON p.operator_id=o.id ORDER BY o.name, p.name")->fetchAll();
     $billings = $pdo->query("SELECT id, account_number, name FROM billing_accounts ORDER BY name")->fetchAll();
@@ -4036,7 +4042,7 @@ elseif ($page === 'lines') {
           </label>
           <?php endif; ?>
         </div>
-        <div class="form-group"><label>Utilisateur affecté</label><div class="qa-row"><select name="agent_id" id="<?=$act?>-agent_id"><option value="">-- Sélectionner dans le référentiel --</option><?php foreach($agents as $a): ?><option value="<?=$a['id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('agent','<?=$act?>-agent_id')" title="Ajouter un utilisateur"><i class="bi bi-plus-lg"></i></button></div></div>
+        <div class="form-group"><label>Utilisateur affecté</label><div class="qa-row"><select name="agent_id" id="<?=$act?>-agent_id" onchange="syncServiceFromAgent(this,'<?=$act?>')"><option value="">-- Sélectionner dans le référentiel --</option><?php foreach($agents as $a): ?><option value="<?=$a['id']?>" data-service="<?=(int)$a['service_id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('agent','<?=$act?>-agent_id')" title="Ajouter un utilisateur"><i class="bi bi-plus-lg"></i></button></div></div>
         <div class="form-group"><label>Compte de Facturation</label><div class="qa-row"><select name="billing_id" id="<?=$act?>-billing_id"><option value="">-- Sélectionner --</option><?php foreach($billings as $b): ?><option value="<?=$b['id']?>"><?=h($b['account_number'].' - '.$b['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('billing','<?=$act?>-billing_id')" title="Ajouter un compte de facturation"><i class="bi bi-plus-lg"></i></button></div></div>
         <div class="form-group"><label>Forfait</label><div class="qa-row"><select name="plan_id" id="<?=$act?>-plan_id"><option value="">-- Sélectionner --</option><?php foreach($plans as $p): ?><option value="<?=$p['id']?>"><?= $p['operator_name'] ? h($p['operator_name']).' — ' : '' ?><?=h($p['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('plan','<?=$act?>-plan_id')" title="Ajouter un forfait"><i class="bi bi-plus-lg"></i></button></div></div>
         <div class="form-group"><label>Service / Direction</label><div class="qa-row"><select name="service_id" id="<?=$act?>-service_id"><option value="">-- Sélectionner --</option><?php foreach($services as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('service','<?=$act?>-service_id')" title="Ajouter un service"><i class="bi bi-plus-lg"></i></button></div></div>
@@ -4254,7 +4260,7 @@ elseif ($page === 'devices') {
         FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC")->fetchAll();
     
     $models = $pdo->query("SELECT id, brand, name FROM models ORDER BY brand, name")->fetchAll();
-    $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
+    $agents = $pdo->query("SELECT id, first_name, last_name, service_id FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     ?>
     <?php if(!$isArchive): ?>
@@ -4389,8 +4395,8 @@ elseif ($page === 'devices') {
         </div>
         <div class="form-group"><label>Utilisateur (Agent)</label>
           <div class="qa-row">
-          <select name="agent_id" id="<?=$act?>-agent_id"><option value="">-- Aucun --</option>
-          <?php foreach($agents as $a): ?><option value="<?=$a['id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select>
+          <select name="agent_id" id="<?=$act?>-agent_id" onchange="syncServiceFromAgent(this,'<?=$act?>')"><option value="">-- Aucun --</option>
+          <?php foreach($agents as $a): ?><option value="<?=$a['id']?>" data-service="<?=(int)$a['service_id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select>
           <button type="button" class="btn-quickadd" onclick="quickAddOpen('agent','<?=$act?>-agent_id')" title="Ajouter un utilisateur"><i class="bi bi-plus-lg"></i></button>
           </div>
         </div>
@@ -5434,7 +5440,7 @@ elseif ($page === 'requests') {
             $ss->execute([$viewId]);
             $steps = $ss->fetchAll();
             [$stLbl, $stCls] = requestStatusInfo($req['status']);
-            $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
+            $agents = $pdo->query("SELECT id, first_name, last_name, service_id FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
             $linkedAgent = $req['agent_id'] ? $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=" . (int)$req['agent_id'])->fetch() : null;
             $bonRow = $req['bon_id'] ? $pdo->query("SELECT * FROM bons WHERE id=" . (int)$req['bon_id'])->fetch() : null;
             $smtpConfigured = trim(smtpSetting($pdo, 'smtp_host', '')) !== '';
@@ -5521,8 +5527,8 @@ elseif ($page === 'requests') {
             <tr>
               <td style="color:var(--text3);"><?=$i + 1?></td>
               <td><input type="text" name="step_label[]" value="<?=h($ds['label'])?>" placeholder="ex : Direction du service"></td>
-              <td><input type="text" name="step_name[]" value="<?=h($ds['name'])?>" placeholder="Prénom Nom"></td>
-              <td><input type="email" name="step_email[]" value="<?=h($ds['email'])?>" placeholder="valideur@collectivite.fr" <?=$ds['email'] === '' ? 'style="border-color:rgba(245,158,11,.6);"' : ''?>></td>
+              <td style="position:relative;"><input type="text" class="circuit-name" name="step_name[]" value="<?=h($ds['name'])?>" placeholder="Prénom Nom" autocomplete="off"><div class="adp-box circuit-suggest"></div></td>
+              <td><input type="email" class="circuit-email" name="step_email[]" value="<?=h($ds['email'])?>" placeholder="valideur@collectivite.fr" <?=$ds['email'] === '' ? 'style="border-color:rgba(245,158,11,.6);"' : ''?>></td>
               <td><button type="button" class="btn-icon btn-del" title="Retirer cette étape" onclick="this.closest('tr').remove()"><i class="bi bi-x-lg"></i></button></td>
             </tr>
             <?php endforeach; ?>
@@ -5541,11 +5547,52 @@ elseif ($page === 'requests') {
           const tr = document.createElement('tr');
           tr.innerHTML = '<td style="color:var(--text3);">＋</td>'
             + '<td><input type="text" name="step_label[]" placeholder="Libellé du visa"></td>'
-            + '<td><input type="text" name="step_name[]" placeholder="Prénom Nom"></td>'
-            + '<td><input type="email" name="step_email[]" placeholder="valideur@collectivite.fr"></td>'
+            + '<td style="position:relative;"><input type="text" class="circuit-name" name="step_name[]" placeholder="Prénom Nom" autocomplete="off"><div class="adp-box circuit-suggest"></div></td>'
+            + '<td><input type="email" class="circuit-email" name="step_email[]" placeholder="valideur@collectivite.fr"></td>'
             + '<td><button type="button" class="btn-icon btn-del" onclick="this.closest(\'tr\').remove()"><i class="bi bi-x-lg"></i></button></td>';
           tb.appendChild(tr);
         }
+        // ── Autocomplétion annuaire (AD + référentiel) sur le champ Valideur ──
+        // Délégation : couvre les lignes initiales ET celles ajoutées ensuite.
+        // Sélectionner une personne remplit le valideur ET son e-mail sur la ligne.
+        (function(){
+          const table = document.getElementById('circuit-table');
+          if (!table) return;
+          const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+          table.addEventListener('input', e => {
+            const inp = e.target;
+            if (!inp.classList || !inp.classList.contains('circuit-name')) return;
+            const box = inp.parentElement.querySelector('.circuit-suggest');
+            const q = inp.value.trim();
+            clearTimeout(inp._t);
+            if (q.length < 2) { box.style.display='none'; box.innerHTML=''; return; }
+            inp._t = setTimeout(async () => {
+              try {
+                const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
+                const items = await r.json();
+                if (!Array.isArray(items) || !items.length) { box.style.display='none'; box.innerHTML=''; return; }
+                box.innerHTML = items.map((p,i) =>
+                  '<div class="adp-item" data-i="'+i+'"><strong>'+esc(p.name)+'</strong>'
+                  + (p.source==='ad' ? ' <span style="color:var(--info);font-size:.7rem;">AD</span>' : '')
+                  + '<br><span class="muted" style="font-size:.75rem;">'+esc([p.fonction,p.email].filter(Boolean).join(' · '))+'</span></div>').join('');
+                box.style.display='block';
+                const emailInp = inp.closest('tr').querySelector('.circuit-email');
+                [...box.querySelectorAll('.adp-item')].forEach(el => el.addEventListener('mousedown', ev => {
+                  ev.preventDefault(); const p = items[+el.dataset.i];
+                  inp.value = p.name || '';
+                  if (emailInp && p.email) { emailInp.value = p.email; emailInp.style.borderColor=''; }
+                  box.style.display='none'; box.innerHTML='';
+                }));
+              } catch(err) { box.style.display='none'; }
+            }, 250);
+          });
+          table.addEventListener('focusout', e => {
+            if (e.target.classList && e.target.classList.contains('circuit-name')) {
+              const box = e.target.parentElement.querySelector('.circuit-suggest');
+              setTimeout(() => { if (box) { box.style.display='none'; } }, 150);
+            }
+          });
+        })();
         </script>
       <?php else: ?>
         <table class="data-table" style="font-size:.86rem;">
@@ -5652,12 +5699,22 @@ elseif ($page === 'requests') {
         }
     } else {
         // ── LISTE DES DEMANDES ───────────────────────────────────
+        // Deux onglets : « En cours » (à traiter) et « Terminées »
+        // (livrées / refusées / annulées).
+        $reqClosed      = ($_GET['closed'] ?? '') === '1';
+        $openStatuses   = "'a_qualifier','en_validation','validee'";
+        $closedStatuses = "'livree','refusee','annulee'";
+        $reqCounts = $pdo->query("SELECT
+                SUM(status IN ($openStatuses))   AS en_cours,
+                SUM(status IN ($closedStatuses)) AS terminees
+            FROM requests")->fetch();
         $reqs = $pdo->query("SELECT r.*,
                 DATE_FORMAT(r.created_at, '%d/%m/%Y') as created_fmt,
                 (SELECT label FROM request_steps s WHERE s.request_id=r.id AND s.ordre=r.current_step LIMIT 1) as current_label,
                 (SELECT COUNT(*) FROM request_steps s WHERE s.request_id=r.id) as nb_steps,
                 (SELECT COUNT(*) FROM request_steps s WHERE s.request_id=r.id AND s.decision='approuve') as nb_ok
             FROM requests r
+            WHERE r.status IN (" . ($reqClosed ? $closedStatuses : $openStatuses) . ")
             ORDER BY FIELD(r.status, 'a_qualifier', 'en_validation', 'validee', 'livree', 'refusee', 'annulee'), r.created_at DESC")->fetchAll();
         $publicUrl = baseUrl($pdo) . '?page=demande';
     ?>
@@ -5668,6 +5725,11 @@ elseif ($page === 'requests') {
         <button type="button" class="btn-secondary" style="font-size:.78rem;padding:.35rem .8rem;" onclick="copySignLink(this, '<?=h($publicUrl)?>')">📋 Copier</button>
       </div>
       <a href="<?=h($publicUrl)?>" target="_blank" class="btn-primary" style="text-decoration:none;">➕ Nouvelle demande (formulaire)</a>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-bottom:1rem;border-bottom:2px solid var(--border);flex-wrap:wrap;">
+      <a href="?page=requests" class="tab-btn <?=!$reqClosed?'active':''?>"><i class="bi bi-hourglass-split"></i> En cours <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($reqCounts['en_cours'] ?? 0)?></span></a>
+      <a href="?page=requests&closed=1" class="tab-btn <?=$reqClosed?'active':''?>"><i class="bi bi-check2-circle"></i> Terminées <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($reqCounts['terminees'] ?? 0)?></span></a>
     </div>
 
     <div class="search-bar-wrap">
@@ -5681,7 +5743,7 @@ elseif ($page === 'requests') {
       <table class="data-table">
         <thead><tr><th>N°</th><th>Déposée le</th><th>Agent</th><th>Service</th><th>Type</th><th>Statut</th><th>Avancement</th><th>Actions</th></tr></thead>
         <tbody id="tbody-requests">
-        <?php if (!$reqs): ?><tr><td colspan="8" class="empty-cell">Aucune demande pour l'instant. Diffusez le lien du formulaire public ci-dessus.</td></tr><?php endif; ?>
+        <?php if (!$reqs): ?><tr><td colspan="8" class="empty-cell"><?=$reqClosed ? 'Aucune demande terminée pour l\'instant.' : 'Aucune demande en cours. Diffusez le lien du formulaire public ci-dessus.'?></td></tr><?php endif; ?>
         <?php foreach ($reqs as $r): [$lbl, $cls] = requestStatusInfo($r['status']); ?>
         <tr style="<?=in_array($r['status'], ['refusee', 'annulee'], true) ? 'opacity:.6;' : ''?>">
           <td><a href="?page=requests&view=<?=$r['id']?>" class="cell-link" style="font-family:var(--font-mono);font-weight:700;color:var(--primary);"><?=h($r['numero'])?></a></td>
@@ -5973,6 +6035,13 @@ function applyTheme(t){
 }
 function toggleTheme(){ applyTheme((localStorage.getItem('pm_theme')||'light')==='dark'?'light':'dark'); }
 applyTheme(localStorage.getItem('pm_theme')||'light');
+
+// Rafraîchissement inter-onglets : lorsqu'un bon est signé dans un autre onglet
+// (page de signature), l'événement « storage » se déclenche ici et recharge la
+// page pour refléter le nouveau statut (Historique, fiche agent, tableau de bord…).
+window.addEventListener('storage', function(e){
+  if (e.key === 'simcity_bon_signed') location.reload();
+});
 
 // COPIE DU LIEN DE SIGNATURE D'UN BON
 function copySignLink(btn, url) {
@@ -6388,6 +6457,14 @@ function statusFormCheck(act, cfg) {
     form.submit();                                         // « garder » ou « activer » : on enregistre
   });
   return false;   // bloque la soumission initiale ; la modale décide de la suite
+}
+// Auto-attribution du service : sélectionner un utilisateur pré-remplit le
+// champ « Service / Direction » avec le service de cet agent (modifiable).
+function syncServiceFromAgent(sel, act) {
+  if (!sel.value) return;   // « Aucun » agent : on ne modifie pas le service
+  const svc = sel.selectedOptions[0] ? sel.selectedOptions[0].getAttribute('data-service') : '';
+  const svcSel = document.getElementById(act + '-service_id');
+  if (svcSel) svcSel.value = (svc && svc !== '0') ? svc : '';
 }
 function lineFormCheck(act) {
   const simVierge = document.getElementById(act + '-sim_vierge');
