@@ -5669,9 +5669,9 @@ elseif ($page === 'refs') {
             <div class="form-group"><label>Nom</label><input type="text" name="name" id="<?=$act?>-name" required></div>
             <div class="form-group"><label>Direction</label><input type="text" name="direction" id="<?=$act?>-direction"></div>
             <div class="form-group form-full" style="margin-top:.25rem;padding-top:.75rem;border-top:1px dashed var(--border);"><span class="muted" style="font-size:.78rem;">Valideurs du circuit « Demandes de téléphone » — pré-remplis à chaque demande de ce service.</span></div>
-            <div class="form-group"><label>Chef de service (visa)</label><input type="text" name="chef_name" id="<?=$act?>-chef_name" placeholder="Prénom Nom"></div>
+            <div class="form-group"><label>Chef de service (visa)</label><div style="position:relative;"><input type="text" name="chef_name" id="<?=$act?>-chef_name" placeholder="Prénom Nom" autocomplete="off" data-svc-ad="<?=$act?>-chef_email"><div class="adp-box"></div></div></div>
             <div class="form-group"><label>E-mail du chef de service</label><input type="email" name="chef_email" id="<?=$act?>-chef_email" placeholder="chef@collectivite.fr"></div>
-            <div class="form-group"><label>D.G.A. de secteur (visa)</label><input type="text" name="dga_name" id="<?=$act?>-dga_name" placeholder="Prénom Nom"></div>
+            <div class="form-group"><label>D.G.A. de secteur (visa)</label><div style="position:relative;"><input type="text" name="dga_name" id="<?=$act?>-dga_name" placeholder="Prénom Nom" autocomplete="off" data-svc-ad="<?=$act?>-dga_email"><div class="adp-box"></div></div></div>
             <div class="form-group"><label>E-mail du D.G.A.</label><input type="email" name="dga_email" id="<?=$act?>-dga_email" placeholder="dga@collectivite.fr"></div>
             <div class="form-group form-full"><label>Notes</label><textarea name="notes" id="<?=$act?>-notes" rows="2"></textarea></div>
         <?php elseif ($ent === 'model'): ?>
@@ -6977,11 +6977,12 @@ const QA_OPERATORS = <?= json_encode($qaOpOpts) ?>;
 const QA_CONFIG = {
   service:  { title:'Ajouter un service',  icon:'building',  fields:[
     {name:'name',label:'Nom du service',required:true},{name:'direction',label:'Direction'},
-    {name:'chef_name',label:'Chef de service (visa)'},{name:'chef_email',label:'E-mail du chef de service'},
-    {name:'dga_name',label:'D.G.A. de secteur (visa)'},{name:'dga_email',label:'E-mail du D.G.A.'},
+    {name:'chef_name',label:'Chef de service (visa)',adEmail:'chef_email'},{name:'chef_email',label:'E-mail du chef de service'},
+    {name:'dga_name',label:'D.G.A. de secteur (visa)',adEmail:'dga_email'},{name:'dga_email',label:'E-mail du D.G.A.'},
     {name:'notes',label:'Notes',type:'textarea'}] },
   model:    { title:'Ajouter un modèle',   icon:'phone',     fields:[{name:'brand',label:'Marque',required:true},{name:'name',label:'Modèle',required:true},{name:'category',label:'Catégorie',type:'select',options:['Smartphone','Tablette','Clé 4G','Modem','Autre']}] },
   agent:    { title:'Ajouter un utilisateur', icon:'person', fields:[
+    {type:'adlookup',label:'Rechercher dans l\'annuaire (AD)'},
     {name:'first_name',label:'Prénom'},{name:'last_name',label:'Nom',required:true},
     {name:'fonction',label:'Fonction'},{name:'email',label:'E-mail'},
     {name:'service_id',label:'Service / Direction',type:'select',options:QA_SERVICES,emptyLabel:'-- Aucun --'}] },
@@ -6997,6 +6998,35 @@ const QA_CONFIG = {
     {name:'notes',label:'Notes',type:'textarea'}] },
 };
 let _qaEntity=null, _qaTarget=null;
+// Autocomplétion annuaire générique pour les modales d'ajout rapide :
+// interroge ajax_request_lookup (AD + référentiel local), affiche les
+// suggestions sous le champ et appelle onPick(personne) à la sélection.
+function qaBindLookup(inp, onPick){
+  const box = inp.parentElement.querySelector('.adp-box');
+  const esc = s => { const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; };
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim();
+    clearTimeout(inp._t);
+    if(q.length < 2){ box.style.display='none'; box.innerHTML=''; return; }
+    inp._t = setTimeout(async () => {
+      try {
+        const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
+        const items = await r.json();
+        if(!Array.isArray(items) || !items.length){ box.style.display='none'; box.innerHTML=''; return; }
+        box.innerHTML = items.map((p,i) =>
+          '<div class="adp-item" data-i="'+i+'"><strong>'+esc(p.name)+'</strong>'
+          + (p.source==='ad' ? ' <span style="color:var(--info);font-size:.7rem;">AD</span>' : '')
+          + '<br><span class="muted" style="font-size:.75rem;">'+esc([p.fonction,p.email].filter(Boolean).join(' · '))+'</span></div>').join('');
+        box.style.display='block';
+        [...box.querySelectorAll('.adp-item')].forEach(el => el.addEventListener('mousedown', ev => {
+          ev.preventDefault(); onPick(items[+el.dataset.i]);
+          box.style.display='none'; box.innerHTML='';
+        }));
+      } catch(err){ box.style.display='none'; }
+    }, 250);
+  });
+  inp.addEventListener('blur', () => setTimeout(() => { box.style.display='none'; }, 150));
+}
 function qaError(msg){ const b=document.getElementById('qa-error'); if(b){ b.textContent=msg||''; b.style.display=msg?'block':'none'; } }
 function quickAddOpen(entity, targetSelectId, prefill){
   const cfg = QA_CONFIG[entity]; if(!cfg) return;
@@ -7004,11 +7034,11 @@ function quickAddOpen(entity, targetSelectId, prefill){
   document.getElementById('qa-title').innerHTML = '<i class="bi bi-'+(cfg.icon||'plus-lg')+'"></i> ' + cfg.title;
   qaError('');
   const wrap = document.getElementById('qa-fields');
+  const esc = s => { const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; };
   wrap.innerHTML = cfg.fields.map(f => {
     const req = f.required ? ' <span style="color:var(--danger)">*</span>' : '';
     let input;
     if(f.type === 'select'){
-      const esc = s => { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; };
       const opts = (f.emptyLabel ? '<option value="">'+esc(f.emptyLabel)+'</option>' : '')
         + f.options.map(o => typeof o === 'object'
             ? '<option value="'+esc(o.value)+'">'+esc(o.label)+'</option>'
@@ -7016,11 +7046,33 @@ function quickAddOpen(entity, targetSelectId, prefill){
       input = '<select data-qa="'+f.name+'">' + opts + '</select>';
     } else if(f.type === 'textarea'){
       input = '<textarea data-qa="'+f.name+'" rows="2"></textarea>';
+    } else if(f.type === 'adlookup'){
+      // Champ de recherche annuaire, non soumis : remplit les autres champs
+      input = '<div style="position:relative;"><input type="text" data-adlookup="1" placeholder="🔎 Nom, prénom ou e-mail…" autocomplete="off"><div class="adp-box"></div></div>';
+    } else if(f.adEmail){
+      // Champ nom avec suggestion AD ; la sélection remplit aussi l'e-mail lié
+      input = '<div style="position:relative;"><input type="text" data-qa="'+f.name+'" data-ad-email="'+f.adEmail+'"'+(f.required?' data-req="1"':'')+' autocomplete="off"><div class="adp-box"></div></div>';
     } else {
       input = '<input type="text" data-qa="'+f.name+'"'+(f.required?' data-req="1"':'')+'>';
     }
     return '<div class="form-group"><label>'+f.label+req+'</label>'+input+'</div>';
   }).join('');
+  // Autocomplétion annuaire (AD + référentiel) sur les champs qui la déclarent
+  wrap.querySelectorAll('input[data-ad-email]').forEach(inp => {
+    qaBindLookup(inp, p => {
+      inp.value = p.name || '';
+      const e = wrap.querySelector('[data-qa="'+inp.getAttribute('data-ad-email')+'"]');
+      if(e && p.email) e.value = p.email;
+    });
+  });
+  wrap.querySelectorAll('input[data-adlookup]').forEach(inp => {
+    qaBindLookup(inp, p => {
+      const set = (k,v) => { const e = wrap.querySelector('[data-qa="'+k+'"]'); if(e && v) e.value = v; };
+      set('first_name', p.first_name); set('last_name', p.last_name);
+      set('email', p.email); set('fonction', p.fonction);
+      inp.value = p.name || '';
+    });
+  });
   // Pré-remplissage (ex : nom saisi dans un sélecteur d'agent avant « Créer »)
   if(prefill){ Object.keys(prefill).forEach(k=>{ const f = wrap.querySelector('[data-qa="'+k+'"]'); if(f) f.value = prefill[k]; }); }
   openModal('modal-quickadd');
@@ -7104,7 +7156,16 @@ function bindAgentAd(prefix){
   });
   search.addEventListener('blur', ()=>setTimeout(hide,150));
 }
-document.addEventListener('DOMContentLoaded', ()=>{ bindAgentAd('add'); bindAgentAd('edit'); });
+document.addEventListener('DOMContentLoaded', ()=>{
+  bindAgentAd('add'); bindAgentAd('edit');
+  // Recherche annuaire sur les valideurs (chef / DGA) des fiches service :
+  // la sélection remplit le nom et l'e-mail associé.
+  document.querySelectorAll('input[data-svc-ad]').forEach(inp => qaBindLookup(inp, p => {
+    inp.value = p.name || '';
+    const e = document.getElementById(inp.getAttribute('data-svc-ad'));
+    if(e && p.email) e.value = p.email;
+  }));
+});
 
 function openEditModal(data, ent){
   if(document.getElementById('edit-id-'+ent)) document.getElementById('edit-id-'+ent).value=data.id;
