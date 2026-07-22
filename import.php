@@ -60,19 +60,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Purge = destruction totale : réservée aux super-administrateurs
             // (cohérent avec la « zone dangereuse » de index.php).
             if (empty($_SESSION['is_admin'])) {
-                $message .= "<div style='background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-top:1rem;'>⛔ La purge de la base est réservée aux super-administrateurs.</div>";
+                $message .= "<div class='alert alert-err'>⛔ La purge de la base est réservée aux super-administrateurs.</div>";
                 goto render;
             }
             // Double confirmation requise pour la purge
             if (($_POST['confirm_purge'] ?? '') !== 'PURGER') {
-                $message .= "<div style='background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-top:1rem;'>⚠️ Vous devez saisir <strong>PURGER</strong> dans le champ de confirmation pour activer la purge.</div>";
+                $message .= "<div class='alert alert-err'>⚠️ Vous devez saisir <strong>PURGER</strong> dans le champ de confirmation pour activer la purge.</div>";
                 goto render;
             }
             $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
             $pdo->exec("DROP TABLE IF EXISTS bons, signatures, sign_tokens, sim_history, attachments, mobile_lines, devices, history_logs, agents, billing_accounts, plan_types, operators, models, services, settings");
             $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
             createTables($pdo);
-            $message .= "<p style='color:#059669;font-weight:bold;'>✅ Base purgée et structure V5.0 recréée.</p>";
+            $message .= "<div class='alert alert-ok'><i class='bi bi-check-circle-fill'></i> Base purgée et structure V5.0 recréée.</div>";
         }
 
         $caches = ['models'=>[], 'services'=>[], 'plan_types'=>[], 'billing_accounts'=>[], 'agents'=>[], 'operators'=>[]];
@@ -114,14 +114,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // ─── Validation du fichier CSV ────────────────────
             $maxCsvSize = 10 * 1024 * 1024; // 10 Mo max
             if ($_FILES['file_data']['size'] > $maxCsvSize) {
-                $message .= "<div style='background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-top:1rem;'>Fichier trop volumineux (max 10 Mo).</div>";
+                $message .= "<div class='alert alert-err'>Fichier trop volumineux (max 10 Mo).</div>";
                 goto render;
             }
             $finfo = new finfo(FILEINFO_MIME_TYPE);
             $mime  = $finfo->file($_FILES['file_data']['tmp_name']);
             $allowedCsvMime = ['text/plain','text/csv','application/csv','application/vnd.ms-excel','text/comma-separated-values'];
             if (!in_array($mime, $allowedCsvMime, true)) {
-                $message .= "<div style='background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-top:1rem;'>Type de fichier non autorisé. Veuillez envoyer un fichier CSV.</div>";
+                $message .= "<div class='alert alert-err'>Type de fichier non autorisé. Veuillez envoyer un fichier CSV.</div>";
                 goto render;
             }
 
@@ -225,9 +225,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             fclose($file);
 
             $message .= "
-            <div style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:1.25rem;margin-top:1rem;color:#1e40af;'>
-                🎉 <strong>Importation terminée avec succès !</strong><br><br>
-                <ul style='margin:.5rem 0 0 1.25rem;line-height:2;'>
+            <div class='alert alert-ok'>
+                <strong><i class='bi bi-check-circle-fill'></i> Importation terminée avec succès !</strong>
+                <ul class='stats-list'>
                     <li><b>{$stats['lines']}</b> lignes importées</li>
                     <li><b>{$stats['devices']}</b> matériels physiques</li>
                     <li><b>{$stats['agents']}</b> utilisateurs créés</li>
@@ -239,7 +239,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 </ul>
             </div>";
         } else {
-            $message .= "<div style='background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-top:1rem;'>Veuillez sélectionner un fichier CSV valide.</div>";
+            $message .= "<div class='alert alert-err'><i class='bi bi-exclamation-triangle-fill'></i> Veuillez sélectionner un fichier CSV valide.</div>";
         }
     }
 }
@@ -250,46 +250,75 @@ render:
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
-    <title>Importation CSV | SimCity</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;800&family=DM+Sans:wght@400;500&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Importation CSV – SimCity</title>
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="vendor/bootstrap-icons.css" rel="stylesheet">
+    <script>(function(){ if (localStorage.getItem('pm_theme') === 'dark') document.documentElement.setAttribute('data-theme','dark'); })();</script>
     <style>
-        :root{--primary:#4361ee;--danger:#ef4444;}
-        body{font-family:'DM Sans',sans-serif;background:#f1f5f9;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:1rem;}
-        .card{background:#fff;border-radius:16px;box-shadow:0 10px 40px rgba(0,0,0,.1);width:100%;max-width:640px;overflow:hidden;border:1px solid #e2e8f0;}
-        .card-header{background:var(--primary);padding:1.75rem;text-align:center;color:#fff;}
-        .card-header h1{font-family:'Outfit',sans-serif;font-size:1.6rem;margin:0;}
-        .card-header p{opacity:.8;font-size:.9rem;margin:.4rem 0 0;}
-        .card-body{padding:2rem;}
-        .field{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:1.25rem;margin-bottom:1rem;}
-        .field label{display:block;font-weight:700;color:#334155;margin-bottom:.4rem;}
-        .field p{font-size:.83rem;color:#64748b;margin:.25rem 0 .75rem;}
-        input[type=file],input[type=text]{width:100%;font-size:.85rem;color:#64748b;box-sizing:border-box;}
-        input[type=text]{padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:6px;margin-top:.4rem;background:#fff;color:#111;}
-        .warn{background:#fef2f2;border:1px solid #fecaca;border-radius:10px;padding:1rem;margin-bottom:1rem;font-size:.88rem;color:#991b1b;font-weight:600;}
-        .csrf-error{background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:1rem;color:#dc2626;margin-bottom:1rem;font-weight:600;}
-        .btn{width:100%;padding:1rem;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:1.05rem;font-weight:700;cursor:pointer;}
-        .btn:hover{background:#3451d1;}
-        .btn-link{display:inline-block;margin-top:1.25rem;padding:.75rem 2rem;background:var(--primary);color:#fff;text-decoration:none;border-radius:8px;font-weight:700;text-align:center;width:100%;box-sizing:border-box;}
-        .note{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:1rem;font-size:.82rem;color:#166534;margin-top:1rem;line-height:1.6;}
-        .back{display:inline-block;margin-top:1rem;color:var(--primary);font-size:.88rem;text-decoration:none;}
+    /* Design system aligné sur index.php (IBM Plex, indigo + slate, thème sombre) */
+    :root{--bg:#f8fafc;--bg2:#ffffff;--bg3:#f1f5f9;--card:#ffffff;--card2:#f1f5f9;--border:#e2e8f0;--border2:#cbd5e1;--primary:#4f46e5;--primary-dark:#4338ca;--primary-dim:rgba(79,70,229,.08);--success:#059669;--success-dim:#d1fae5;--danger:#dc2626;--danger-dim:#fee2e2;--warning:#d97706;--warning-dim:#fef3c7;--info:#2563eb;--info-dim:#dbeafe;--text:#334155;--text-strong:#0f172a;--text2:#64748b;--text3:#94a3b8;--radius:10px;--radius-sm:7px;--radius-lg:14px;--shadow-lg:0 12px 28px rgba(15,23,42,.12),0 4px 10px rgba(15,23,42,.06);--ring:0 0 0 3px rgba(79,70,229,.35);--font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular','Consolas',monospace;}
+    [data-theme="dark"]{--bg:#0b1120;--bg2:#111827;--bg3:#0f1b2d;--card:#1e293b;--card2:#233247;--border:#2b3a4f;--border2:#3a4a61;--primary:#818cf8;--primary-dark:#6366f1;--primary-dim:rgba(129,140,248,.14);--success:#34d399;--success-dim:#064e3b;--danger:#f87171;--danger-dim:#7f1d1d;--warning:#fbbf24;--warning-dim:#78350f;--info:#60a5fa;--info-dim:#1e3a5f;--text:#e2e8f0;--text-strong:#f8fafc;--text2:#94a3b8;--text3:#64748b;--shadow-lg:0 14px 32px rgba(0,0,0,.6);--ring:0 0 0 3px rgba(129,140,248,.35);}
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:.9rem;line-height:1.5;letter-spacing:-.005em;-webkit-font-smoothing:antialiased;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:2rem 1rem;transition:background-color .2s ease,color .2s ease;}
+    h1,h2,h3,h4{color:var(--text-strong)}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);width:100%;max-width:720px;overflow:hidden;}
+    .card-header{display:flex;align-items:center;gap:.9rem;padding:1.25rem 1.5rem;background:var(--bg2);border-bottom:1px solid var(--border);}
+    .card-header .ic{display:flex;align-items:center;justify-content:center;width:42px;height:42px;flex-shrink:0;border-radius:var(--radius-sm);background:var(--primary-dim);color:var(--primary);font-size:1.25rem;}
+    .card-header h1{font-size:1.05rem;font-weight:600;letter-spacing:-.01em;}
+    .card-header p{font-size:.82rem;color:var(--text2);margin-top:.15rem;}
+    .theme-btn{margin-left:auto;background:none;border:1px solid var(--border);color:var(--text2);border-radius:var(--radius-sm);width:34px;height:34px;cursor:pointer;font-size:.95rem;flex-shrink:0;}
+    .theme-btn:hover{background:var(--bg3);color:var(--text);}
+    .card-body{padding:1.5rem;}
+    .field{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem;margin-bottom:1rem;}
+    .field > label{display:block;font-weight:600;color:var(--text-strong);margin-bottom:.35rem;}
+    .field p{font-size:.82rem;color:var(--text2);margin:.25rem 0 .75rem;line-height:1.6;}
+    .field code{font-family:var(--font-mono);font-size:.8rem;background:var(--card2);border:1px solid var(--border);border-radius:4px;padding:.05rem .3rem;}
+    input[type=file]{width:100%;font-size:.85rem;color:var(--text2);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;}
+    input[type=file]::file-selector-button{font-family:var(--font);font-size:.82rem;font-weight:500;color:var(--text);background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.35rem .75rem;margin-right:.75rem;cursor:pointer;}
+    input[type=text]{width:100%;padding:.5rem .75rem;border:1px solid var(--border2);border-radius:var(--radius-sm);margin-top:.4rem;background:var(--card);color:var(--text);font-family:var(--font-mono);font-size:.85rem;}
+    input:focus-visible{outline:none;box-shadow:var(--ring);border-color:var(--primary);}
+    .danger-zone{background:var(--danger-dim);border:1px solid var(--danger);border-radius:var(--radius);padding:1.1rem;margin-bottom:1.25rem;font-size:.86rem;color:var(--danger);}
+    .danger-zone strong{color:var(--danger);}
+    .danger-zone small{color:var(--text2);display:block;margin-top:.3rem;}
+    .alert{border-radius:var(--radius);padding:1rem 1.1rem;margin-bottom:1.25rem;font-size:.86rem;line-height:1.6;}
+    .alert-err{background:var(--danger-dim);border:1px solid var(--danger);color:var(--danger);}
+    .alert-ok{background:var(--success-dim);border:1px solid var(--success);color:var(--success);}
+    .alert-ok strong{color:var(--success);}
+    .stats-list{list-style:none;margin-top:.75rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:.35rem .9rem;}
+    .stats-list li{color:var(--text);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.4rem .7rem;font-size:.83rem;}
+    .stats-list b{font-family:var(--font-mono);color:var(--text-strong);}
+    .note{background:var(--info-dim);border:1px solid var(--info);border-radius:var(--radius);padding:.9rem 1.1rem;font-size:.82rem;color:var(--text);margin-top:1.25rem;line-height:1.6;}
+    .btn-primary,.btn-secondary{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;padding:.7rem 1.25rem;border-radius:var(--radius-sm);font-family:var(--font);font-size:.9rem;font-weight:600;cursor:pointer;text-decoration:none;border:1px solid transparent;transition:background .15s ease;}
+    .btn-primary{background:var(--primary);color:#fff;width:100%;}
+    .btn-primary:hover{background:var(--primary-dark);}
+    .btn-secondary{background:var(--card);color:var(--text);border-color:var(--border2);}
+    .btn-secondary:hover{background:var(--bg3);}
+    .actions{display:flex;gap:.75rem;flex-wrap:wrap;margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid var(--border);}
     </style>
 </head>
 <body>
 <div class="card">
     <div class="card-header">
-        <div style="font-size:2.5rem;margin-bottom:.5rem;">📥</div>
-        <h1>Importation CSV</h1>
-        <p>SimCity V5.0 — Réservé aux administrateurs</p>
+        <div class="ic"><i class="bi bi-filetype-csv"></i></div>
+        <div>
+            <h1>Importation CSV</h1>
+            <p>Reprise d'inventaire — réservé aux administrateurs</p>
+        </div>
+        <button type="button" class="theme-btn" id="theme-toggle" title="Basculer le thème clair / sombre"><i class="bi bi-moon-stars"></i></button>
     </div>
     <div class="card-body">
 
         <?php if ($csrfError): ?>
-            <div class="csrf-error">🔒 <?= htmlspecialchars($csrfError, ENT_QUOTES) ?></div>
+            <div class="alert alert-err"><i class="bi bi-shield-exclamation"></i> <?= htmlspecialchars($csrfError, ENT_QUOTES) ?></div>
         <?php endif; ?>
 
         <?php if ($message && strpos($message, 'succès') !== false): ?>
             <?= $message ?>
-            <a href="index.php" class="btn-link">🚀 Accéder à SimCity</a>
+            <div class="actions">
+                <a href="index.php" class="btn-primary"><i class="bi bi-box-arrow-in-right"></i> Accéder à SimCity</a>
+            </div>
 
         <?php else: ?>
             <?php if ($message) echo $message; ?>
@@ -299,36 +328,56 @@ render:
                 <input type="hidden" name="_csrf" value="<?= htmlspecialchars($_SESSION['import_csrf'], ENT_QUOTES) ?>">
 
                 <div class="field">
-                    <label>📄 Fichier d'inventaire (.csv)</label>
+                    <label><i class="bi bi-file-earmark-arrow-up"></i> Fichier d'inventaire (.csv)</label>
                     <p>Fichier CSV séparé par <code>;</code>, encodage Windows-1252.<br>
                     <strong>Colonnes attendues :</strong> [0] Ligne, [2] Nom, [3] Prénom, [4] Notes, [5] CF Facturation, [6] Service, [7] Options, [9] Date activation, [10] IMEI, [11] Modèle, [12] Forfait, [13] ICCID, [14] PIN, [15] PUK, [16] Opérateur (optionnel)</p>
                     <input type="file" name="file_data" accept=".csv,text/csv" required>
                 </div>
 
-                <div class="warn">
+                <div class="danger-zone">
                     <label style="display:flex;align-items:flex-start;gap:.75rem;cursor:pointer;font-weight:400;">
                         <input type="checkbox" name="truncate" value="1" id="trunc"
-                            style="width:18px;height:18px;accent-color:#dc2626;flex-shrink:0;margin-top:2px;"
+                            style="width:16px;height:16px;accent-color:var(--danger);flex-shrink:0;margin-top:3px;"
                             onchange="document.getElementById('purge-confirm-block').style.display=this.checked?'block':'none'">
-                        <span>⚠️ <strong>Vider toute la base</strong> et recréer la structure V5.0 avant l'import<br>
-                        <small style="font-weight:400;">(Toutes les données seront supprimées définitivement, <strong>y compris les paramètres</strong> : configuration SMTP, logo et URL du site à reconfigurer)</small></span>
+                        <span><strong><i class="bi bi-exclamation-triangle-fill"></i> Vider toute la base</strong> et recréer la structure V5.0 avant l'import
+                        <small>Toutes les données seront supprimées définitivement, <strong>y compris les paramètres</strong> : configuration SMTP, logo et URL du site à reconfigurer.</small></span>
                     </label>
                     <div id="purge-confirm-block" style="display:none;margin-top:.75rem;">
-                        <label style="font-size:.82rem;font-weight:700;color:#991b1b;">Tapez <strong>PURGER</strong> pour confirmer la suppression :</label>
-                        <input type="text" name="confirm_purge" placeholder="PURGER" autocomplete="off" style="margin-top:.35rem;">
+                        <label style="font-size:.82rem;font-weight:600;">Tapez <strong>PURGER</strong> pour confirmer la suppression :</label>
+                        <input type="text" name="confirm_purge" placeholder="PURGER" autocomplete="off">
                     </div>
                 </div>
 
-                <button type="submit" class="btn">▶️ Lancer l'importation</button>
+                <button type="submit" class="btn-primary"><i class="bi bi-play-fill"></i> Lancer l'importation</button>
             </form>
 
             <div class="note">
-                💡 <strong>Après l'import</strong>, pensez à renseigner les sites web de vos opérateurs dans <em>Référentiels → Opérateurs</em>.
+                <i class="bi bi-lightbulb"></i> <strong>Après l'import</strong>, pensez à renseigner les sites web de vos opérateurs dans <em>Référentiels → Opérateurs</em>.
+            </div>
+
+            <div class="actions">
+                <a href="index.php?page=refs&tab=settings&sub=maintenance" class="btn-secondary"><i class="bi bi-arrow-left"></i> Retour aux paramètres</a>
             </div>
         <?php endif; ?>
 
-        <a href="index.php" class="back">← Retour à SimCity</a>
     </div>
 </div>
+<script>
+// Bascule de thème, partagée avec index.php via la clé localStorage « pm_theme ».
+(function(){
+  var btn = document.getElementById('theme-toggle');
+  var sync = function(){
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    btn.innerHTML = dark ? '<i class="bi bi-sun"></i>' : '<i class="bi bi-moon-stars"></i>';
+  };
+  btn.addEventListener('click', function(){
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark');
+    localStorage.setItem('pm_theme', dark ? 'light' : 'dark');
+    sync();
+  });
+  sync();
+})();
+</script>
 </body>
 </html>

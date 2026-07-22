@@ -4853,6 +4853,24 @@ elseif ($page === 'refs') {
         $autoLast  = getSetting($pdo, 'last_auto_backup', '');
         $autoHours = defined('BACKUP_AUTO_INTERVAL') ? round(((int)BACKUP_AUTO_INTERVAL)/3600) : 24;
     ?>
+    <!-- Bloc import CSV — l'outil vit dans import.php, page autonome -->
+    <div class="card">
+      <div class="card-header"><i class="bi bi-filetype-csv"></i> Importation CSV</div>
+      <div style="padding:1.5rem;">
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+          Reprise d'inventaire depuis un export CSV : lignes, cartes SIM, matériels, utilisateurs,
+          services, modèles, forfaits et opérateurs sont créés en une passe.
+          Les doublons (numéro de ligne, IMEI) sont ignorés, l'import est donc rejouable.
+        </p>
+        <div style="display:flex;align-items:flex-start;gap:.6rem;background:var(--warning-dim);border:1px solid var(--warning);border-radius:8px;padding:.75rem 1rem;margin-bottom:1.25rem;font-size:.85rem;">
+          <i class="bi bi-exclamation-triangle-fill" style="color:var(--warning);"></i>
+          <span style="color:var(--text2);">L'outil propose une option de <strong>purge totale</strong> de la base avant import.
+          Faites une sauvegarde (ci-dessous) avant de l'utiliser.</span>
+        </div>
+        <a href="import.php" class="btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Ouvrir l'outil d'importation</a>
+      </div>
+    </div>
+
     <!-- Bloc sauvegarde / restauration — super-admin uniquement -->
     <div class="card" style="margin-top:1.5rem;">
       <div class="card-header"><i class="bi bi-hdd"></i> Sauvegardes de la base de données</div>
