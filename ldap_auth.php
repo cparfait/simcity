@@ -54,6 +54,20 @@ function ldap_init(PDO $pdo): void {
         }
     }
     $GLOBALS['__ldap_cfg'] = $cfg;
+
+    // Options TLS d'OpenLDAP, posées ICI et pas au moment de la connexion :
+    // la bibliothèque ne lit ces variables qu'une fois par processus, à sa
+    // première initialisation interne. Dans un worker Apache ayant déjà servi
+    // une requête LDAP, un putenv() tardif arrive après le figement et reste
+    // sans effet — c'est ce qui faisait échouer LDAPS (« Can't contact LDAP
+    // server ») alors qu'une connexion en clair venait de réussir.
+    // ldap_init() étant appelé au démarrage de chaque requête, avant tout
+    // appel LDAP, la valeur est en place à temps.
+    // Limite assumée : basculer « Valider le certificat serveur » ne prend
+    // effet, sur les workers déjà démarrés, qu'après recyclage — redémarrer
+    // le conteneur applique le changement de façon fiable.
+    putenv('LDAPTLS_REQCERT=' . ($cfg['ldap_validate_cert'] ? 'demand' : 'never'));
+    if ($cfg['ldap_ca_cert'] !== '') putenv('LDAPTLS_CACERT=' . $cfg['ldap_ca_cert']);
 }
 
 /** Valeur de configuration LDAP (après ldap_init). */
@@ -113,19 +127,13 @@ function ldap_open_connection() {
         $validate = ldap_cfg('ldap_validate_cert');
         $caCert   = ldap_cfg('ldap_ca_cert');
 
-        // Options TLS par variables d'environnement : c'est la voie fiable.
-        // Posées sur le handle, elles n'ont d'effet qu'après reconstruction du
-        // contexte via LDAP_OPT_X_TLS_NEWCTX — constante absente de certaines
-        // builds PHP (dont l'image php:8.3-apache). Sans elle, décocher la
-        // validation restait sans effet et un certificat interne faisait
-        // échouer la poignée de main, sous le message trompeur
-        // « Can't contact LDAP server ». OpenLDAP lit ces variables à
-        // l'initialisation du contexte, indépendamment de PHP.
-        putenv('LDAPTLS_REQCERT=' . ($validate ? 'demand' : 'never'));
-        if ($caCert !== '') putenv('LDAPTLS_CACERT=' . $caCert);
-
-        // Réglages sur le handle : sans effet là où NEWCTX manque, mais
-        // corrects sur les builds qui l'exposent.
+        // Les variables LDAPTLS_* sont posées par ldap_init(), au démarrage de
+        // la requête : trop tard ici, OpenLDAP les a déjà lues (voir le
+        // commentaire détaillé dans ldap_init).
+        //
+        // Réglages sur le handle : sans effet là où LDAP_OPT_X_TLS_NEWCTX
+        // manque — c'est le cas de l'image php:8.3-apache — mais corrects sur
+        // les builds qui exposent cette constante.
         if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT')) {
             ldap_set_option($conn, LDAP_OPT_X_TLS_REQUIRE_CERT,
                 $validate ? LDAP_OPT_X_TLS_DEMAND : LDAP_OPT_X_TLS_NEVER);
