@@ -5426,6 +5426,70 @@ elseif ($page === 'refs') {
           })
           .catch(() => alert('Erreur réseau pendant l\'aperçu.'));
       }
+
+      // ── Mini-éditeur WYSIWYG des corps de gabarits ──────────────
+      // Le <textarea> reste la source soumise ; une zone contenteditable
+      // synchronisée offre gras/italique/souligné, taille, couleur, lien
+      // et liste. Bouton </> : bascule visuel <-> code HTML. Le HTML
+      // produit (balises simples + styles inline) reste compatible e-mail.
+      document.querySelectorAll('textarea[name^="tpl_body"]').forEach(ta => {
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;';
+        const bar = document.createElement('div');
+        bar.style.cssText = 'display:flex;gap:2px;flex-wrap:wrap;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border);background:var(--bg3);';
+        const ed = document.createElement('div');
+        ed.contentEditable = 'true';
+        ed.style.cssText = 'min-height:130px;max-height:320px;overflow-y:auto;padding:.7rem .85rem;background:#fff;color:#374151;font-size:.9rem;line-height:1.6;outline:none;';
+        ed.innerHTML = ta.value;
+        const sync = () => { ta.value = ed.innerHTML; };
+        ed.addEventListener('input', sync);
+        ed.addEventListener('blur', sync);
+        const cmd = (c, v) => { document.execCommand('styleWithCSS', false, true); document.execCommand(c, false, v || null); ed.focus(); sync(); };
+        const mkBtn = (html, title, fn) => {
+          const b = document.createElement('button');
+          b.type = 'button'; b.innerHTML = html; b.title = title;
+          b.style.cssText = 'border:none;background:none;cursor:pointer;padding:.3rem .5rem;border-radius:4px;font-size:.85rem;color:var(--text);min-width:28px;';
+          b.addEventListener('mouseenter', () => b.style.background = 'var(--border)');
+          b.addEventListener('mouseleave', () => b.style.background = 'none');
+          b.addEventListener('mousedown', e => e.preventDefault()); // garde la sélection
+          b.addEventListener('click', fn);
+          bar.appendChild(b); return b;
+        };
+        mkBtn('<strong>G</strong>', 'Gras', () => cmd('bold'));
+        mkBtn('<em>I</em>', 'Italique', () => cmd('italic'));
+        mkBtn('<u>S</u>', 'Souligné', () => cmd('underline'));
+        const size = document.createElement('select');
+        size.style.cssText = 'font-size:.78rem;padding:.2rem;border:1px solid var(--border);border-radius:4px;background:#fff;color:var(--text);width:auto;';
+        size.innerHTML = '<option value="">Taille</option><option value="1">Petit</option><option value="3">Normal</option><option value="5">Grand</option><option value="6">Très grand</option>';
+        size.addEventListener('mousedown', e => e.stopPropagation());
+        size.addEventListener('change', () => { if(size.value){ cmd('fontSize', size.value); size.value = ''; } });
+        bar.appendChild(size);
+        const color = document.createElement('input');
+        color.type = 'color'; color.value = '#374151'; color.title = 'Couleur du texte';
+        color.style.cssText = 'width:26px;height:24px;padding:0;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:none;';
+        color.addEventListener('input', () => cmd('foreColor', color.value));
+        bar.appendChild(color);
+        mkBtn('<i class="bi bi-link-45deg"></i>', 'Insérer un lien', () => {
+          const u = prompt('URL du lien :', 'https://'); if(u) cmd('createLink', u);
+        });
+        mkBtn('<i class="bi bi-list-ul"></i>', 'Liste à puces', () => cmd('insertUnorderedList'));
+        mkBtn('<i class="bi bi-eraser"></i>', 'Effacer la mise en forme', () => cmd('removeFormat'));
+        const spacer = document.createElement('span'); spacer.style.flex = '1'; bar.appendChild(spacer);
+        const tgl = mkBtn('<i class="bi bi-code-slash"></i>', 'Basculer visuel / code HTML', () => {
+          const showingHtml = ta.style.display !== 'none';
+          if(showingHtml){ ed.innerHTML = ta.value; ta.style.display = 'none'; ed.style.display = 'block'; }
+          else { sync(); ed.style.display = 'none'; ta.style.display = 'block'; }
+        });
+        tgl.style.color = 'var(--primary)';
+        wrap.appendChild(bar);
+        wrap.appendChild(ed);
+        ta.parentNode.insertBefore(wrap, ta);
+        wrap.appendChild(ta);
+        ta.style.display = 'none';
+        ta.style.border = 'none';
+        ta.style.borderTop = '1px solid var(--border)';
+        ta.style.borderRadius = '0';
+      });
       </script>
 
     </div><!-- fin section « Envoi d'e-mails » -->
