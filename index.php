@@ -4847,13 +4847,30 @@ elseif ($page === 'refs') {
               </label>
             </div>
             <div class="form-group"><label>Serveur LDAP<?=$lkN('ldap_server')?></label><input type="text" name="ldap_server" value="<?=h(ldap_cfg('ldap_server'))?>" placeholder="dc.chatillon.lan ou ldaps://dc.chatillon.lan" <?=$lk('ldap_server')?>></div>
-            <div class="form-group"><label>Port (0 = auto)<?=$lkN('ldap_port')?></label><input type="number" name="ldap_port" value="<?=(int)ldap_cfg('ldap_port')?>" min="0" max="65535" placeholder="636 en LDAPS, sinon 389" <?=$lk('ldap_port')?>></div>
+            <?php
+              // Port affiché : la valeur enregistrée, ou le port standard déduit
+              // de LDAPS. Le champ n'est ainsi jamais à « 0 », qui n'évoque rien.
+              $ldapPortShown = (int)ldap_cfg('ldap_port') ?: (ldap_cfg('ldap_use_ssl') ? 636 : 389);
+            ?>
+            <div class="form-group"><label>Port<?=$lkN('ldap_port')?></label><input type="number" id="ldap-port" name="ldap_port" value="<?=$ldapPortShown?>" min="0" max="65535" <?=$lk('ldap_port')?>><small style="color:var(--text3);font-size:.75rem;">389 en clair, 636 en LDAPS. Suit automatiquement la case ci-dessous, sauf port personnalisé (3269…).</small></div>
             <div class="form-group">
               <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;text-transform:none;font-size:.85rem;">
-                <input type="checkbox" name="ldap_use_ssl" value="1" <?=ldap_cfg('ldap_use_ssl')?'checked':''?> <?=$lk('ldap_use_ssl')?> style="width:15px;height:15px;accent-color:var(--primary);">
+                <input type="checkbox" id="ldap-use-ssl" name="ldap_use_ssl" value="1" <?=ldap_cfg('ldap_use_ssl')?'checked':''?> <?=$lk('ldap_use_ssl')?> style="width:15px;height:15px;accent-color:var(--primary);">
                 <span>LDAPS — connexion chiffrée (TLS)<?=$lkN('ldap_use_ssl')?></span>
               </label>
             </div>
+            <script>
+            // Le port suit la case LDAPS : 636 coché, 389 décoché. On ne touche
+            // pas à un port saisi à la main (3269 pour le catalogue global, etc.).
+            (function(){
+              var ssl = document.getElementById('ldap-use-ssl'), port = document.getElementById('ldap-port');
+              if (!ssl || !port || port.readOnly || port.disabled) return;
+              ssl.addEventListener('change', function(){
+                var v = port.value.trim();
+                if (v === '' || v === '0' || v === '389' || v === '636') port.value = ssl.checked ? 636 : 389;
+              });
+            })();
+            </script>
             <div class="form-group">
               <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;text-transform:none;font-size:.85rem;">
                 <input type="checkbox" name="ldap_validate_cert" value="1" <?=ldap_cfg('ldap_validate_cert')?'checked':''?> <?=$lk('ldap_validate_cert')?> style="width:15px;height:15px;accent-color:var(--primary);">
