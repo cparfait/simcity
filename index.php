@@ -490,24 +490,25 @@ function requestMailShell($title, $inner, $pdo = null, $bannerOverride = null) {
         $lp = getSetting($pdo, 'pdf_logo_path', '');
         if ($lp && file_exists($lp) && !preg_match('/\.svg$/i', $lp)) {
             $root = preg_replace('~/index\.php$~', '', baseUrl($pdo));
-            // Pastille blanche : le logo reste lisible quelle que soit la
-            // couleur du bandeau (logos sombres ou transparents compris).
-            $logoImg = '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:14px;"><tr>'
-                     . '<td bgcolor="#ffffff" style="background-color:#ffffff;border-radius:8px;padding:8px 14px;">'
-                     . '<img src="' . h($root . '/' . str_replace('\\', '/', $lp)) . '" alt="" style="max-height:40px;display:block;">'
-                     . '</td></tr></table>';
+            // Le logo occupe sa propre rangée blanche, au-dessus du bandeau
+            // coloré : il reste toujours sur fond blanc.
+            $logoImg = '<tr><td bgcolor="#ffffff" style="background-color:#ffffff;border-radius:12px 12px 0 0;padding:18px 36px;">'
+                     . '<img src="' . h($root . '/' . str_replace('\\', '/', $lp)) . '" alt="" style="max-height:44px;display:block;">'
+                     . '</td></tr>';
         }
     }
     [$c1, $c2, $grad] = $bannerOverride ?: mailBannerColors($pdo);
     $bandCss = $grad
         ? 'background:' . $c1 . ';background:linear-gradient(135deg,' . $c1 . ' 0%,' . $c2 . ' 100%);'
         : 'background-color:' . $c1 . ';';
+    // Coins hauts arrondis sur la première rangée visible (logo ou bandeau)
+    $bandRadius = $logoImg === '' ? 'border-radius:12px 12px 0 0;' : '';
     return '<!DOCTYPE html><html lang="fr"><body style="margin:0;padding:0;background-color:#eef1f6;">'
          . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef1f6"><tr><td align="center" style="padding:32px 12px;">'
          . '<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;">'
-         // Bandeau
-         . '<tr><td bgcolor="' . $c1 . '" style="' . $bandCss . 'border-radius:12px 12px 0 0;padding:26px 36px;">'
+         // Rangée logo (fond blanc) puis bandeau coloré
          . $logoImg
+         . '<tr><td bgcolor="' . $c1 . '" style="' . $bandCss . $bandRadius . 'padding:22px 36px;">'
          . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:bold;color:#ffffff;">📱 SimCity</div>'
          . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:rgba(255,255,255,.75);letter-spacing:1px;text-transform:uppercase;margin-top:4px;">Gestion de la flotte mobile</div>'
          . '</td></tr>'
