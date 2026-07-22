@@ -3562,13 +3562,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
                 flash('error', "Renseignez une adresse e-mail de destination valide pour le test.");
             } else {
-                $inner = '<p>Ceci est un e-mail de test envoyé depuis <strong>SimCity</strong> pour vérifier la configuration SMTP.</p>'
-                       . '<p>Si vous recevez ce message, l\'envoi d\'e-mails fonctionne correctement.</p>';
-                $res = smtpSendMail($pdo, $to, 'Test SMTP — SimCity', requestMailShell('E-mail de test', $inner));
-                if ($res === true) {
-                    flash('success', "📧 E-mail de test envoyé à $to — vérifiez la boîte de réception (et les indésirables).");
+                // Le test envoie un exemplaire de CHAQUE gabarit d'e-mail de
+                // l'application, avec des données fictives [DÉMO] : on juge le
+                // rendu réel dans le client de messagerie, pas un aperçu.
+                $url = baseUrl($pdo);
+                $samples = [
+                    ['[DÉMO] Test SMTP — SimCity', 'E-mail de test',
+                        '<p>Ceci est un e-mail de test envoyé depuis <strong>SimCity</strong> pour vérifier la configuration SMTP.</p>'
+                      . '<p>Si vous recevez ce message, l\'envoi d\'e-mails fonctionne correctement.</p>'],
+                    ['[DÉMO] Demande de téléphone DEM-0000 enregistrée', 'Demande enregistrée',
+                        '<p>Bonjour,</p><p>Votre demande de téléphone <strong>DEM-0000</strong> pour <strong>Jean EXEMPLE</strong> a bien été enregistrée.</p>'
+                      . '<p>Elle va être examinée par la DSI puis suivre le circuit de validation. Vous pouvez suivre son avancement à tout moment :</p>'
+                      . requestMailButton($url, '📍 Suivre ma demande')],
+                    ['[DÉMO] Nouvelle demande de téléphone DEM-0000 — Jean EXEMPLE', 'Nouvelle demande',
+                        '<p>Une nouvelle demande de téléphone vient d\'être déposée :</p>'
+                      . '<p><strong>DEM-0000</strong> — Première attribution<br>Bénéficiaire : <strong>Jean EXEMPLE</strong> (Chargé de mission)<br>Service : DSI<br>Demandeur : <strong>Marie DÉMO</strong> (marie.demo@exemple.fr)</p>'
+                      . requestMailButton($url, 'Qualifier la demande')],
+                    ['[DÉMO] Visa requis — Demande de téléphone DEM-0000', 'Visa requis',
+                        '<p>Bonjour Marie DÉMO,</p>'
+                      . '<p>La demande de téléphone <strong>DEM-0000</strong> (Première attribution) pour <strong>Jean EXEMPLE</strong> — service DSI attend votre visa <strong>« Direction du service »</strong>.</p>'
+                      . requestMailButton($url, '👁️ Examiner et viser la demande')
+                      . '<p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>'],
+                    ['[DÉMO] Demande DEM-0000 validée — à traiter', 'Demande validée',
+                        '<p>La demande <strong>DEM-0000</strong> (Jean EXEMPLE) a terminé son circuit de validation.</p>'
+                      . '<p>Vous pouvez attribuer le matériel et générer le bon de remise.</p>'
+                      . '<p style="font-size:13px;color:#666;"><a href="' . h($url) . '" style="color:#4f46e5;">Ouvrir la demande dans SimCity</a></p>'],
+                    ['[DÉMO] Demande DEM-0000 refusée', 'Demande refusée',
+                        '<p>La demande <strong>DEM-0000</strong> (Jean EXEMPLE) a été refusée au visa « D.G.A. de secteur » par Paul DÉMO.</p>'
+                      . '<p>Avis : dotation existante suffisante.</p>'],
+                    ['[DÉMO] Signature requise — Bon de remise BR-0000', 'Signature requise',
+                        '<p>Bonjour Jean,</p>'
+                      . '<p>Le bon de <strong>remise de matériel</strong> n° <strong>BR-0000</strong> vous attend pour signature électronique.</p>'
+                      . requestMailButton($url, '✍️ Signer le bon')
+                      . '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
+                ];
+                $sent = 0; $err = null;
+                foreach ($samples as [$subject, $title, $inner]) {
+                    $res = smtpSendMail($pdo, $to, $subject, requestMailShell($title, $inner));
+                    if ($res === true) $sent++; elseif ($err === null) $err = $res;
+                }
+                if ($sent === count($samples)) {
+                    flash('success', "📧 $sent e-mails de démonstration envoyés à $to (un par gabarit) — vérifiez la boîte de réception (et les indésirables).");
+                } elseif ($sent > 0) {
+                    flash('error', "Envoi partiel : $sent/" . count($samples) . " e-mails partis. Première erreur : $err");
                 } else {
-                    flash('error', "Échec de l'envoi : $res");
+                    flash('error', "Échec de l'envoi : $err");
                 }
             }
         } elseif ($ent === 'admin') {
@@ -5007,9 +5045,9 @@ elseif ($page === 'refs') {
           <label style="display:block;font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.4rem;">Tester l'envoi</label>
           <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;">
             <input type="email" name="test_email" placeholder="destinataire@exemple.fr" required value="<?=h($smtpTestTo)?>" style="flex:1;min-width:220px;">
-            <button type="submit" class="btn-secondary">📧 Envoyer un e-mail de test</button>
+            <button type="submit" class="btn-secondary">📧 Envoyer les e-mails de test</button>
           </div>
-          <small style="color:var(--text3);">Utilise la configuration <strong>enregistrée</strong> (enregistrez d'abord vos modifications).</small>
+          <small style="color:var(--text3);">Utilise la configuration <strong>enregistrée</strong> (enregistrez d'abord vos modifications). Envoie un exemplaire de chaque gabarit avec des données fictives [DÉMO].</small>
         </form>
       </div>
 
