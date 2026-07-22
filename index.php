@@ -83,6 +83,9 @@ ldap_init($pdo);
 // ─── Bibliothèque de sauvegarde / restauration ────────────────
 require_once __DIR__ . '/backup_lib.php';
 
+// ─── Bibliothèque d'importation CSV ───────────────────────────
+require_once __DIR__ . '/import_lib.php';
+
 // ─── Sauvegarde automatique « sans cron » ─────────────────────
 // Déclenchée par le trafic web (idéal en conteneur, sans crontab). Un verrou
 // atomique en base garantit qu'un seul visiteur lance la sauvegarde par
@@ -3212,6 +3215,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
+        } elseif ($ent === 'import') {
+            // Importation CSV — super-admin uniquement (l'outil peut purger la base)
+            if (empty($_SESSION['is_admin'])) {
+                flash('error', 'Accès refusé — réservé aux super-administrateurs.');
+            } elseif ($act !== 'run') {
+                flash('error', 'Action inconnue.');
+            } else {
+                $purge = !empty($d['truncate']);
+                $err   = simcity_import_validate($_FILES['file_data'] ?? []);
+                if ($purge && ($d['confirm_purge'] ?? '') !== 'PURGER') {
+                    flash('error', 'Tapez PURGER dans le champ de confirmation pour activer la purge.');
+                } elseif ($err !== '') {
+                    flash('error', $err);
+                } else {
+                    // L'import écrit beaucoup et la purge fait du DDL (auto-commit
+                    // MySQL) : on sort de la transaction globale, comme la restauration.
+                    if ($pdo->inTransaction()) $pdo->commit();
+                    try {
+                        // Filet de sécurité avant une purge : l'opération est irréversible.
+                        $safety = '';
+                        if ($purge) {
+                            try { $safety = simcity_backup_to_disk($pdo); } catch (Throwable $e) { $safety = ''; }
+                            simcity_import_purge($pdo);
+                        }
+                        $st = simcity_import_csv($pdo, $_FILES['file_data']['tmp_name']);
+                        $resume = "{$st['lines']} ligne(s), {$st['devices']} matériel(s), {$st['agents']} utilisateur(s), "
+                                . "{$st['services']} service(s), {$st['models']} modèle(s), {$st['plans']} forfait(s), "
+                                . "{$st['operators']} opérateur(s), {$st['billings']} compte(s) de facturation";
+                        $prefix = $purge
+                            ? 'Base purgée' . ($safety !== '' ? " (sauvegarde de sécurité : $safety)" : '') . ', puis import terminé — '
+                            : 'Import terminé — ';
+                        flash('success', $prefix . $resume . '.');
+                    } catch (Throwable $e) {
+                        $detail = (defined('APP_DEBUG') && APP_DEBUG) ? ' — ' . $e->getMessage() : '';
+                        flash('error', "L'importation a échoué$detail. Les lignes déjà traitées ont été conservées.");
+                    }
+                    header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
+                }
+            }
         } elseif ($ent === 'db_reset') {
             // Réinitialisation complète — super-admin uniquement
             if (empty($_SESSION['is_admin'])) { flash('error', 'Accès refusé.'); }
@@ -3610,7 +3652,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'ldap_test', 'smtp_test'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'ldap_test', 'smtp_test'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -4853,22 +4895,60 @@ elseif ($page === 'refs') {
         $autoLast  = getSetting($pdo, 'last_auto_backup', '');
         $autoHours = defined('BACKUP_AUTO_INTERVAL') ? round(((int)BACKUP_AUTO_INTERVAL)/3600) : 24;
     ?>
-    <!-- Bloc import CSV — l'outil vit dans import.php, page autonome -->
+    <!-- Bloc import CSV — reprise d'inventaire depuis un export -->
     <div class="card">
       <div class="card-header"><i class="bi bi-filetype-csv"></i> Importation CSV</div>
-      <div style="padding:1.5rem;">
+      <form method="post" enctype="multipart/form-data" style="padding:1.5rem;"
+            onsubmit="return !document.getElementById('imp-trunc').checked || confirm('Vider TOUTE la base avant l\'import ? Cette opération est irréversible.')">
+        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+        <input type="hidden" name="_entity" value="import">
+        <input type="hidden" name="_action" value="run">
+
         <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
           Reprise d'inventaire depuis un export CSV : lignes, cartes SIM, matériels, utilisateurs,
           services, modèles, forfaits et opérateurs sont créés en une passe.
-          Les doublons (numéro de ligne, IMEI) sont ignorés, l'import est donc rejouable.
+          Les doublons (numéro de ligne, IMEI) sont ignorés, l'import est donc rejouable sans risque de duplicatas.
         </p>
-        <div style="display:flex;align-items:flex-start;gap:.6rem;background:var(--warning-dim);border:1px solid var(--warning);border-radius:8px;padding:.75rem 1rem;margin-bottom:1.25rem;font-size:.85rem;">
-          <i class="bi bi-exclamation-triangle-fill" style="color:var(--warning);"></i>
-          <span style="color:var(--text2);">L'outil propose une option de <strong>purge totale</strong> de la base avant import.
-          Faites une sauvegarde (ci-dessous) avant de l'utiliser.</span>
+
+        <div class="form-group form-full">
+          <label>Fichier d'inventaire (.csv)</label>
+          <input type="file" name="file_data" accept=".csv,text/csv" required
+            style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;color:var(--text);width:100%;">
         </div>
-        <a href="import.php" class="btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Ouvrir l'outil d'importation</a>
-      </div>
+        <p style="color:var(--text3);font-size:.82rem;line-height:1.6;margin:.5rem 0 1.25rem;">
+          Séparateur <code style="font-family:var(--font-mono);">;</code>, encodage Windows-1252, 10 Mo maximum.
+          Les lignes situées avant l'en-tête <code style="font-family:var(--font-mono);">LIGNE</code> sont ignorées.<br>
+          <strong>Colonnes attendues :</strong> [0] Ligne, [2] Nom, [3] Prénom, [4] Notes, [5] CF Facturation,
+          [6] Service, [7] Options, [9] Date activation, [10] IMEI, [11] Modèle, [12] Forfait, [13] ICCID,
+          [14] PIN, [15] PUK, [16] Opérateur (optionnel).
+        </p>
+
+        <!-- Purge préalable : destructif, double confirmation exigée -->
+        <div style="background:var(--danger-dim);border:1px solid var(--danger);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;font-size:.85rem;">
+          <label style="display:flex;align-items:flex-start;gap:.6rem;cursor:pointer;">
+            <input type="checkbox" name="truncate" value="1" id="imp-trunc"
+              style="width:15px;height:15px;accent-color:var(--danger);flex-shrink:0;margin-top:3px;"
+              onchange="document.getElementById('imp-purge-confirm').style.display=this.checked?'block':'none'">
+            <span>
+              <strong style="color:var(--danger);"><i class="bi bi-exclamation-triangle-fill"></i> Vider toute la base avant l'import</strong>
+              <span style="color:var(--text2);display:block;margin-top:.3rem;">
+                Lignes, matériels, utilisateurs, bons signés, historique, demandes de téléphone et paramètres
+                (SMTP, logo, URL) sont supprimés définitivement. Les comptes d'administration sont conservés.
+                Une sauvegarde de sécurité est créée automatiquement avant la purge.
+              </span>
+            </span>
+          </label>
+          <div id="imp-purge-confirm" style="display:none;margin-top:.75rem;">
+            <label style="font-size:.82rem;font-weight:600;color:var(--danger);">Tapez <strong>PURGER</strong> pour confirmer :</label>
+            <input type="text" name="confirm_purge" placeholder="PURGER" autocomplete="off"
+              style="margin-top:.35rem;font-family:var(--font-mono);">
+          </div>
+        </div>
+
+        <div style="padding-top:1rem;border-top:1px solid var(--border);">
+          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Lancer l'importation</button>
+        </div>
+      </form>
     </div>
 
     <!-- Bloc sauvegarde / restauration — super-admin uniquement -->

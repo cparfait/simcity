@@ -2,7 +2,7 @@
 // ============================================================
 //  SimCity — Normalisation des noms / e-mails (partagé)
 //  Utilisé à l'écriture par index.php (fiches, comptes, LDAP,
-//  ajout rapide) et import.php (import CSV).
+//  ajout rapide) et import_lib.php (import CSV).
 // ============================================================
 
 if (!function_exists('fmtLastName')) {

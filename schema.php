@@ -7,7 +7,7 @@
 //    - les migrations de colonnes (ALTER TABLE)
 //    - les données par défaut (settings, compte admin)
 //
-//  Inclus par : index.php, install.php, import.php
+//  Inclus par : index.php, install.php
 //  NE PAS inclure directement dans reset.php.
 //
 //  Prérequis : $pdo doit être connecté et la DB sélectionnée.
@@ -512,7 +512,7 @@ function simcity_apply_schema(PDO $pdo): void
     // ── Normalisation unique des noms / e-mails existants ────────
     // Nom en MAJUSCULES, prénom en Casse-Titre (composés gérés), e-mail en
     // minuscules. Exécutée une seule fois (verrou en base) ; les écritures
-    // ultérieures sont normalisées à la volée par index.php / import.php.
+    // ultérieures sont normalisées à la volée par index.php / import_lib.php.
     require_once __DIR__ . '/lib_format.php';
     $done = $pdo->query("SELECT setting_value FROM settings WHERE setting_key='names_normalized_v1'")->fetchColumn();
     if ($done === false || $done === '' || $done === '0') {
@@ -531,7 +531,7 @@ function simcity_apply_schema(PDO $pdo): void
     }
 }
 
-// Appel immédiat si inclus depuis index.php ou import.php
+// Appel immédiat si inclus depuis index.php
 // (install.php appellera la fonction manuellement après l'avoir inclus)
 if (!defined('SIMCITY_SCHEMA_MANUAL')) {
     simcity_apply_schema($pdo);

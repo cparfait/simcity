@@ -256,7 +256,7 @@ simcity/
 ├── schema.php        # Schéma et migrations de la base de données
 ├── install.php       # Installation initiale — à supprimer après usage
 ├── reset.php         # Réinitialisation complète — à supprimer après usage
-├── import.php        # Import CSV en masse
+├── import_lib.php    # Import CSV en masse (Paramètres → Maintenance)
 ├── backup.php        # Sauvegarde automatique (cron / tâche planifiée)
 ├── backup_lib.php    # Fonctions de sauvegarde / restauration (partagées)
 ├── ldap_auth.php     # Authentification LDAP / Active Directory (optionnelle)
