@@ -273,6 +273,29 @@ simcity/
 
 ---
 
+## Mise à jour (Docker / Portainer)
+
+L'image `simcity:local` est **construite localement** : elle n'existe dans aucun registre.
+Un `git pull` seul ne suffit pas (le code PHP est copié dans l'image au build), et le bouton
+« Re-pull image » de Portainer échouera toujours avec *pull access denied* — c'est normal.
+
+**1. Sur l'hôte Docker**, récupérer le code et reconstruire l'image :
+
+```bash
+git pull && docker build -t simcity:local .
+```
+
+**2. Dans Portainer**, recréer les conteneurs avec la nouvelle image, au choix :
+
+- **Update the stack** en laissant « Re-pull image and redeploy » **décoché** ; ou
+- **Suppression / recréation du stack** : *Stop this stack* → *Delete this stack*
+  (sans supprimer les volumes) → recréer le stack. Les données survivent tant que les
+  volumes sont conservés : base MySQL (`dbdata`), `uploads` et `backups`.
+
+> 💾 Par prudence, téléchargez une sauvegarde SQL depuis l'application avant toute mise à jour.
+
+---
+
 ## Sauvegarde
 
 **Depuis l'application** (recommandé) : Paramètres → **💾 Sauvegarde de la base de données** →
