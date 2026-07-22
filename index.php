@@ -287,13 +287,13 @@ h2{font-size:1.2rem;color:#1e293b;margin-bottom:.25rem;}
 .info strong{display:block;color:#0f172a;font-size:1rem;margin-bottom:.25rem;}
 label{display:block;font-size:.8rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.4rem;}
 input{width:100%;padding:.75rem;border:1px solid #e2e8f0;border-radius:8px;font-size:1rem;margin-bottom:1rem;}
-input:focus{outline:none;border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.25);}
+input:focus{outline:none;border-color:#006e46;box-shadow:0 0 0 3px rgba(0,110,70,.25);}
 .canvas-wrap{border:2px dashed #cbd5e1;border-radius:8px;background:#fafafa;margin-bottom:.75rem;position:relative;touch-action:none;}
 canvas{display:block;width:100%;border-radius:8px;}
 .canvas-hint{text-align:center;font-size:.75rem;color:#94a3b8;padding:.35rem;}
 .btn-clear{background:none;border:1px solid #e2e8f0;border-radius:6px;padding:.45rem 1rem;font-size:.82rem;color:#64748b;cursor:pointer;margin-bottom:1rem;}
-.btn-sign{width:100%;padding:1rem;background:#4f46e5;color:#fff;border:none;border-radius:10px;font-size:1.05rem;font-weight:600;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.12);}
-.btn-sign:hover{background:#4338ca;}
+.btn-sign{width:100%;padding:1rem;background:#006e46;color:#fff;border:none;border-radius:10px;font-size:1.05rem;font-weight:600;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.12);}
+.btn-sign:hover{background:#00573a;}
 .btn-sign:disabled{background:#cbd5e1;box-shadow:none;cursor:not-allowed;}
 .error{background:#fef2f2;border:1px solid #fecaca;color:#dc2626;border-radius:8px;padding:1rem;margin-bottom:1rem;font-size:.9rem;}
 .success-box{text-align:center;padding:2rem 1rem;}
@@ -459,7 +459,7 @@ function requestStatusInfo($s) {
 // Couleurs du bandeau (et des boutons) des e-mails : personnalisables dans
 // Paramètres → Envoi d'e-mails. Retourne [couleur1, couleur2, dégradé?].
 function mailBannerColors($pdo = null): array {
-    $c1 = '#4f46e5'; $c2 = '#7c3aed'; $grad = true;
+    $c1 = '#006e46'; $c2 = '#0d9b64'; $grad = true;
     if ($pdo) {
         $v1 = getSetting($pdo, 'mail_banner_color', '');
         $v2 = getSetting($pdo, 'mail_banner_color2', '');
@@ -546,15 +546,15 @@ function mailTemplates(): array {
         'visa' => ['label' => 'Visa requis (valideur du circuit)',
             'vars' => ['validateur' => 'nom du valideur, précédé d\'une espace (peut être vide)', 'rappel' => 'paragraphe de rappel (vide hors relance)', 'numero' => 'n° de la demande', 'type' => 'type de demande', 'beneficiaire' => 'nom du bénéficiaire', 'service' => 'service, précédé de « — service » (peut être vide)', 'etape' => 'libellé du visa', 'bouton' => 'bouton « Examiner et viser »', 'lien' => 'URL du lien de visa'],
             'subject' => 'Visa requis — Demande de téléphone {numero}', 'title' => 'Visa requis',
-            'body' => '<p>Bonjour{validateur},</p>{rappel}<p>La demande de téléphone <strong>{numero}</strong> ({type}) pour <strong>{beneficiaire}</strong>{service} attend votre visa <strong>« {etape} »</strong>.</p>{bouton}<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="{lien}" style="color:#4f46e5;">{lien}</a></p><p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>'],
+            'body' => '<p>Bonjour{validateur},</p>{rappel}<p>La demande de téléphone <strong>{numero}</strong> ({type}) pour <strong>{beneficiaire}</strong>{service} attend votre visa <strong>« {etape} »</strong>.</p>{bouton}<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="{lien}" style="color:#006e46;">{lien}</a></p><p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>'],
         'validee' => ['label' => 'Demande validée (notification DSI)',
             'vars' => ['numero' => 'n° de la demande', 'beneficiaire' => 'nom du bénéficiaire', 'lien' => 'URL de la demande dans SimCity'],
             'subject' => 'Demande {numero} validée — à traiter', 'title' => 'Demande validée',
-            'body' => '<p>La demande <strong>{numero}</strong> ({beneficiaire}) a terminé son circuit de validation.</p><p>Vous pouvez attribuer le matériel et générer le bon de remise.</p><p style="font-size:13px;color:#666;"><a href="{lien}" style="color:#4f46e5;">Ouvrir la demande dans SimCity</a></p>'],
+            'body' => '<p>La demande <strong>{numero}</strong> ({beneficiaire}) a terminé son circuit de validation.</p><p>Vous pouvez attribuer le matériel et générer le bon de remise.</p><p style="font-size:13px;color:#666;"><a href="{lien}" style="color:#006e46;">Ouvrir la demande dans SimCity</a></p>'],
         'refusee' => ['label' => 'Demande refusée (notification DSI)',
             'vars' => ['numero' => 'n° de la demande', 'beneficiaire' => 'nom du bénéficiaire', 'etape' => 'libellé du visa', 'valideur' => 'nom du valideur, précédé de « par » (peut être vide)', 'avis' => 'avis motivé', 'lien' => 'URL de la demande dans SimCity'],
             'subject' => 'Demande {numero} refusée', 'title' => 'Demande refusée',
-            'body' => '<p>La demande <strong>{numero}</strong> ({beneficiaire}) a été refusée au visa « {etape} »{valideur}.</p><p>Avis : {avis}</p><p style="font-size:13px;color:#666;"><a href="{lien}" style="color:#4f46e5;">Ouvrir la demande dans SimCity</a></p>'],
+            'body' => '<p>La demande <strong>{numero}</strong> ({beneficiaire}) a été refusée au visa « {etape} »{valideur}.</p><p>Avis : {avis}</p><p style="font-size:13px;color:#666;"><a href="{lien}" style="color:#006e46;">Ouvrir la demande dans SimCity</a></p>'],
         'suivi' => ['label' => 'Liens de suivi (rappel au demandeur)',
             'vars' => ['liste' => 'liste HTML des demandes en cours'],
             'subject' => 'Vos demandes de téléphone en cours', 'title' => 'Vos liens de suivi',
@@ -562,7 +562,7 @@ function mailTemplates(): array {
         'bon' => ['label' => 'Signature d\'un bon (remise/restitution)',
             'vars' => ['prenom' => 'prénom du signataire', 'type_bon' => '« remise » ou « restitution »', 'numero' => 'n° du bon', 'bouton' => 'bouton « Signer le bon »', 'lien' => 'URL du lien de signature', 'expiration' => 'paragraphe de validité (peut être vide)'],
             'subject' => 'Signature requise — Bon de {type_bon} {numero}', 'title' => 'Signature requise',
-            'body' => '<p>Bonjour {prenom},</p><p>Le bon de <strong>{type_bon} de matériel</strong> n° <strong>{numero}</strong> vous attend pour signature électronique.</p>{bouton}<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="{lien}" style="color:#4f46e5;">{lien}</a></p>{expiration}'],
+            'body' => '<p>Bonjour {prenom},</p><p>Le bon de <strong>{type_bon} de matériel</strong> n° <strong>{numero}</strong> vous attend pour signature électronique.</p>{bouton}<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="{lien}" style="color:#006e46;">{lien}</a></p>{expiration}'],
     ];
 }
 
@@ -577,7 +577,7 @@ function mailDemoVars($pdo): array {
         'visa'     => ['validateur' => ' Marie DÉMO', 'rappel' => '', 'numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'service' => ' — service DSI', 'etape' => 'Direction du service', 'bouton' => requestMailButton($url, 'Examiner et viser la demande'), 'lien' => $url],
         'validee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'lien' => $url],
         'refusee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'etape' => 'D.G.A. de secteur', 'valideur' => ' par Paul DÉMO', 'avis' => 'Dotation existante suffisante.', 'lien' => $url],
-        'suivi'    => ['liste' => '<p style="margin:.5rem 0;"><strong>DEM-0000</strong> — Jean EXEMPLE <span style="color:#666;">(🟡 En validation)</span><br><a href="' . $url . '" style="color:#4f46e5;">' . $url . '</a></p>'],
+        'suivi'    => ['liste' => '<p style="margin:.5rem 0;"><strong>DEM-0000</strong> — Jean EXEMPLE <span style="color:#666;">(🟡 En validation)</span><br><a href="' . $url . '" style="color:#006e46;">' . $url . '</a></p>'],
         'bon'      => ['prenom' => 'Jean', 'type_bon' => 'remise', 'numero' => 'BR-0000', 'bouton' => requestMailButton($url, 'Signer le bon'), 'lien' => $url, 'expiration' => '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
     ];
 }
@@ -763,7 +763,7 @@ function requestLogoUrl($pdo) {
 // Aligné sur le design Sentinelle / la page de connexion SimCity :
 // IBM Plex Sans, dégradé navy→bleu, indigo + slate, cartes arrondies.
 function requestPublicCss() {
-    return ':root{--primary:#4f46e5;--primary-dark:#4338ca;--text:#334155;--text-strong:#0f172a;--text-muted:#64748b;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--bg-soft:#f1f5f9;--page:#eef2f7;--radius:10px;--radius-lg:14px;--font:\'IBM Plex Sans\',-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;}
+    return ':root{--primary:#006e46;--primary-dark:#00573a;--text:#334155;--text-strong:#0f172a;--text-muted:#64748b;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--bg-soft:#f1f5f9;--page:#eef2f7;--radius:10px;--radius-lg:14px;--font:\'IBM Plex Sans\',-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--font);background:var(--page);min-height:100vh;padding:2rem 1rem;color:var(--text);-webkit-font-smoothing:antialiased;letter-spacing:-.005em;}
 .wrap{max-width:640px;margin:0 auto;}
@@ -771,13 +771,13 @@ body{font-family:var(--font);background:var(--page);min-height:100vh;padding:2re
 .brand img{height:50px;max-width:240px;object-fit:contain;vertical-align:middle;}
 .card{background:#fff;border-radius:var(--radius-lg);border:1px solid var(--border);padding:2rem;margin:0 auto 1.25rem;box-shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);}
 .card-head{display:flex;align-items:center;gap:.75rem;margin-bottom:.35rem;}
-.card-head .ico{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:rgba(79,70,229,.1);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:1.35rem;}
+.card-head .ico{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:rgba(0,110,70,.1);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:1.35rem;}
 h2{font-family:var(--font);font-size:1.3rem;font-weight:700;color:var(--text-strong);line-height:1.25;}
 .sub{color:var(--text-muted);font-size:.88rem;line-height:1.5;margin-bottom:1.5rem;}
 label{display:block;font-size:.74rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;margin:1.1rem 0 .4rem;}
 input[type=text],input[type=email],select,textarea{width:100%;padding:.7rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:.95rem;font-family:inherit;background:#fff;color:var(--text);transition:border-color .18s ease,box-shadow .18s ease;}
-input:hover:not(:focus),select:hover:not(:focus),textarea:hover:not(:focus){border-color:rgba(79,70,229,.5);}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.28);}
+input:hover:not(:focus),select:hover:not(:focus),textarea:hover:not(:focus){border-color:rgba(0,110,70,.5);}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(0,110,70,.28);}
     input::placeholder,textarea::placeholder{color:var(--text-light);opacity:.75;font-style:italic;}
 textarea{resize:vertical;min-height:96px;line-height:1.5;}
 .field-hint{font-size:.78rem;color:var(--text-light);margin-top:.35rem;}
@@ -785,7 +785,7 @@ textarea{resize:vertical;min-height:96px;line-height:1.5;}
 .radio-row label{display:inline-flex;align-items:center;gap:.45rem;text-transform:none;letter-spacing:0;font-weight:500;font-size:.9rem;color:var(--text);margin:0;padding:.5rem .9rem;border:1px solid var(--border-strong);border-radius:999px;cursor:pointer;transition:border-color .15s,background-color .15s;}
 .radio-row label:hover{border-color:var(--primary);}
 .radio-row input{accent-color:var(--primary);width:16px;height:16px;}
-.radio-row input:checked+span,.radio-row label:has(input:checked){border-color:var(--primary);background:rgba(79,70,229,.07);color:var(--primary-dark);font-weight:600;}
+.radio-row input:checked+span,.radio-row label:has(input:checked){border-color:var(--primary);background:rgba(0,110,70,.07);color:var(--primary-dark);font-weight:600;}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;width:100%;padding:.95rem;background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:var(--radius);font-size:1rem;font-weight:600;cursor:pointer;text-align:center;text-decoration:none;transition:background-color .18s ease,transform .05s ease;}
 .btn:hover{background:var(--primary-dark);border-color:var(--primary-dark);}
 .btn:active{transform:translateY(1px);}
@@ -1568,10 +1568,10 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
             elseif ($req['status'] === 'en_validation' && (int)$req['current_step'] === (int)$s['ordre']) { $ic = '⏳'; $tag = '<span class="tag tag-wait">En cours</span>'; }
             else { $ic = '•'; $tag = '<span class="tag tag-todo">À venir</span>'; }
         ?>
-        <div class="step" <?=$isMe ? 'style="background:#eef2ff;border-radius:8px;padding:.6rem .5rem;"' : ''?>>
+        <div class="step" <?=$isMe ? 'style="background:#e6f4ee;border-radius:8px;padding:.6rem .5rem;"' : ''?>>
             <span class="ic"><?=$ic?></span>
             <div style="flex:1;">
-                <strong><?=h($s['label'])?></strong><?=$s['validator_name'] ? ' — ' . h($s['validator_name']) : ''?> <?=$isMe ? '<span style="color:#4f46e5;font-size:.78rem;">(vous)</span>' : ''?><br>
+                <strong><?=h($s['label'])?></strong><?=$s['validator_name'] ? ' — ' . h($s['validator_name']) : ''?> <?=$isMe ? '<span style="color:#006e46;font-size:.78rem;">(vous)</span>' : ''?><br>
                 <span class="meta"><?=$s['decided_at'] ? date('d/m/Y H:i', strtotime($s['decided_at'])) : ''?></span>
                 <?php if ($s['avis'] && $s['decision'] !== null): ?><div style="font-size:.82rem;color:#475569;margin-top:.2rem;">« <?=h($s['avis'])?> »</div><?php endif; ?>
             </div>
@@ -1651,7 +1651,7 @@ th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:.82rem;ver
 th{background:#f5f5f5;}
 .nota{font-size:.75rem;color:#444;border:1px solid #ddd;background:#fafafa;padding:.5rem .75rem;margin-top:1rem;line-height:1.5;}
 .toolbar{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:1rem;}
-.toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#4f46e5;color:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
+.toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#006e46;color:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
 @media print { @page{margin:1cm;} .no-print{display:none!important;} }
 </style></head><body>
 <div class="toolbar no-print"><button onclick="window.print()">🖨️ Imprimer</button></div>
@@ -1947,7 +1947,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .card{background:#fff;border-radius:14px;padding:2rem;max-width:480px;width:100%;box-shadow:0 4px 20px rgba(0,0,0,.08);text-align:center;}
         h2{font-size:1.2rem;color:#1e293b;margin:0 0 1rem;}
         p{color:#475569;font-size:.92rem;line-height:1.6;}
-        .btn{display:inline-block;margin-top:1rem;padding:.75rem 1.75rem;background:#4f46e5;color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:600;cursor:pointer;}
+        .btn{display:inline-block;margin-top:1rem;padding:.75rem 1.75rem;background:#006e46;color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:600;cursor:pointer;}
         </style></head><body>
         <div class="card">
             <h2>📄 Bon de remise — <?=h($agtName)?></h2>
@@ -2025,7 +2025,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         if ($isPending) {
             $url = baseUrl($pdo).'?page=sign&token='.$bon['token'];
             echo '<div id="qr-'.(int)$bon['id'].'"></div>
-                  <a href="'.htmlspecialchars($url).'" style="display:block;margin-top:3px;font-size:.75rem;color:#4f46e5;text-decoration:none;">Signer en ligne</a>';
+                  <a href="'.htmlspecialchars($url).'" style="display:block;margin-top:3px;font-size:.75rem;color:#006e46;text-decoration:none;">Signer en ligne</a>';
         } else {
             echo '<div style="font-size:.8rem;font-weight:600;">'.bonStatusLabel($bon).'</div>';
         }
@@ -2086,7 +2086,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .toolbar .tb-status{font-size:.8rem;color:#475569;}
         .toolbar form{display:inline;margin:0;}
         .toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
-        .toolbar button.tb-primary{background:#4f46e5;border-color:#4f46e5;color:#fff;}
+        .toolbar button.tb-primary{background:#006e46;border-color:#006e46;color:#fff;}
         @media print {
             @page { margin: 1cm; }
             body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -2366,14 +2366,14 @@ if (!isset($_SESSION['user_id'])) {
     <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
     <link href="vendor/plex.css" rel="stylesheet">
     <style>
-        :root{--primary:#4f46e5;--primary-dark:#4338ca;--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
+        :root{--primary:#006e46;--primary-dark:#00573a;--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
         .login-logo{height:56px;width:56px;object-fit:contain;display:block;margin:0 auto 8px;}
         body{background:linear-gradient(135deg,#0f172a 0%,#1e293b 55%,#1e3a6b 100%);color:var(--text);font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;box-sizing:border-box;}
         .login-box{background:var(--card);padding:36px 32px;border-radius:14px;border:1px solid var(--border);width:100%;max-width:400px;box-shadow:0 12px 28px rgba(15,23,42,.35),0 4px 10px rgba(15,23,42,.2);}
         h2{text-align:center;margin-top:0;font-size:1.6rem;font-weight:700;color:var(--text-strong);}
         label{font-size:.82rem;font-weight:600;color:var(--text);}
         input{width:100%;padding:9px 12px;margin-top:5px;background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:.9rem;box-sizing:border-box;transition:border-color .18s ease,box-shadow .18s ease;}
-        input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.35);}
+        input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(0,110,70,.35);}
         input::placeholder{color:var(--text-light);opacity:.75;font-style:italic;}
         button{width:100%;padding:11px;background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:var(--radius);font-weight:600;font-size:.95rem;margin-top:1.5rem;cursor:pointer;transition:background-color .18s ease;}
         button:hover{background:var(--primary-dark);}
@@ -4362,7 +4362,7 @@ if ($page === 'dashboard') {
                     labels: <?php echo json_encode($brands); ?>,
                     datasets: [{
                         data: <?php echo json_encode($bCounts); ?>,
-                        backgroundColor: ['#4f46e5', '#2563eb', '#7c3aed', '#d97706', '#059669', '#dc2626'],
+                        backgroundColor: ['#006e46', '#2563eb', '#0d9b64', '#d97706', '#059669', '#dc2626'],
                         borderWidth: 0
                     }]
                 },
@@ -4378,7 +4378,7 @@ if ($page === 'dashboard') {
                     datasets: [{
                         label: 'Nombre de lignes',
                         data: <?php echo json_encode($sCounts); ?>,
-                        backgroundColor: '#4f46e5',
+                        backgroundColor: '#006e46',
                         borderRadius: 5
                     }]
                 },
@@ -6196,7 +6196,7 @@ elseif ($page === 'history') {
     }
 
     // ── Couleurs de cycle pour les paires ──
-    $pairBorderColors = ['#059669','#4f46e5','#d97706','#7c3aed','#ec4899','#2563eb'];
+    $pairBorderColors = ['#059669','#006e46','#d97706','#0d9b64','#ec4899','#2563eb'];
 
     $now = time();
     function bonStatusHtml(array $b, int $now): string {
@@ -6767,7 +6767,7 @@ elseif ($page === 'stats') {
         <?php foreach ([
             ['👤 Utilisateurs', $sAgents, 'var(--success)'],
             ['📞 Lignes actives', $sLinesActive, '#2563eb'],
-            ['📱 Matériels actifs', $sDevActive, '#7c3aed'],
+            ['📱 Matériels actifs', $sDevActive, '#0d9b64'],
             ['🚀 Déployés', $sDevDeployed, '#0891b2'],
             ['📨 Demandes (total)', $sReqTotal, '#d97706'],
             ['⏳ Demandes en cours', $sReqOpen, '#dc2626'],
@@ -6788,7 +6788,7 @@ elseif ($page === 'stats') {
         <?php $chartCard('Lignes par forfait', 'globe2', 'stPlan', (bool)$statPlan); ?>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
-        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;"><div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:600;color:#7c3aed;"><?=$sEsim?></div><div style="font-size:.78rem;color:var(--text2);">eSIM</div></div>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;"><div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:600;color:#0d9b64;"><?=$sEsim?></div><div style="font-size:.78rem;color:var(--text2);">eSIM</div></div>
         <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;"><div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:600;color:#2563eb;"><?=$sPhysSim?></div><div style="font-size:.78rem;color:var(--text2);">SIM physique</div></div>
         <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;"><div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:600;color:#0891b2;"><?=$sByod?></div><div style="font-size:.78rem;color:var(--text2);">Appareils perso (BYOD)</div></div>
       </div>
@@ -6823,7 +6823,7 @@ elseif ($page === 'stats') {
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
-      const PAL = ['#4f46e5','#2563eb','#7c3aed','#d97706','#059669','#dc2626','#0891b2','#db2777','#65a30d','#ea580c'];
+      const PAL = ['#006e46','#2563eb','#0d9b64','#d97706','#059669','#dc2626','#0891b2','#db2777','#65a30d','#ea580c'];
       function doughnut(id, labels, data){ const el=document.getElementById(id); if(!el||!labels.length)return;
         new Chart(el,{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:PAL,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#94a3b8',boxWidth:12,padding:10}}}}}); }
       function bars(id, labels, datasets, horizontal){ const el=document.getElementById(id); if(!el||!labels.length)return;
@@ -6833,12 +6833,12 @@ elseif ($page === 'stats') {
       doughnut('stBrand', <?=json_encode($col($statBrand,'k'))?>, <?=json_encode(array_map('intval',$col($statBrand,'c')))?>);
       doughnut('stDevStat', <?=json_encode(array_map(fn($k)=>$devStatusMap[$k]??$k, $col($statDevStat,'k')))?>, <?=json_encode(array_map('intval',$col($statDevStat,'c')))?>);
       bars('stOper', <?=json_encode($col($statOper,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statOper,'c')))?>,backgroundColor:'#2563eb',borderRadius:4}]);
-      bars('stPlan', <?=json_encode($col($statPlan,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statPlan,'c')))?>,backgroundColor:'#7c3aed',borderRadius:4}], true);
+      bars('stPlan', <?=json_encode($col($statPlan,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statPlan,'c')))?>,backgroundColor:'#0d9b64',borderRadius:4}], true);
 
       // Par service (barres groupées)
       bars('stSvc', <?=json_encode($svcNames)?>, [
-        {label:'Lignes',   data:<?=json_encode($svcLines)?>, backgroundColor:'#4f46e5', borderRadius:4},
-        {label:'Matériels',data:<?=json_encode($svcMats)?>,  backgroundColor:'#7c3aed', borderRadius:4}
+        {label:'Lignes',   data:<?=json_encode($svcLines)?>, backgroundColor:'#006e46', borderRadius:4},
+        {label:'Matériels',data:<?=json_encode($svcMats)?>,  backgroundColor:'#0d9b64', borderRadius:4}
       ]);
 
       // Demandes
@@ -6869,8 +6869,8 @@ $content = ob_get_clean();
 <script>(function(){ if (localStorage.getItem('pm_theme') === 'dark') document.documentElement.setAttribute('data-theme','dark'); })();</script>
 <style>
 /* CSS UNIFIÉ MINIFIÉ — design system aligné sur Sentinelle (IBM Plex, indigo + slate) */
-:root{--bg:#f8fafc;--bg2:#ffffff;--bg3:#f1f5f9;--card:#ffffff;--card2:#f1f5f9;--border:#e2e8f0;--border2:#cbd5e1;--primary:#4f46e5;--primary-dark:#4338ca;--primary-dim:rgba(79,70,229,.08);--primary-glow:rgba(79,70,229,.35);--success:#059669;--success-dim:#d1fae5;--danger:#dc2626;--danger-dim:#fee2e2;--warning:#d97706;--warning-dim:#fef3c7;--info:#2563eb;--info-dim:#dbeafe;--text:#334155;--text-strong:#0f172a;--text2:#64748b;--text3:#94a3b8;--sidebar-w:255px;--topbar-h:64px;--radius:10px;--radius-sm:7px;--radius-lg:14px;--shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);--shadow-md:0 4px 12px rgba(15,23,42,.08),0 2px 4px rgba(15,23,42,.04);--shadow-lg:0 12px 28px rgba(15,23,42,.12),0 4px 10px rgba(15,23,42,.06);--ring:0 0 0 3px rgba(79,70,229,.35);--font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-display:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular','Consolas',monospace;}
-[data-theme="dark"]{--bg:#0b1120;--bg2:#111827;--bg3:#0f1b2d;--card:#1e293b;--card2:#233247;--border:#2b3a4f;--border2:#3a4a61;--primary:#818cf8;--primary-dark:#6366f1;--primary-dim:rgba(129,140,248,.14);--primary-glow:rgba(129,140,248,.35);--success:#34d399;--success-dim:#064e3b;--danger:#f87171;--danger-dim:#7f1d1d;--warning:#fbbf24;--warning-dim:#78350f;--info:#60a5fa;--info-dim:#1e3a5f;--text:#e2e8f0;--text-strong:#f8fafc;--text2:#94a3b8;--text3:#64748b;--shadow:0 1px 3px rgba(0,0,0,.45);--shadow-md:0 4px 14px rgba(0,0,0,.5);--shadow-lg:0 14px 32px rgba(0,0,0,.6);--ring:0 0 0 3px rgba(129,140,248,.35);}
+:root{--bg:#f8fafc;--bg2:#ffffff;--bg3:#f1f5f9;--card:#ffffff;--card2:#f1f5f9;--border:#e2e8f0;--border2:#cbd5e1;--primary:#006e46;--primary-dark:#00573a;--primary-dim:rgba(0,110,70,.08);--primary-glow:rgba(0,110,70,.35);--success:#059669;--success-dim:#d1fae5;--danger:#dc2626;--danger-dim:#fee2e2;--warning:#d97706;--warning-dim:#fef3c7;--info:#2563eb;--info-dim:#dbeafe;--text:#334155;--text-strong:#0f172a;--text2:#64748b;--text3:#94a3b8;--sidebar-w:255px;--topbar-h:64px;--radius:10px;--radius-sm:7px;--radius-lg:14px;--shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);--shadow-md:0 4px 12px rgba(15,23,42,.08),0 2px 4px rgba(15,23,42,.04);--shadow-lg:0 12px 28px rgba(15,23,42,.12),0 4px 10px rgba(15,23,42,.06);--ring:0 0 0 3px rgba(0,110,70,.35);--font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-display:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular','Consolas',monospace;}
+[data-theme="dark"]{--bg:#0b1120;--bg2:#111827;--bg3:#0f1b2d;--card:#1e293b;--card2:#233247;--border:#2b3a4f;--border2:#3a4a61;--primary:#3ecf8e;--primary-dark:#2eb377;--primary-dim:rgba(62,207,142,.14);--primary-glow:rgba(62,207,142,.35);--success:#34d399;--success-dim:#064e3b;--danger:#f87171;--danger-dim:#7f1d1d;--warning:#fbbf24;--warning-dim:#78350f;--info:#60a5fa;--info-dim:#1e3a5f;--text:#e2e8f0;--text-strong:#f8fafc;--text2:#94a3b8;--text3:#64748b;--shadow:0 1px 3px rgba(0,0,0,.45);--shadow-md:0 4px 14px rgba(0,0,0,.5);--shadow-lg:0 14px 32px rgba(0,0,0,.6);--ring:0 0 0 3px rgba(62,207,142,.35);}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0} body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:.9rem;line-height:1.5;letter-spacing:-.005em;-webkit-font-smoothing:antialiased;transition:background-color .2s ease,color .2s ease;}
 h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:transparent} ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:999px;border:2px solid var(--bg)} ::-webkit-scrollbar-thumb:hover{background:var(--text3)}
@@ -6910,7 +6910,7 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .page-header{display:flex;align-items:center;justify-content:flex-end;margin-bottom:1.5rem;}
 .page-title-txt{font-family:var(--font-display);font-weight:700;font-size:1.4rem;color:var(--text-strong);}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:1.5rem;break-inside:avoid;box-shadow:var(--shadow);}
-.card-header{padding:.85rem 1.5rem .85rem 2.15rem;border-bottom:1px solid var(--border);background:rgba(79,70,229,.03);font-family:var(--font-display);font-weight:700;font-size:.9rem;color:var(--text);position:relative;}
+.card-header{padding:.85rem 1.5rem .85rem 2.15rem;border-bottom:1px solid var(--border);background:rgba(0,110,70,.03);font-family:var(--font-display);font-weight:700;font-size:.9rem;color:var(--text);position:relative;}
 .card-header::before{content:'';position:absolute;left:1.5rem;top:50%;transform:translateY(-50%);width:4px;height:1.05em;border-radius:3px;background:var(--primary);}
 
 .data-table{width:100%;border-collapse:collapse}
@@ -6933,7 +6933,7 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;} .form-group{display:flex;flex-direction:column;gap:.4rem;} .form-full{grid-column:1/-1;}
 label{font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;} input,select,textarea{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.6rem .9rem;color:var(--text);width:100%;font-family:inherit;font-size:.85rem;transition:border-color .18s ease,box-shadow .18s ease;}
 [data-theme="dark"] input,[data-theme="dark"] select,[data-theme="dark"] textarea{background:var(--bg3)}
-input:hover:not(:focus):not(:disabled),select:hover:not(:focus):not(:disabled),textarea:hover:not(:focus):not(:disabled){border-color:rgba(79,70,229,.55)}
+input:hover:not(:focus):not(:disabled),select:hover:not(:focus):not(:disabled),textarea:hover:not(:focus):not(:disabled){border-color:rgba(0,110,70,.55)}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:var(--ring);}
 /* Exemples (placeholder) : nettement plus pâles et en italique, sinon on les
    confond avec une valeur déjà saisie. */
@@ -6946,8 +6946,8 @@ input::placeholder,textarea::placeholder{color:var(--text3);opacity:.75;font-sty
 .dashboard-grid{display:flex;flex-direction:column;gap:1.5rem;} .kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem;}
 .kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem 1.5rem;display:flex;align-items:center;gap:1rem;position:relative;overflow:hidden;box-shadow:var(--shadow);transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
 .kpi-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;} .kpi-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--border2);}
-.kpi-blue::before{background:#4f46e5;}
-.kpi-violet::before{background:#7c3aed;}
+.kpi-blue::before{background:#006e46;}
+.kpi-violet::before{background:#0d9b64;}
 .kpi-green::before{background:#059669;}
 .kpi-icon{font-size:2rem;} .kpi-val{font-family:var(--font-mono);font-size:1.7rem;font-weight:600;line-height:1.1;color:var(--text-strong);letter-spacing:-.01em;} .kpi-label{font-size:.74rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;}
 .kpi-main{display:flex;align-items:center;gap:1rem;flex:1;min-width:0;text-decoration:none;color:inherit;}
@@ -6956,7 +6956,7 @@ input::placeholder,textarea::placeholder{color:var(--text3);opacity:.75;font-sty
 .kpi-add{flex-shrink:0;display:inline-flex;align-items:center;gap:.35rem;padding:.45rem .85rem;border-radius:999px;background:var(--primary-dim);color:var(--primary);font-size:.76rem;font-weight:600;text-decoration:none;white-space:nowrap;transition:background-color .15s,color .15s;}
 .kpi-add:hover{background:var(--primary);color:#fff;}
 .shortcut-btn{display:flex;flex-direction:column;gap:.35rem;padding:1.25rem;border-radius:var(--radius);border:1px solid var(--border);text-decoration:none;transition:border-color .2s;} .shortcut-btn:hover{border-color:var(--primary);}
-.shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(79,70,229,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
+.shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(0,110,70,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
 .tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);font-weight:700;margin-bottom:-2px;z-index:2;box-shadow:inset 0 2px 0 var(--primary);}
 .subtab-btn{padding:.55rem 1.1rem;border:1px solid transparent;border-radius:8px;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;transition:background-color .15s,color .15s;} .subtab-btn:hover{color:var(--primary);} .subtab-btn.active{background:var(--primary);border-color:var(--primary);color:#fff;}
 @media(max-width:900px){.sidebar{transform:translateX(-100%);transition:transform .25s ease;box-shadow:var(--shadow-lg)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:inline-flex}}
