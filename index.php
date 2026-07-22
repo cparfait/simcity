@@ -492,8 +492,8 @@ function requestMailShell($title, $inner, $pdo = null, $bannerOverride = null) {
             $root = preg_replace('~/index\.php$~', '', baseUrl($pdo));
             // Le logo occupe sa propre rangée blanche, au-dessus du bandeau
             // coloré : il reste toujours sur fond blanc.
-            $logoImg = '<tr><td bgcolor="#ffffff" style="background-color:#ffffff;border-radius:12px 12px 0 0;padding:18px 36px;">'
-                     . '<img src="' . h($root . '/' . str_replace('\\', '/', $lp)) . '" alt="" style="max-height:44px;display:block;">'
+            $logoImg = '<tr><td bgcolor="#ffffff" align="center" style="background-color:#ffffff;border-radius:12px 12px 0 0;padding:18px 36px;">'
+                     . '<img src="' . h($root . '/' . str_replace('\\', '/', $lp)) . '" alt="" style="max-height:44px;display:block;margin:0 auto;">'
                      . '</td></tr>';
         }
     }
