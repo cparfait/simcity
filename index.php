@@ -456,9 +456,25 @@ function requestStatusInfo($s) {
 
 // Bouton d'action pour les e-mails : mise en page en table, seule forme
 // fiable sous Outlook (les <a> stylés en bloc y perdent leur padding).
+// Couleurs du bandeau (et des boutons) des e-mails : personnalisables dans
+// Paramètres → Envoi d'e-mails. Retourne [couleur1, couleur2, dégradé?].
+function mailBannerColors($pdo = null): array {
+    $c1 = '#4f46e5'; $c2 = '#7c3aed'; $grad = true;
+    if ($pdo) {
+        $v1 = getSetting($pdo, 'mail_banner_color', '');
+        $v2 = getSetting($pdo, 'mail_banner_color2', '');
+        if (preg_match('/^#[0-9a-fA-F]{6}$/', $v1)) $c1 = $v1;
+        if (preg_match('/^#[0-9a-fA-F]{6}$/', $v2)) $c2 = $v2;
+        $g = getSetting($pdo, 'mail_banner_gradient', '');
+        if ($g !== '') $grad = $g === '1';
+    }
+    return [$c1, $c2, $grad];
+}
+
 function requestMailButton($url, $label) {
+    [$c1, , ] = mailBannerColors($GLOBALS['pdo'] ?? null);
     return '<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:28px auto;"><tr>'
-         . '<td style="background-color:#4f46e5;border-radius:8px;" bgcolor="#4f46e5">'
+         . '<td style="background-color:' . $c1 . ';border-radius:8px;" bgcolor="' . $c1 . '">'
          . '<a href="' . h($url) . '" style="display:inline-block;padding:14px 36px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;">' . $label . '</a>'
          . '</td></tr></table>';
 }
@@ -468,23 +484,32 @@ function requestMailButton($url, $label) {
 // ignoré par Outlook, qui reste le client des destinataires internes.
 // Avec $pdo, le logo uploadé (celui des bons PDF) est affiché dans le
 // bandeau — jamais le logo SVG embarqué, qu'Outlook ne sait pas afficher.
-function requestMailShell($title, $inner, $pdo = null) {
+function requestMailShell($title, $inner, $pdo = null, $bannerOverride = null) {
     $logoImg = '';
     if ($pdo) {
         $lp = getSetting($pdo, 'pdf_logo_path', '');
         if ($lp && file_exists($lp) && !preg_match('/\.svg$/i', $lp)) {
             $root = preg_replace('~/index\.php$~', '', baseUrl($pdo));
-            $logoImg = '<img src="' . h($root . '/' . str_replace('\\', '/', $lp)) . '" alt="" style="max-height:44px;display:block;margin-bottom:12px;">';
+            // Pastille blanche : le logo reste lisible quelle que soit la
+            // couleur du bandeau (logos sombres ou transparents compris).
+            $logoImg = '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:14px;"><tr>'
+                     . '<td bgcolor="#ffffff" style="background-color:#ffffff;border-radius:8px;padding:8px 14px;">'
+                     . '<img src="' . h($root . '/' . str_replace('\\', '/', $lp)) . '" alt="" style="max-height:40px;display:block;">'
+                     . '</td></tr></table>';
         }
     }
+    [$c1, $c2, $grad] = $bannerOverride ?: mailBannerColors($pdo);
+    $bandCss = $grad
+        ? 'background:' . $c1 . ';background:linear-gradient(135deg,' . $c1 . ' 0%,' . $c2 . ' 100%);'
+        : 'background-color:' . $c1 . ';';
     return '<!DOCTYPE html><html lang="fr"><body style="margin:0;padding:0;background-color:#eef1f6;">'
          . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef1f6"><tr><td align="center" style="padding:32px 12px;">'
          . '<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;">'
          // Bandeau
-         . '<tr><td bgcolor="#4f46e5" style="background:#4f46e5;background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);border-radius:12px 12px 0 0;padding:26px 36px;">'
+         . '<tr><td bgcolor="' . $c1 . '" style="' . $bandCss . 'border-radius:12px 12px 0 0;padding:26px 36px;">'
          . $logoImg
          . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:bold;color:#ffffff;">📱 SimCity</div>'
-         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#c7d2fe;letter-spacing:1px;text-transform:uppercase;margin-top:4px;">Gestion de la flotte mobile</div>'
+         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:rgba(255,255,255,.75);letter-spacing:1px;text-transform:uppercase;margin-top:4px;">Gestion de la flotte mobile</div>'
          . '</td></tr>'
          // Corps
          . '<tr><td bgcolor="#ffffff" style="background-color:#ffffff;padding:34px 36px;">'
@@ -2487,9 +2512,14 @@ if (isset($_GET['ajax_mail_preview'])) {
     $body    = trim($_POST['body'] ?? '')    ?: $t['body'];
     $repl = [];
     foreach (mailDemoVars($pdo)[$key] as $k => $v) $repl['{' . $k . '}'] = (string)$v;
+    // Couleurs du bandeau : celles du formulaire (non enregistrées) si valides
+    $banner = mailBannerColors($pdo);
+    if (preg_match('/^#[0-9a-fA-F]{6}$/', $_POST['banner_color'] ?? ''))  $banner[0] = $_POST['banner_color'];
+    if (preg_match('/^#[0-9a-fA-F]{6}$/', $_POST['banner_color2'] ?? '')) $banner[1] = $_POST['banner_color2'];
+    if (isset($_POST['banner_gradient'])) $banner[2] = $_POST['banner_gradient'] === '1';
     echo json_encode([
         'subject' => strtr($subject, $repl),
-        'html'    => requestMailShell(strtr($title, $repl), strtr($body, $repl), $pdo),
+        'html'    => requestMailShell(strtr($title, $repl), strtr($body, $repl), $pdo, $banner),
     ]);
     exit;
 }
@@ -3685,6 +3715,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $up->execute(["mail_tpl_{$tk}_{$part}", $val, "$lbl e-mail « {$tk} » (vide = défaut)"]);
                 }
             }
+            // Couleurs du bandeau (validées : hex 6 chiffres, sinon ignorées)
+            $c1 = trim($d['banner_color'] ?? ''); $c2 = trim($d['banner_color2'] ?? '');
+            if (preg_match('/^#[0-9a-fA-F]{6}$/', $c1)) $up->execute(['mail_banner_color', $c1, 'Couleur du bandeau des e-mails']);
+            if (preg_match('/^#[0-9a-fA-F]{6}$/', $c2)) $up->execute(['mail_banner_color2', $c2, 'Seconde couleur du bandeau (dégradé)']);
+            $up->execute(['mail_banner_gradient', !empty($d['banner_gradient']) ? '1' : '0', 'Bandeau des e-mails en dégradé (0/1)']);
             logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "Modification des gabarits d'e-mails");
             flash('success', 'Gabarits d\'e-mails enregistrés.');
         } elseif ($ent === 'smtp_test') {
@@ -5177,6 +5212,18 @@ elseif ($page === 'refs') {
             Sujet, titre et corps (HTML) de chaque e-mail. Effacer un champ (ou le laisser identique au défaut) reprend le gabarit standard.
             Les variables <code style="font-family:var(--font-mono);">{xxx}</code> sont remplacées à l'envoi.
           </p>
+          <?php [$mbC1, $mbC2, $mbGrad] = mailBannerColors($pdo); ?>
+          <div style="display:flex;flex-wrap:wrap;gap:1rem 1.5rem;align-items:center;padding:.75rem .9rem;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1rem;">
+            <span style="font-size:.84rem;font-weight:600;">Bandeau :</span>
+            <label style="display:flex;align-items:center;gap:.45rem;font-size:.84rem;font-weight:400;text-transform:none;letter-spacing:normal;cursor:pointer;margin:0;">
+              Couleur <input type="color" name="banner_color" id="mail-banner-c1" value="<?=h($mbC1)?>" style="width:38px;height:26px;padding:1px;border:1px solid var(--border);border-radius:4px;cursor:pointer;">
+            </label>
+            <label style="display:flex;align-items:center;gap:.45rem;font-size:.84rem;font-weight:400;text-transform:none;letter-spacing:normal;cursor:pointer;margin:0;">
+              <input type="checkbox" name="banner_gradient" id="mail-banner-grad" value="1" <?=$mbGrad?'checked':''?> style="width:14px;height:14px;accent-color:var(--primary);">
+              Dégradé vers <input type="color" name="banner_color2" id="mail-banner-c2" value="<?=h($mbC2)?>" style="width:38px;height:26px;padding:1px;border:1px solid var(--border);border-radius:4px;cursor:pointer;">
+            </label>
+            <span style="font-size:.76rem;color:var(--text3);">Choisissez des couleurs foncées : le texte du bandeau est blanc. S'applique aussi aux boutons (1re couleur).</span>
+          </div>
           <?php foreach (mailTemplates() as $tk => $tpl):
               $ovS = trim(getSetting($pdo, "mail_tpl_{$tk}_subject", ''));
               $ovT = trim(getSetting($pdo, "mail_tpl_{$tk}_title", ''));
@@ -5239,6 +5286,9 @@ elseif ($page === 'refs') {
         fd.append('subject', form.querySelector('[name="tpl_subject['+tk+']"]').value);
         fd.append('title',   form.querySelector('[name="tpl_title['+tk+']"]').value);
         fd.append('body',    form.querySelector('[name="tpl_body['+tk+']"]').value);
+        fd.append('banner_color',    document.getElementById('mail-banner-c1').value);
+        fd.append('banner_color2',   document.getElementById('mail-banner-c2').value);
+        fd.append('banner_gradient', document.getElementById('mail-banner-grad').checked ? '1' : '0');
         fetch('index.php?ajax_mail_preview=1', { method:'POST', body:fd })
           .then(r => r.json())
           .then(j => {
