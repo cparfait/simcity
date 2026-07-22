@@ -934,7 +934,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
         </select>
         <label>Bénéficiaire *</label>
         <?php if (ldap_auth_enabled()): ?>
-        <div class="field-hint" style="margin:-.2rem 0 .5rem;">🔎 Commencez à taper le nom : l'annuaire propose l'agent et pré-remplit ses coordonnées (modifiables).</div>
+        <div class="field-hint" style="margin:-.2rem 0 .5rem;">🔎 Commencez à taper le nom : l'annuaire propose l'agent et pré-remplit ses coordonnées si l'agent est dans la base (modifiables).</div>
         <?php endif; ?>
         <div style="position:relative;">
             <div class="name-grid">
