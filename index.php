@@ -7043,7 +7043,7 @@ input::placeholder,textarea::placeholder{color:var(--text3);opacity:.75;font-sty
 .kpi-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;} .kpi-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--border2);}
 .kpi-blue::before{background:var(--primary);}
 .kpi-violet::before{background:var(--primary-dark);}
-.kpi-green::before{background:#059669;}
+.kpi-green::before{background:var(--primary);}
 .kpi-icon{font-size:2rem;} .kpi-val{font-family:var(--font-mono);font-size:1.7rem;font-weight:600;line-height:1.1;color:var(--text-strong);letter-spacing:-.01em;} .kpi-label{font-size:.74rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;}
 .kpi-main{display:flex;align-items:center;gap:1rem;flex:1;min-width:0;text-decoration:none;color:inherit;}
 .kpi-info{display:flex;flex-direction:column;min-width:0;}
