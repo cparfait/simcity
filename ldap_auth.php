@@ -118,6 +118,14 @@ function ldap_open_connection() {
         if (ldap_cfg('ldap_ca_cert') !== '' && defined('LDAP_OPT_X_TLS_CACERTFILE')) {
             ldap_set_option($conn, LDAP_OPT_X_TLS_CACERTFILE, ldap_cfg('ldap_ca_cert'));
         }
+        // OpenLDAP fige le contexte TLS à la première utilisation : sans cette
+        // reconstruction, les deux options ci-dessus sont ignorées et un
+        // certificat interne fait échouer la poignée de main — l'erreur remonte
+        // alors sous la forme trompeuse « Can't contact LDAP server ».
+        // À appeler en dernier, après TOUTE modification d'option TLS.
+        if (defined('LDAP_OPT_X_TLS_NEWCTX')) {
+            ldap_set_option($conn, LDAP_OPT_X_TLS_NEWCTX, 0);
+        }
     }
     return $conn;
 }
