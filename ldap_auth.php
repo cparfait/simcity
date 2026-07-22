@@ -110,19 +110,29 @@ function ldap_open_connection() {
     ldap_set_option($conn, LDAP_OPT_NETWORK_TIMEOUT, 8);
     if (defined('LDAP_OPT_TIMELIMIT')) ldap_set_option($conn, LDAP_OPT_TIMELIMIT, 8);
     if ($useSsl) {
-        // Validation du certificat serveur : désactivable pour CA interne/auto-signée
+        $validate = ldap_cfg('ldap_validate_cert');
+        $caCert   = ldap_cfg('ldap_ca_cert');
+
+        // Options TLS par variables d'environnement : c'est la voie fiable.
+        // Posées sur le handle, elles n'ont d'effet qu'après reconstruction du
+        // contexte via LDAP_OPT_X_TLS_NEWCTX — constante absente de certaines
+        // builds PHP (dont l'image php:8.3-apache). Sans elle, décocher la
+        // validation restait sans effet et un certificat interne faisait
+        // échouer la poignée de main, sous le message trompeur
+        // « Can't contact LDAP server ». OpenLDAP lit ces variables à
+        // l'initialisation du contexte, indépendamment de PHP.
+        putenv('LDAPTLS_REQCERT=' . ($validate ? 'demand' : 'never'));
+        if ($caCert !== '') putenv('LDAPTLS_CACERT=' . $caCert);
+
+        // Réglages sur le handle : sans effet là où NEWCTX manque, mais
+        // corrects sur les builds qui l'exposent.
         if (defined('LDAP_OPT_X_TLS_REQUIRE_CERT')) {
             ldap_set_option($conn, LDAP_OPT_X_TLS_REQUIRE_CERT,
-                ldap_cfg('ldap_validate_cert') ? LDAP_OPT_X_TLS_DEMAND : LDAP_OPT_X_TLS_NEVER);
+                $validate ? LDAP_OPT_X_TLS_DEMAND : LDAP_OPT_X_TLS_NEVER);
         }
-        if (ldap_cfg('ldap_ca_cert') !== '' && defined('LDAP_OPT_X_TLS_CACERTFILE')) {
-            ldap_set_option($conn, LDAP_OPT_X_TLS_CACERTFILE, ldap_cfg('ldap_ca_cert'));
+        if ($caCert !== '' && defined('LDAP_OPT_X_TLS_CACERTFILE')) {
+            ldap_set_option($conn, LDAP_OPT_X_TLS_CACERTFILE, $caCert);
         }
-        // OpenLDAP fige le contexte TLS à la première utilisation : sans cette
-        // reconstruction, les deux options ci-dessus sont ignorées et un
-        // certificat interne fait échouer la poignée de main — l'erreur remonte
-        // alors sous la forme trompeuse « Can't contact LDAP server ».
-        // À appeler en dernier, après TOUTE modification d'option TLS.
         if (defined('LDAP_OPT_X_TLS_NEWCTX')) {
             ldap_set_option($conn, LDAP_OPT_X_TLS_NEWCTX, 0);
         }
