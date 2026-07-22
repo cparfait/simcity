@@ -5320,7 +5320,13 @@ elseif ($page === 'refs') {
             if(!j || j.error){ alert((j&&j.error)||'Aperçu indisponible.'); return; }
             document.getElementById('mail-preview-label').textContent = MAIL_TPL_LABELS[tk] || tk;
             document.getElementById('mail-preview-subject').textContent = j.subject;
-            document.getElementById('mail-preview-frame').srcdoc = j.html;
+            // L'iframe est recréée à chaque aperçu : la réaffectation de
+            // srcdoc sur une iframe sandboxée déjà rendue reste blanche
+            // sur certains navigateurs.
+            const old = document.getElementById('mail-preview-frame');
+            const fresh = old.cloneNode(false);
+            fresh.srcdoc = j.html;
+            old.replaceWith(fresh);
             openModal('modal-mail-preview');
           })
           .catch(() => alert('Erreur réseau pendant l\'aperçu.'));
