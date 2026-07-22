@@ -3452,11 +3452,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             else {
                 // Le DROP TABLE (DDL) commite implicitement : on sort proprement de la transaction
                 if ($pdo->inTransaction()) $pdo->commit();
-                $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-                $pdo->exec("DROP TABLE IF EXISTS `request_steps`,`requests`,`bons`,`signatures`,`sign_tokens`,`sim_history`,`attachments`,`mobile_lines`,`devices`,`history_logs`,`agents`,`billing_accounts`,`plan_types`,`operators`,`models`,`services`,`settings`,`users`");
-                $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
-                session_destroy();
-                header('Location: install.php'); exit;
+                // Même mécanique que la purge de l'import CSV : sauvegarde de
+                // sécurité, purge (comptes admin épargnés) puis recréation du
+                // schéma — pas de détour par install.php, l'opérateur reste
+                // connecté sur une base vide prête à l'emploi.
+                $safety = '';
+                try { $safety = simcity_backup_to_disk($pdo); } catch (Throwable $e) { $safety = ''; }
+                simcity_import_purge($pdo);
+                logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "Réinitialisation complète de la base");
+                flash('success', 'Base réinitialisée' . ($safety !== '' ? " (sauvegarde de sécurité : $safety)" : '') . ' — structure recréée, comptes d\'administration conservés.');
+                header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
             }
         } elseif ($ent === 'service') {
             // chef/dga : valideurs par défaut du circuit des demandes de téléphone
@@ -5435,7 +5440,8 @@ elseif ($page === 'refs') {
           <input type="hidden" name="_entity" value="db_reset">
           <input type="hidden" name="_action" value="reset">
           <p style="color:var(--text2);font-size:.9rem;margin-bottom:1.5rem;line-height:1.6;">
-            Toutes les tables seront supprimées et vous serez redirigé vers <code>install.php</code> pour recréer la structure.<br><br>
+            Toutes les données seront supprimées et la structure recréée immédiatement (vide).
+            Les comptes d'administration sont conservés et une sauvegarde de sécurité est créée avant la purge.<br><br>
             <strong>Tapez <span style="color:var(--danger);font-family:var(--font-mono);">SUPPRIMER</span> pour confirmer :</strong>
           </p>
           <div class="form-group form-full">
