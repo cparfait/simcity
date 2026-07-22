@@ -2,6 +2,15 @@
 #  SimCity — Protection des fichiers sensibles
 # ============================================================
 
+# ─── Bloquer les fichiers et dossiers cachés (.git, .env…) ───
+# Un déploiement qui monte le dépôt cloné dans le webroot exposerait sinon
+# /.git/config puis tout l'historique : code source et secrets commités.
+# mod_alias plutôt que mod_rewrite : il est chargé par défaut, donc la règle
+# s'applique même sur une image où « a2enmod rewrite » n'a pas été fait.
+<IfModule mod_alias.c>
+    RedirectMatch 403 (^|/)\.(?!well-known)
+</IfModule>
+
 # ─── Bloquer l'accès direct à config.php ─────────────────────
 <Files "config.php">
     Require all denied

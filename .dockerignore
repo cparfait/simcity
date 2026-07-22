@@ -1,0 +1,8 @@
+# Exclus du contexte de build : ces éléments n'ont rien à faire dans le webroot
+.git
+.github
+.gitignore
+tests
+uploads
+backups
+db_data

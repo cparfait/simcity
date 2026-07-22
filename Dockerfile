@@ -14,6 +14,14 @@ RUN apt-get update \
 # Modules Apache utilisés par le .htaccess (règles de réécriture + en-têtes)
 RUN a2enmod rewrite headers
 
+# L'image php:apache honore le .htaccess, mais une base Apache configurée en
+# « AllowOverride None » l'ignorerait silencieusement — config.php, reset.php
+# et backups/ seraient alors servis en clair. On fixe donc explicitement la
+# directive. « Options -Indexes » supprime le listing des répertoires.
+RUN printf '<Directory /var/www/html>\n    AllowOverride All\n    Options -Indexes\n</Directory>\n' \
+      > /etc/apache2/conf-available/simcity.conf \
+ && a2enconf simcity
+
 COPY . /var/www/html/
 
 # Active la protection Apache (le dépôt versionne « htaccess » sans point)
