@@ -509,7 +509,7 @@ function requestMailShell($title, $inner, $pdo = null, $bannerOverride = null) {
          // Rangée logo (fond blanc) puis bandeau coloré
          . $logoImg
          . '<tr><td bgcolor="' . $c1 . '" style="' . $bandCss . $bandRadius . 'padding:22px 36px;">'
-         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:bold;color:#ffffff;">📱 SimCity</div>'
+         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:bold;color:#ffffff;">SimCity</div>'
          . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:rgba(255,255,255,.75);letter-spacing:1px;text-transform:uppercase;margin-top:4px;">Gestion de la flotte mobile</div>'
          . '</td></tr>'
          // Corps
@@ -572,13 +572,13 @@ function mailDemoVars($pdo): array {
     $url = h(baseUrl($pdo));
     return [
         'test'     => [],
-        'accuse'   => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'bouton' => requestMailButton($url, '📍 Suivre ma demande')],
+        'accuse'   => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'bouton' => requestMailButton($url, 'Suivre ma demande')],
         'nouvelle' => ['numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'fonction' => ' (Chargé de mission)', 'email_beneficiaire' => '<br>E-mail : jean.exemple@exemple.fr', 'service' => 'DSI', 'demandeur' => 'Marie DÉMO', 'email_demandeur' => 'marie.demo@exemple.fr', 'bouton' => requestMailButton($url, 'Qualifier la demande')],
-        'visa'     => ['validateur' => ' Marie DÉMO', 'rappel' => '', 'numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'service' => ' — service DSI', 'etape' => 'Direction du service', 'bouton' => requestMailButton($url, '👁️ Examiner et viser la demande'), 'lien' => $url],
+        'visa'     => ['validateur' => ' Marie DÉMO', 'rappel' => '', 'numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'service' => ' — service DSI', 'etape' => 'Direction du service', 'bouton' => requestMailButton($url, 'Examiner et viser la demande'), 'lien' => $url],
         'validee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'lien' => $url],
         'refusee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'etape' => 'D.G.A. de secteur', 'valideur' => ' par Paul DÉMO', 'avis' => 'Dotation existante suffisante.', 'lien' => $url],
         'suivi'    => ['liste' => '<p style="margin:.5rem 0;"><strong>DEM-0000</strong> — Jean EXEMPLE <span style="color:#666;">(🟡 En validation)</span><br><a href="' . $url . '" style="color:#4f46e5;">' . $url . '</a></p>'],
-        'bon'      => ['prenom' => 'Jean', 'type_bon' => 'remise', 'numero' => 'BR-0000', 'bouton' => requestMailButton($url, '✍️ Signer le bon'), 'lien' => $url, 'expiration' => '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
+        'bon'      => ['prenom' => 'Jean', 'type_bon' => 'remise', 'numero' => 'BR-0000', 'bouton' => requestMailButton($url, 'Signer le bon'), 'lien' => $url, 'expiration' => '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
     ];
 }
 
@@ -620,7 +620,7 @@ function requestSendStepEmail($pdo, $req, $step, $isReminder = false) {
         'beneficiaire' => h($req['agent_name']),
         'service'      => $req['service_name'] ? ' — service ' . h($req['service_name']) : '',
         'etape'        => h($step['label']),
-        'bouton'       => requestMailButton($url, '👁️ Examiner et viser la demande'),
+        'bouton'       => requestMailButton($url, 'Examiner et viser la demande'),
         'lien'         => h($url),
     ]);
     $res = smtpSendMail($pdo, $step['validator_email'], ($isReminder ? 'Rappel — ' : '') . $subject, $html);
@@ -1013,7 +1013,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
             //    confirmation + lien de suivi. N'intervient pas dans le circuit.
             [$subject, $html] = mailRender($pdo, 'accuse', [
                 'numero' => h($numero), 'beneficiaire' => h($agentName),
-                'bouton' => requestMailButton($suivi, '📍 Suivre ma demande'),
+                'bouton' => requestMailButton($suivi, 'Suivre ma demande'),
             ]);
             smtpSendMail($pdo, $requesterEmail, $subject, $html);
 
@@ -3408,7 +3408,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $expFmt  = $b['expires_at'] ? date('d/m/Y', strtotime($b['expires_at'])) : null;
                     [$subject, $html] = mailRender($pdo, 'bon', [
                         'prenom' => h($b['first_name']), 'type_bon' => $typeLbl, 'numero' => h($b['numero']),
-                        'bouton' => requestMailButton($url, '✍️ Signer le bon'), 'lien' => h($url),
+                        'bouton' => requestMailButton($url, 'Signer le bon'), 'lien' => h($url),
                         'expiration' => $expFmt ? '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . $expFmt . '</strong>.</p>' : '',
                     ]);
                     $res = smtpSendMail($pdo, $b['email'], $subject, $html);
