@@ -620,6 +620,7 @@ label{display:block;font-size:.74rem;font-weight:600;color:var(--text-muted);tex
 input[type=text],input[type=email],select,textarea{width:100%;padding:.7rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:.95rem;font-family:inherit;background:#fff;color:var(--text);transition:border-color .18s ease,box-shadow .18s ease;}
 input:hover:not(:focus),select:hover:not(:focus),textarea:hover:not(:focus){border-color:rgba(79,70,229,.5);}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.28);}
+    input::placeholder,textarea::placeholder{color:var(--text-light);opacity:.75;font-style:italic;}
 textarea{resize:vertical;min-height:96px;line-height:1.5;}
 .field-hint{font-size:.78rem;color:var(--text-light);margin-top:.35rem;}
 .radio-row{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.15rem;}
@@ -2054,6 +2055,7 @@ if (!isset($_SESSION['user_id'])) {
         label{font-size:.82rem;font-weight:600;color:var(--text);}
         input{width:100%;padding:9px 12px;margin-top:5px;background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius);color:var(--text);font-family:inherit;font-size:.9rem;box-sizing:border-box;transition:border-color .18s ease,box-shadow .18s ease;}
         input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.35);}
+        input::placeholder{color:var(--text-light);opacity:.75;font-style:italic;}
         button{width:100%;padding:11px;background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:var(--radius);font-weight:600;font-size:.95rem;margin-top:1.5rem;cursor:pointer;transition:background-color .18s ease;}
         button:hover{background:var(--primary-dark);}
     </style></head>
@@ -6145,6 +6147,9 @@ label{font-size:.78rem;font-weight:600;color:var(--text2);text-transform:upperca
 [data-theme="dark"] input,[data-theme="dark"] select,[data-theme="dark"] textarea{background:var(--bg3)}
 input:hover:not(:focus):not(:disabled),select:hover:not(:focus):not(:disabled),textarea:hover:not(:focus):not(:disabled){border-color:rgba(79,70,229,.55)}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:var(--ring);}
+/* Exemples (placeholder) : nettement plus pâles et en italique, sinon on les
+   confond avec une valeur déjà saisie. */
+input::placeholder,textarea::placeholder{color:var(--text3);opacity:.75;font-style:italic;}
 .modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:1000;align-items:center;justify-content:center;padding:1rem;backdrop-filter:blur(4px)} .modal-overlay.open{display:flex;animation:fadeIn .2s ease;}
 .modal{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius);width:100%;max-width:580px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:slideUp .25s ease;} .modal-lg{max-width:700px;}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}} @keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
