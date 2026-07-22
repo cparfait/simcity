@@ -461,6 +461,10 @@ function requestStatusInfo($s) {
 function mailBannerColors($pdo = null): array {
     $c1 = '#4f46e5'; $c2 = '#7c3aed'; $grad = true;
     if ($pdo) {
+        // La couleur du site (si définie) devient le défaut des e-mails ;
+        // les couleurs propres aux e-mails (ci-dessous) priment toujours.
+        $site = uiPrimaryColor($pdo);
+        if ($site !== '') { $c1 = $site; $c2 = uiColorMix($site, 0.3); }
         $v1 = getSetting($pdo, 'mail_banner_color', '');
         $v2 = getSetting($pdo, 'mail_banner_color2', '');
         if (preg_match('/^#[0-9a-fA-F]{6}$/', $v1)) $c1 = $v1;
@@ -748,6 +752,39 @@ function requestProcessReminders($pdo) {
 }
 if (PHP_SAPI !== 'cli') requestProcessReminders($pdo);
 
+// ─── Couleur principale du site (Paramètres → Général) ────────
+// Vide = palette d'origine (violet). Sinon, toutes les variables CSS
+// primaires et le logo SVG embarqué sont teintés avec cette couleur.
+function uiPrimaryColor($pdo): string {
+    $c = trim(getSetting($pdo, 'ui_primary_color', ''));
+    return preg_match('/^#[0-9a-fA-F]{6}$/', $c) ? strtolower($c) : '';
+}
+
+// Mélange un hex avec du blanc (ratio > 0) ou du noir (ratio < 0).
+function uiColorMix(string $hex, float $ratio): string {
+    [$r, $g, $b] = sscanf($hex, '#%02x%02x%02x');
+    $t = $ratio >= 0 ? 255 : 0; $a = abs($ratio);
+    $f = fn($v) => str_pad(dechex((int)round($v + ($t - $v) * $a)), 2, '0', STR_PAD_LEFT);
+    return '#' . $f($r) . $f($g) . $f($b);
+}
+
+function uiColorRgb(string $hex): string {
+    [$r, $g, $b] = sscanf($hex, '#%02x%02x%02x');
+    return "$r,$g,$b";
+}
+
+// Bloc <style> de surcharge des variables primaires ('' si couleur par
+// défaut). Sélecteurs doublés (:root:root) : plus spécifiques que les
+// définitions des feuilles de style, l'ordre d'inclusion est indifférent.
+function uiPrimaryCssOverride($pdo): string {
+    $c = uiPrimaryColor($pdo);
+    if ($c === '') return '';
+    $dark = uiColorMix($c, -0.22); $rgb = uiColorRgb($c);
+    $l1 = uiColorMix($c, 0.45); $l2 = uiColorMix($c, 0.25); $lrgb = uiColorRgb($l1);
+    return '<style>:root:root{--primary:' . $c . ';--primary-dark:' . $dark . ';--primary-dim:rgba(' . $rgb . ',.08);--primary-glow:rgba(' . $rgb . ',.35);--ring:0 0 0 3px rgba(' . $rgb . ',.35);}'
+         . ':root:root[data-theme="dark"]{--primary:' . $l1 . ';--primary-dark:' . $l2 . ';--primary-dim:rgba(' . $lrgb . ',.14);--primary-glow:rgba(' . $lrgb . ',.35);--ring:0 0 0 3px rgba(' . $lrgb . ',.35);}</style>';
+}
+
 // URL web du logo affiché sur les pages publiques de demande.
 // Priorité au logo paramétré (celui des bons PDF), sinon le logo de l'app.
 function requestLogoUrl($pdo) {
@@ -756,7 +793,7 @@ function requestLogoUrl($pdo) {
         // pdf_logo_path est un chemin serveur relatif au webroot (ex. uploads/…)
         return str_replace('\\', '/', $logo);
     }
-    return 'assets/logo.svg';
+    return 'index.php?logo=1';
 }
 
 // CSS partagé des pages publiques « demandes » (autonome, mobile).
@@ -1044,7 +1081,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
 <!DOCTYPE html><html lang="fr"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title><?=h($fTitle)?> – SimCity</title>
-<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link rel="icon" type="image/svg+xml" href="index.php?logo=1"><?php echo uiPrimaryCssOverride($pdo); ?>
 <link href="vendor/plex.css" rel="stylesheet">
 <style><?=requestPublicCss()?></style>
 </head><body>
@@ -1364,7 +1401,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande_suivi') {
 <!DOCTYPE html><html lang="fr"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Suivi de demande – SimCity</title>
-<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link rel="icon" type="image/svg+xml" href="index.php?logo=1"><?php echo uiPrimaryCssOverride($pdo); ?>
 <link href="vendor/plex.css" rel="stylesheet">
 <style><?=requestPublicCss()?></style>
 </head><body>
@@ -1494,7 +1531,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
 <!DOCTYPE html><html lang="fr"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Visa d'une demande – SimCity</title>
-<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link rel="icon" type="image/svg+xml" href="index.php?logo=1"><?php echo uiPrimaryCssOverride($pdo); ?>
 <link href="vendor/plex.css" rel="stylesheet">
 <style><?=requestPublicCss()?>
 .btn-approve{background:#059669;border-color:#059669;} .btn-approve:hover{background:#047857;border-color:#047857;}
@@ -2261,6 +2298,18 @@ if (isset($_GET['page']) && $_GET['page'] === 'backup_download') {
     exit;
 }
 
+// ─── 3e. LOGO SVG TEINTÉ ──────────────────────────────────────
+// Sert le logo embarqué, recoloré avec la couleur du site si définie.
+// Public (affiché sur la page de connexion et les pages de demande).
+if (isset($_GET['logo'])) {
+    header('Content-Type: image/svg+xml');
+    header('Cache-Control: no-cache');
+    $svg = (string)@file_get_contents(__DIR__ . '/assets/logo.svg');
+    $c = uiPrimaryColor($pdo);
+    if ($c !== '') $svg = str_replace(['#6366f1', '#3b82f6'], [$c, uiColorMix($c, 0.3)], $svg);
+    echo $svg; exit;
+}
+
 // ─── 4. SECURITE & AUTHENTIFICATION ───────────────────────────
 
 // ── Déconnexion ───────────────────────────────────────────────
@@ -2363,7 +2412,7 @@ login_render:
 if (!isset($_SESSION['user_id'])) {
     ?>
     <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion – SimCity</title>
-    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <link rel="icon" type="image/svg+xml" href="index.php?logo=1"><?php echo uiPrimaryCssOverride($pdo); ?>
     <link href="vendor/plex.css" rel="stylesheet">
     <style>
         :root{--primary:#4f46e5;--primary-dark:#4338ca;--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
@@ -2379,7 +2428,7 @@ if (!isset($_SESSION['user_id'])) {
         button:hover{background:var(--primary-dark);}
     </style></head>
     <body>
-        <div class="login-box"><img src="assets/logo.svg" alt="SimCity" class="login-logo"><h2>SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI<?php if(ldap_auth_enabled()) echo '<br><span style="font-size:.78rem;color:var(--text-light);">Comptes locaux ou Active Directory</span>'; ?></p>
+        <div class="login-box"><img src="index.php?logo=1" alt="SimCity" class="login-logo"><h2>SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI<?php if(ldap_auth_enabled()) echo '<br><span style="font-size:.78rem;color:var(--text-light);">Comptes locaux ou Active Directory</span>'; ?></p>
             <?php if(isset($login_error)) echo "<div style='color:var(--danger);text-align:center;margin-bottom:1rem;'>".h($login_error)."</div>"; ?>
             <form method="post" autocomplete="off">
                 <?=csrf_field()?>
@@ -3099,6 +3148,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $val = max(0, (int)$d[$key]);
                     $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?")->execute([$val, $key]);
                 }
+            }
+            // Couleur principale du site (case décochée = retour à la palette d'origine)
+            if (isset($d['ui_color_form'])) {
+                $c = trim($d['ui_primary_color'] ?? '');
+                if (empty($d['ui_primary_color_enabled']) || !preg_match('/^#[0-9a-fA-F]{6}$/', $c)) $c = '';
+                $pdo->prepare("INSERT INTO settings (setting_key, setting_value, label) VALUES ('ui_primary_color', ?, 'Couleur principale du site (vide = défaut)')
+                               ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)")->execute([$c]);
             }
             // Sauvegarde de l'URL du site
             if (array_key_exists('site_url', $d)) {
@@ -5124,6 +5180,32 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
+      <!-- Bloc couleur du site -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-palette"></i> Couleur du site</div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="settings">
+          <input type="hidden" name="_action" value="save">
+          <input type="hidden" name="ui_color_form" value="1">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+            Couleur principale de l'interface (boutons, onglets, liens, logo embarqué).
+            Elle s'applique aussi aux thèmes sombre (déclinaison éclaircie) et aux pages publiques.
+          </p>
+          <?php $uiColor = uiPrimaryColor($pdo); ?>
+          <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:.5rem;font-size:.86rem;font-weight:400;text-transform:none;letter-spacing:normal;cursor:pointer;margin:0;">
+              <input type="checkbox" name="ui_primary_color_enabled" value="1" <?=$uiColor!==''?'checked':''?> style="width:15px;height:15px;accent-color:var(--primary);">
+              Couleur personnalisée
+            </label>
+            <input type="color" name="ui_primary_color" value="<?=h($uiColor !== '' ? $uiColor : '#4f46e5')?>" style="width:46px;height:30px;padding:1px;border:1px solid var(--border);border-radius:4px;cursor:pointer;">
+            <span style="font-size:.78rem;color:var(--text3);">Décochée : palette d'origine (indigo). Choisissez une couleur foncée, le texte posé dessus est blanc.</span>
+          </div>
+          <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1.25rem;">
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
+          </div>
+        </form>
+      </div>
+
       <!-- Bloc seuils -->
       <div class="card">
         <div class="card-header"><i class="bi bi-bell"></i> Seuils d'alerte Stock</div>
@@ -6863,7 +6945,7 @@ $content = ob_get_clean();
 <html lang="fr">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($pageTitles[$page]??'SimCity')?> – SimCity</title>
-<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link rel="icon" type="image/svg+xml" href="index.php?logo=1"><?php echo uiPrimaryCssOverride($pdo); ?>
 <link href="vendor/plex.css" rel="stylesheet">
 <link href="vendor/bootstrap-icons.css" rel="stylesheet">
 <script>(function(){ if (localStorage.getItem('pm_theme') === 'dark') document.documentElement.setAttribute('data-theme','dark'); })();</script>
@@ -6986,7 +7068,7 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-logo">
-    <img src="assets/logo.svg" alt="" class="logo-icon">
+    <img src="index.php?logo=1" alt="" class="logo-icon">
     <div><div class="logo-text">SimCity</div><div class="logo-ver">v<?=defined('APP_VERSION') ? APP_VERSION : '1.0'?></div></div>
   </div>
   <nav class="sidebar-nav">
