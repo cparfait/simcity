@@ -540,6 +540,22 @@ function mailTemplates(): array {
     ];
 }
 
+// Données fictives de démonstration pour chaque gabarit — utilisées par
+// l'e-mail de test et l'aperçu des gabarits.
+function mailDemoVars($pdo): array {
+    $url = h(baseUrl($pdo));
+    return [
+        'test'     => [],
+        'accuse'   => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'bouton' => requestMailButton($url, '📍 Suivre ma demande')],
+        'nouvelle' => ['numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'fonction' => ' (Chargé de mission)', 'email_beneficiaire' => '<br>E-mail : jean.exemple@exemple.fr', 'service' => 'DSI', 'demandeur' => 'Marie DÉMO', 'email_demandeur' => 'marie.demo@exemple.fr', 'bouton' => requestMailButton($url, 'Qualifier la demande')],
+        'visa'     => ['validateur' => ' Marie DÉMO', 'rappel' => '', 'numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'service' => ' — service DSI', 'etape' => 'Direction du service', 'bouton' => requestMailButton($url, '👁️ Examiner et viser la demande'), 'lien' => $url],
+        'validee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'lien' => $url],
+        'refusee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'etape' => 'D.G.A. de secteur', 'valideur' => ' par Paul DÉMO', 'avis' => 'Dotation existante suffisante.', 'lien' => $url],
+        'suivi'    => ['liste' => '<p style="margin:.5rem 0;"><strong>DEM-0000</strong> — Jean EXEMPLE <span style="color:#666;">(🟡 En validation)</span><br><a href="' . $url . '" style="color:#4f46e5;">' . $url . '</a></p>'],
+        'bon'      => ['prenom' => 'Jean', 'type_bon' => 'remise', 'numero' => 'BR-0000', 'bouton' => requestMailButton($url, '✍️ Signer le bon'), 'lien' => $url, 'expiration' => '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
+    ];
+}
+
 // Rendu d'un gabarit : [sujet, corps HTML complet]. Les valeurs de $vars
 // sont déjà échappées/HTML par l'appelant.
 function mailRender($pdo, $key, array $vars = []): array {
@@ -2455,6 +2471,29 @@ if (isset($_GET['ajax_quickadd'])) {
     exit;
 }
 
+// ─── AJAX : APERÇU D'UN GABARIT D'E-MAIL (Paramètres → Envoi d'e-mails) ──
+// Rend le gabarit avec les valeurs du formulaire (non enregistrées) et les
+// données de démonstration. Retourne {subject, html} ; le HTML part dans une
+// iframe sandboxée côté client.
+if (isset($_GET['ajax_mail_preview'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!isset($_SESSION['user_id'])) { http_response_code(403); echo json_encode(['error' => 'Non authentifié']); exit; }
+    $key = $_POST['tpl'] ?? '';
+    $all = mailTemplates();
+    if (!isset($all[$key])) { http_response_code(422); echo json_encode(['error' => 'Gabarit inconnu']); exit; }
+    $t = $all[$key];
+    $subject = trim($_POST['subject'] ?? '') ?: $t['subject'];
+    $title   = trim($_POST['title'] ?? '')   ?: $t['title'];
+    $body    = trim($_POST['body'] ?? '')    ?: $t['body'];
+    $repl = [];
+    foreach (mailDemoVars($pdo)[$key] as $k => $v) $repl['{' . $k . '}'] = (string)$v;
+    echo json_encode([
+        'subject' => strtr($subject, $repl),
+        'html'    => requestMailShell(strtr($title, $repl), strtr($body, $repl), $pdo),
+    ]);
+    exit;
+}
+
 // ─── AJAX : RECHERCHE LOCALE D'UN UTILISATEUR (sélecteurs lignes / matériels) ──
 // Remplace les <select> exhaustifs (inutilisables avec beaucoup d'agents) :
 // recherche dans le référentiel local uniquement (pas l'AD). Authentifié.
@@ -3637,9 +3676,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // Personnalisation des gabarits d'e-mails : un champ vide efface
             // la surcharge (retour au gabarit par défaut).
             $up = $pdo->prepare("INSERT INTO settings (setting_key, setting_value, label) VALUES (?,?,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)");
-            foreach (array_keys(mailTemplates()) as $tk) {
+            foreach (mailTemplates() as $tk => $def) {
                 foreach (['subject' => 'Sujet', 'title' => 'Titre', 'body' => 'Corps'] as $part => $lbl) {
                     $val = trim((string)($d["tpl_{$part}"][$tk] ?? ''));
+                    // Contenu identique au gabarit par défaut -> pas de surcharge :
+                    // le gabarit continuera de suivre les évolutions de l'application.
+                    if ($val === trim($def[$part])) $val = '';
                     $up->execute(["mail_tpl_{$tk}_{$part}", $val, "$lbl e-mail « {$tk} » (vide = défaut)"]);
                 }
             }
@@ -3654,17 +3696,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Envoie les gabarits cochés avec des données fictives [DÉMO] :
                 // on juge le rendu réel (et les personnalisations) dans le
                 // client de messagerie, pas un aperçu.
-                $url = h(baseUrl($pdo));
-                $demoVars = [
-                    'test'     => [],
-                    'accuse'   => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'bouton' => requestMailButton($url, '📍 Suivre ma demande')],
-                    'nouvelle' => ['numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'fonction' => ' (Chargé de mission)', 'email_beneficiaire' => '<br>E-mail : jean.exemple@exemple.fr', 'service' => 'DSI', 'demandeur' => 'Marie DÉMO', 'email_demandeur' => 'marie.demo@exemple.fr', 'bouton' => requestMailButton($url, 'Qualifier la demande')],
-                    'visa'     => ['validateur' => ' Marie DÉMO', 'rappel' => '', 'numero' => 'DEM-0000', 'type' => 'Première attribution', 'beneficiaire' => 'Jean EXEMPLE', 'service' => ' — service DSI', 'etape' => 'Direction du service', 'bouton' => requestMailButton($url, '👁️ Examiner et viser la demande'), 'lien' => $url],
-                    'validee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'lien' => $url],
-                    'refusee'  => ['numero' => 'DEM-0000', 'beneficiaire' => 'Jean EXEMPLE', 'etape' => 'D.G.A. de secteur', 'valideur' => ' par Paul DÉMO', 'avis' => 'Dotation existante suffisante.', 'lien' => $url],
-                    'suivi'    => ['liste' => '<p style="margin:.5rem 0;"><strong>DEM-0000</strong> — Jean EXEMPLE <span style="color:#666;">(🟡 En validation)</span><br><a href="' . $url . '" style="color:#4f46e5;">' . $url . '</a></p>'],
-                    'bon'      => ['prenom' => 'Jean', 'type_bon' => 'remise', 'numero' => 'BR-0000', 'bouton' => requestMailButton($url, '✍️ Signer le bon'), 'lien' => $url, 'expiration' => '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . date('d/m/Y', strtotime('+15 days')) . '</strong>.</p>'],
-                ];
+                $demoVars = mailDemoVars($pdo);
                 $keys = array_values(array_intersect(array_keys($demoVars), (array)($d['tpl'] ?? [])));
                 if (!$keys) {
                     flash('error', "Cochez au moins un e-mail à tester.");
@@ -5142,26 +5174,29 @@ elseif ($page === 'refs') {
           <input type="hidden" name="_entity" value="mail_tpl">
           <input type="hidden" name="_action" value="save">
           <p style="color:var(--text2);font-size:.85rem;line-height:1.6;margin-bottom:1rem;">
-            Sujet, titre et corps (HTML) de chaque e-mail. Un champ laissé <strong>vide</strong> reprend le gabarit par défaut.
+            Sujet, titre et corps (HTML) de chaque e-mail. Effacer un champ (ou le laisser identique au défaut) reprend le gabarit standard.
             Les variables <code style="font-family:var(--font-mono);">{xxx}</code> sont remplacées à l'envoi.
           </p>
           <?php foreach (mailTemplates() as $tk => $tpl):
-              $ovS = getSetting($pdo, "mail_tpl_{$tk}_subject", '');
-              $ovT = getSetting($pdo, "mail_tpl_{$tk}_title", '');
-              $ovB = getSetting($pdo, "mail_tpl_{$tk}_body", '');
-              $customized = trim($ovS) !== '' || trim($ovT) !== '' || trim($ovB) !== '';
+              $ovS = trim(getSetting($pdo, "mail_tpl_{$tk}_subject", ''));
+              $ovT = trim(getSetting($pdo, "mail_tpl_{$tk}_title", ''));
+              $ovB = trim(getSetting($pdo, "mail_tpl_{$tk}_body", ''));
+              $customized = $ovS !== '' || $ovT !== '' || $ovB !== '';
           ?>
-          <details style="border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:.6rem;">
+          <details style="border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:.6rem;" data-tpl="<?=h($tk)?>">
             <summary style="cursor:pointer;padding:.65rem .9rem;font-size:.88rem;font-weight:600;">
               <?=h($tpl['label'])?><?=$customized ? ' <span class="badge badge-info" style="font-size:.68rem;">personnalisé</span>' : ''?>
             </summary>
             <div style="padding:.35rem .9rem .9rem;">
               <div class="form-group form-full"><label>Sujet</label>
-                <input type="text" name="tpl_subject[<?=h($tk)?>]" value="<?=h($ovS)?>" placeholder="<?=h($tpl['subject'])?>"></div>
+                <input type="text" name="tpl_subject[<?=h($tk)?>]" value="<?=h($ovS !== '' ? $ovS : $tpl['subject'])?>"></div>
               <div class="form-group form-full"><label>Titre (bandeau du message)</label>
-                <input type="text" name="tpl_title[<?=h($tk)?>]" value="<?=h($ovT)?>" placeholder="<?=h($tpl['title'])?>"></div>
+                <input type="text" name="tpl_title[<?=h($tk)?>]" value="<?=h($ovT !== '' ? $ovT : $tpl['title'])?>"></div>
               <div class="form-group form-full"><label>Corps (HTML)</label>
-                <textarea name="tpl_body[<?=h($tk)?>]" rows="5" style="font-family:var(--font-mono);font-size:.78rem;" placeholder="<?=h($tpl['body'])?>"><?=h($ovB)?></textarea></div>
+                <textarea name="tpl_body[<?=h($tk)?>]" rows="6" style="font-family:var(--font-mono);font-size:.78rem;"><?=h($ovB !== '' ? $ovB : $tpl['body'])?></textarea></div>
+              <div style="text-align:right;margin-bottom:.5rem;">
+                <button type="button" class="btn-secondary btn-sm" onclick="mailTplPreview('<?=h($tk)?>')"><i class="bi bi-eye"></i> Aperçu</button>
+              </div>
               <?php if ($tpl['vars']): ?>
               <div style="font-size:.76rem;color:var(--text3);line-height:1.7;">
                 <strong>Variables :</strong>
@@ -5178,6 +5213,44 @@ elseif ($page === 'refs') {
           </div>
         </form>
       </div>
+
+      <!-- Modale d'aperçu d'un gabarit d'e-mail -->
+      <div class="modal-overlay" id="modal-mail-preview">
+        <div class="modal" style="max-width:700px;width:95%;">
+          <div class="modal-header">
+            <h3><i class="bi bi-envelope-open"></i> Aperçu — <span id="mail-preview-label"></span></h3>
+            <button type="button" class="modal-close" onclick="closeModal('modal-mail-preview')"><i class="bi bi-x-lg"></i></button>
+          </div>
+          <div style="padding:1rem 1.5rem 1.5rem;">
+            <div style="font-size:.85rem;margin-bottom:.75rem;"><strong>Sujet :</strong> <span id="mail-preview-subject" style="color:var(--text2);"></span></div>
+            <iframe id="mail-preview-frame" sandbox="" style="width:100%;height:60vh;border:1px solid var(--border);border-radius:var(--radius-sm);background:#eef1f6;"></iframe>
+          </div>
+        </div>
+      </div>
+      <script>
+      // Aperçu : envoie les valeurs COURANTES du formulaire (non enregistrées)
+      // à ajax_mail_preview, et affiche le rendu dans une iframe sandboxée.
+      const MAIL_TPL_LABELS = <?= json_encode(array_map(fn($t) => $t['label'], mailTemplates())) ?>;
+      function mailTplPreview(tk){
+        const det  = document.querySelector('details[data-tpl="'+tk+'"]');
+        const form = det.closest('form');
+        const fd = new FormData();
+        fd.append('tpl', tk);
+        fd.append('subject', form.querySelector('[name="tpl_subject['+tk+']"]').value);
+        fd.append('title',   form.querySelector('[name="tpl_title['+tk+']"]').value);
+        fd.append('body',    form.querySelector('[name="tpl_body['+tk+']"]').value);
+        fetch('index.php?ajax_mail_preview=1', { method:'POST', body:fd })
+          .then(r => r.json())
+          .then(j => {
+            if(!j || j.error){ alert((j&&j.error)||'Aperçu indisponible.'); return; }
+            document.getElementById('mail-preview-label').textContent = MAIL_TPL_LABELS[tk] || tk;
+            document.getElementById('mail-preview-subject').textContent = j.subject;
+            document.getElementById('mail-preview-frame').srcdoc = j.html;
+            openModal('modal-mail-preview');
+          })
+          .catch(() => alert('Erreur réseau pendant l\'aperçu.'));
+      }
+      </script>
 
     </div><!-- fin section « Envoi d'e-mails » -->
     <?php endif; ?>
