@@ -2270,7 +2270,8 @@ if (isset($_GET['ajax_quickadd'])) {
         switch ($ent) {
             case 'service':
                 if ($g('name') === '') throw new Exception('Le nom du service est obligatoire.');
-                $pdo->prepare("INSERT INTO services(name,direction,notes) VALUES(?,?,'')")->execute([$g('name'), $g('direction')]);
+                $pdo->prepare("INSERT INTO services(name,direction,notes,chef_name,chef_email,dga_name,dga_email) VALUES(?,?,?,?,?,?,?)")
+                    ->execute([$g('name'), $g('direction'), $g('notes'), $g('chef_name'), fmtEmail($g('chef_email')), $g('dga_name'), fmtEmail($g('dga_email'))]);
                 $id = (int)$pdo->lastInsertId(); $label = $g('name'); break;
             case 'model':
                 if ($g('brand') === '' || $g('name') === '') throw new Exception('Marque et modèle sont obligatoires.');
@@ -2280,20 +2281,21 @@ if (isset($_GET['ajax_quickadd'])) {
             case 'agent':
                 if ($g('last_name') === '') throw new Exception('Le nom est obligatoire.');
                 $fn = fmtFirstName($g('first_name')); $ln = fmtLastName($g('last_name'));
-                $pdo->prepare("INSERT INTO agents(first_name,last_name,email,service_id) VALUES(?,?,?,?)")
-                    ->execute([$fn, $ln, fmtEmail($g('email')), ($g('service_id') !== '' ? (int)$g('service_id') : null)]);
+                $pdo->prepare("INSERT INTO agents(first_name,last_name,fonction,email,service_id) VALUES(?,?,?,?,?)")
+                    ->execute([$fn, $ln, $g('fonction'), fmtEmail($g('email')), ($g('service_id') !== '' ? (int)$g('service_id') : null)]);
                 $id = (int)$pdo->lastInsertId(); $label = trim($ln.' '.$fn); break;
             case 'plan':
                 if ($g('name') === '') throw new Exception('Le nom du forfait est obligatoire.');
-                $pdo->prepare("INSERT INTO plan_types(name,data_limit,notes,operator_id) VALUES(?,?,'',NULL)")->execute([$g('name'), $g('data_limit')]);
+                $pdo->prepare("INSERT INTO plan_types(name,data_limit,notes,operator_id) VALUES(?,?,?,?)")
+                    ->execute([$g('name'), $g('data_limit'), $g('notes'), ($g('operator_id') !== '' ? (int)$g('operator_id') : null)]);
                 $id = (int)$pdo->lastInsertId(); $label = $g('name'); break;
             case 'billing':
                 if ($g('account_number') === '') throw new Exception('Le numéro de compte est obligatoire.');
-                $pdo->prepare("INSERT INTO billing_accounts(account_number,name,notes) VALUES(?,?,'')")->execute([$g('account_number'), $g('name')]);
+                $pdo->prepare("INSERT INTO billing_accounts(account_number,name,notes) VALUES(?,?,?)")->execute([$g('account_number'), $g('name'), $g('notes')]);
                 $id = (int)$pdo->lastInsertId(); $label = trim($g('account_number').' '.($g('name') !== '' ? '— '.$g('name') : '')); break;
             case 'operator':
                 if ($g('name') === '') throw new Exception('Le nom de l\'opérateur est obligatoire.');
-                $pdo->prepare("INSERT INTO operators(name,website,notes) VALUES(?,'','')")->execute([$g('name')]);
+                $pdo->prepare("INSERT INTO operators(name,website,notes) VALUES(?,?,?)")->execute([$g('name'), $g('website'), $g('notes')]);
                 $id = (int)$pdo->lastInsertId(); $label = $g('name'); break;
             default:
                 throw new Exception('Type non pris en charge.');
@@ -6958,13 +6960,41 @@ document.querySelectorAll('.modal-overlay').forEach(o=>o.addEventListener('click
 
 // ── Ajout rapide (+) : crée une entité liée sans quitter le formulaire ──
 const QA_CSRF = { name: <?= json_encode(CSRF_TOKEN_NAME) ?>, token: <?= json_encode($CSRF_TOKEN) ?> };
+<?php
+// Listes pour les sélecteurs des modales d'ajout rapide (mêmes choix que les
+// formulaires complets des référentiels). try/catch : tables absentes pendant
+// une installation en cours.
+$qaSvcOpts = $qaOpOpts = [];
+try {
+    foreach ($pdo->query("SELECT id,name FROM services ORDER BY name") as $r)  $qaSvcOpts[] = ['value'=>(string)$r['id'],'label'=>$r['name']];
+    foreach ($pdo->query("SELECT id,name FROM operators ORDER BY name") as $r) $qaOpOpts[]  = ['value'=>(string)$r['id'],'label'=>$r['name']];
+} catch (Throwable $e) { /* base pas encore prête */ }
+?>
+// Chaque modale « + » reprend l'intégralité des champs du formulaire complet
+// du référentiel correspondant : rien à ressaisir après coup.
+const QA_SERVICES  = <?= json_encode($qaSvcOpts) ?>;
+const QA_OPERATORS = <?= json_encode($qaOpOpts) ?>;
 const QA_CONFIG = {
-  service:  { title:'Ajouter un service',  icon:'building',  fields:[{name:'name',label:'Nom du service',required:true}] },
+  service:  { title:'Ajouter un service',  icon:'building',  fields:[
+    {name:'name',label:'Nom du service',required:true},{name:'direction',label:'Direction'},
+    {name:'chef_name',label:'Chef de service (visa)'},{name:'chef_email',label:'E-mail du chef de service'},
+    {name:'dga_name',label:'D.G.A. de secteur (visa)'},{name:'dga_email',label:'E-mail du D.G.A.'},
+    {name:'notes',label:'Notes',type:'textarea'}] },
   model:    { title:'Ajouter un modèle',   icon:'phone',     fields:[{name:'brand',label:'Marque',required:true},{name:'name',label:'Modèle',required:true},{name:'category',label:'Catégorie',type:'select',options:['Smartphone','Tablette','Clé 4G','Modem','Autre']}] },
-  agent:    { title:'Ajouter un utilisateur', icon:'person', fields:[{name:'first_name',label:'Prénom'},{name:'last_name',label:'Nom',required:true},{name:'email',label:'E-mail'}] },
-  plan:     { title:'Ajouter un forfait',  icon:'globe2',    fields:[{name:'name',label:'Nom du forfait',required:true},{name:'data_limit',label:'Enveloppe data (ex : 100 Go)'}] },
-  billing:  { title:'Ajouter un compte de facturation', icon:'cash-coin', fields:[{name:'account_number',label:'N° de compte',required:true},{name:'name',label:'Nom / Entité'}] },
-  operator: { title:'Ajouter un opérateur',icon:'broadcast', fields:[{name:'name',label:"Nom de l'opérateur",required:true}] },
+  agent:    { title:'Ajouter un utilisateur', icon:'person', fields:[
+    {name:'first_name',label:'Prénom'},{name:'last_name',label:'Nom',required:true},
+    {name:'fonction',label:'Fonction'},{name:'email',label:'E-mail'},
+    {name:'service_id',label:'Service / Direction',type:'select',options:QA_SERVICES,emptyLabel:'-- Aucun --'}] },
+  plan:     { title:'Ajouter un forfait',  icon:'globe2',    fields:[
+    {name:'name',label:'Nom du forfait',required:true},{name:'data_limit',label:'Enveloppe data (ex : 100 Go)'},
+    {name:'operator_id',label:'Opérateur',type:'select',options:QA_OPERATORS,emptyLabel:'-- Aucun --'},
+    {name:'notes',label:'Notes',type:'textarea'}] },
+  billing:  { title:'Ajouter un compte de facturation', icon:'cash-coin', fields:[
+    {name:'account_number',label:'N° de compte',required:true},{name:'name',label:'Nom / Entité'},
+    {name:'notes',label:'Notes',type:'textarea'}] },
+  operator: { title:'Ajouter un opérateur',icon:'broadcast', fields:[
+    {name:'name',label:"Nom de l'opérateur",required:true},{name:'website',label:'Site web'},
+    {name:'notes',label:'Notes',type:'textarea'}] },
 };
 let _qaEntity=null, _qaTarget=null;
 function qaError(msg){ const b=document.getElementById('qa-error'); if(b){ b.textContent=msg||''; b.style.display=msg?'block':'none'; } }
@@ -6978,7 +7008,14 @@ function quickAddOpen(entity, targetSelectId, prefill){
     const req = f.required ? ' <span style="color:var(--danger)">*</span>' : '';
     let input;
     if(f.type === 'select'){
-      input = '<select data-qa="'+f.name+'">' + f.options.map(o=>'<option value="'+o+'">'+o+'</option>').join('') + '</select>';
+      const esc = s => { const d=document.createElement('div'); d.textContent=s; return d.innerHTML; };
+      const opts = (f.emptyLabel ? '<option value="">'+esc(f.emptyLabel)+'</option>' : '')
+        + f.options.map(o => typeof o === 'object'
+            ? '<option value="'+esc(o.value)+'">'+esc(o.label)+'</option>'
+            : '<option value="'+esc(o)+'">'+esc(o)+'</option>').join('');
+      input = '<select data-qa="'+f.name+'">' + opts + '</select>';
+    } else if(f.type === 'textarea'){
+      input = '<textarea data-qa="'+f.name+'" rows="2"></textarea>';
     } else {
       input = '<input type="text" data-qa="'+f.name+'"'+(f.required?' data-req="1"':'')+'>';
     }
