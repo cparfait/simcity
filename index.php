@@ -3961,13 +3961,14 @@ if ($page === 'dashboard') {
         <div class="card-header"><span class="card-title">📱 Demandes de téléphone en cours (<?=count($pendingReqs)?>)</span>
           <a href="?page=requests" style="font-size:.8rem;color:var(--primary);text-decoration:none;">Voir toutes les demandes →</a></div>
         <table class="data-table">
-          <thead><tr><th>N°</th><th>Agent</th><th>Service</th><th>Statut</th><th>Étape en cours</th><th></th></tr></thead>
+          <thead><tr><th>N°</th><th>Agent</th><th>Demandeur</th><th>Service</th><th>Statut</th><th>Étape en cours</th><th></th></tr></thead>
           <tbody>
           <?php foreach($pendingReqs as $pr): [$plbl, $pcls] = requestStatusInfo($pr['status']);
               $stalled = ($pr['status'] === 'en_validation' && $pr['last_contact'] && strtotime($pr['last_contact']) < time() - $reqDays * 86400); ?>
           <tr>
             <td><a href="?page=requests&view=<?=$pr['id']?>" class="cell-link" style="font-family:var(--font-mono);font-weight:700;color:var(--primary);font-size:.85rem;"><?=h($pr['numero'])?></a></td>
             <td><strong><?=h($pr['agent_name'])?></strong></td>
+            <td class="muted" <?=$pr['requester_email'] ? 'title="' . h($pr['requester_email']) . '"' : ''?>><?=h($pr['requester_name'] ?: '—')?></td>
             <td class="muted"><?=h($pr['service_name'] ?: '—')?></td>
             <td><span class="badge <?=$pcls?>"><?=h($plbl)?></span></td>
             <td class="muted" style="font-size:.8rem;">
@@ -6209,14 +6210,15 @@ elseif ($page === 'requests') {
 
     <div class="card" style="overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>N°</th><th>Déposée le</th><th>Agent</th><th>Service</th><th>Type</th><th>Statut</th><th>Avancement</th><th>Actions</th></tr></thead>
+        <thead><tr><th>N°</th><th>Déposée le</th><th>Agent</th><th>Demandeur</th><th>Service</th><th>Type</th><th>Statut</th><th>Avancement</th><th>Actions</th></tr></thead>
         <tbody id="tbody-requests">
-        <?php if (!$reqs): ?><tr><td colspan="8" class="empty-cell"><?=$reqClosed ? 'Aucune demande terminée pour l\'instant.' : 'Aucune demande en cours. Diffusez le lien du formulaire public ci-dessus.'?></td></tr><?php endif; ?>
+        <?php if (!$reqs): ?><tr><td colspan="9" class="empty-cell"><?=$reqClosed ? 'Aucune demande terminée pour l\'instant.' : 'Aucune demande en cours. Diffusez le lien du formulaire public ci-dessus.'?></td></tr><?php endif; ?>
         <?php foreach ($reqs as $r): [$lbl, $cls] = requestStatusInfo($r['status']); ?>
         <tr style="<?=in_array($r['status'], ['refusee', 'annulee'], true) ? 'opacity:.6;' : ''?>">
           <td><a href="?page=requests&view=<?=$r['id']?>" class="cell-link" style="font-family:var(--font-mono);font-weight:700;color:var(--primary);"><?=h($r['numero'])?></a></td>
           <td class="muted"><?=h($r['created_fmt'])?></td>
           <td><strong><?=h($r['agent_name'])?></strong><?=$r['agent_id'] ? '' : ' <span class="muted" style="font-size:.72rem;" title="Non rattachée au référentiel">⚠️</span>'?></td>
+          <td><?=h($r['requester_name'] ?: '—')?><?=$r['requester_email'] ? '<br><span class="muted" style="font-size:.75rem;">' . h($r['requester_email']) . '</span>' : ''?></td>
           <td class="muted"><?=h($r['service_name'] ?: '—')?></td>
           <td><span class="badge badge-muted"><?=$r['type'] === 'renouvellement' ? '♻️ Renouvellement' : '🆕 Attribution'?></span></td>
           <td><span class="badge <?=$cls?>"><?=h($lbl)?></span></td>
