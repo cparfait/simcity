@@ -2021,7 +2021,29 @@ if (isset($_GET['page']) && $_GET['page'] === 'backup_sql') {
     exit;
 }
 
-// ─── 3c. TÉLÉCHARGEMENT D'UNE SAUVEGARDE STOCKÉE ──────────────
+// ─── 3c. MODÈLE CSV POUR L'IMPORTATION ────────────────────────
+// Gabarit au format attendu par simcity_import_csv() : séparateur « ; »,
+// encodage Windows-1252 (celui des exports Excel, que l'importeur décode),
+// en-tête dont la première colonne contient « LIGNE » (marqueur de départ).
+if (isset($_GET['page']) && $_GET['page'] === 'import_template') {
+    if (!isset($_SESSION['user_id']) || empty($_SESSION['is_admin'])) die("Accès refusé — réservé aux super-administrateurs.");
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: text/csv; charset=windows-1252');
+    header('Content-Disposition: attachment; filename="simcity_modele_import.csv"');
+    $rows = [
+        ['LIGNE','(non importé)','NOM','PRENOM','NOTES','COMPTE FACTURATION','SERVICE','OPTIONS','(non importé)','DATE ACTIVATION','IMEI','MODELE','FORFAIT','ICCID','PIN','PUK2','OPERATEUR'],
+        ['0612345678','','DUPONT','Marie','Remplacement écran 2025','CF123456','DSI','Multi-SIM','','01/09/2024','356789104563218','APPLE IPHONE 13','Forfait 20 Go','89330126112233445566','0000','12345678','Orange'],
+        ['','','','','','','DSI','','','','356789104563219','SAMSUNG GALAXY A54','','','','',''],
+    ];
+    $out = fopen('php://output', 'w');
+    foreach ($rows as $r) {
+        fputcsv($out, array_map(fn($v) => mb_convert_encoding($v, 'Windows-1252', 'UTF-8'), $r), ';', '"', '\\');
+    }
+    fclose($out);
+    exit;
+}
+
+// ─── 3d. TÉLÉCHARGEMENT D'UNE SAUVEGARDE STOCKÉE ──────────────
 // Les fichiers de BACKUP_DIR ne sont pas servis directement par le web
 // (ils contiennent signatures + mot de passe SMTP). On les diffuse ici,
 // après contrôle d'accès. Réservé aux super-admins.
@@ -2863,6 +2885,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash('error', "La configuration LDAP est réservée aux super-administrateurs.");
                 } else {
                     $set = $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?");
+                    // Normaliser le serveur : un schéma saisi (ldap:// ou ldaps://) est
+                    // retiré du champ et bascule la case LDAPS en conséquence — seul le
+                    // FQDN/IP est stocké, la case fait foi pour le mode TLS.
+                    $srv = trim($d['ldap_server'] ?? '');
+                    $srvLow = strtolower($srv);
+                    if (str_starts_with($srvLow, 'ldaps://'))    { $srv = substr($srv, 8); $d['ldap_use_ssl'] = '1'; }
+                    elseif (str_starts_with($srvLow, 'ldap://')) { $srv = substr($srv, 7); unset($d['ldap_use_ssl']); }
+                    $d['ldap_server'] = trim(rtrim($srv, '/'));
                     foreach (['ldap_enabled','ldap_use_ssl','ldap_validate_cert'] as $key) {
                         if (!ldap_env_locked($key)) $set->execute([!empty($d[$key]) ? '1' : '0', $key]);
                     }
@@ -5241,6 +5271,12 @@ elseif ($page === 'refs') {
           <strong>Colonnes attendues :</strong> [0] Ligne, [2] Nom, [3] Prénom, [4] Notes, [5] CF Facturation,
           [6] Service, [7] Options, [9] Date activation, [10] IMEI, [11] Modèle, [12] Forfait, [13] ICCID,
           [14] PIN, [15] PUK, [16] Opérateur (optionnel).
+        </p>
+        <p style="margin:0 0 1.25rem;">
+          <a href="?page=import_template" class="btn btn-secondary btn-sm">
+            <i class="bi bi-download"></i> Télécharger le modèle CSV
+          </a>
+          <span style="color:var(--text3);font-size:.82rem;margin-left:.5rem;">En-tête au bon format + deux lignes d'exemple (à remplacer par vos données).</span>
         </p>
 
         <!-- Purge préalable : destructif, double confirmation exigée -->
