@@ -93,7 +93,6 @@ Sentinelle) **priment sur la base** — le champ correspondant est alors verroui
         LDAP_DOMAIN: chatillon.lan           # bind UPN : utilisateur@domaine
         LDAP_BASE_DN: DC=chatillon,DC=lan
         LDAP_REQUIRED_GROUP: GG-SimCity-Admins   # ⚠️ fortement conseillé (DN ou nom du groupe)
-        # LDAP_USER_DN_TEMPLATE: CN={username},OU=Users,DC=chatillon,DC=lan  # alternative au bind UPN
         # Compte de service — uniquement pour le bouton « Tester la connexion » :
         LDAP_BIND_USER: svc-simcity@chatillon.lan
         LDAP_BIND_PASSWORD: "secret"

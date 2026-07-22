@@ -2742,7 +2742,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if (!ldap_env_locked($key)) $set->execute([!empty($d[$key]) ? '1' : '0', $key]);
                     }
                     if (!ldap_env_locked('ldap_port')) $set->execute([(string)max(0, (int)($d['ldap_port'] ?? 0)), 'ldap_port']);
-                    foreach (['ldap_server','ldap_ca_cert','ldap_domain','ldap_base_dn','ldap_required_group','ldap_user_dn_template','ldap_bind_user'] as $key) {
+                    foreach (['ldap_server','ldap_ca_cert','ldap_domain','ldap_base_dn','ldap_required_group','ldap_bind_user'] as $key) {
                         if (!ldap_env_locked($key)) $set->execute([trim($d[$key] ?? ''), $key]);
                     }
                     // Mot de passe du compte de service : conservé si le champ est laissé vide
@@ -4866,8 +4866,7 @@ elseif ($page === 'refs') {
               <input type="text" name="ldap_required_group" value="<?=h(ldap_cfg('ldap_required_group'))?>" placeholder="GG-SimCity-Admins ou CN=GG-SimCity-Admins,OU=Groupes,DC=chatillon,DC=lan" <?=$lk('ldap_required_group')?>>
               <small style="color:var(--text3);font-size:.75rem;">Sans groupe, <strong>tout compte AD valide</strong> accède à l'application. Les groupes imbriqués sont pris en compte.</small>
             </div>
-            <div class="form-group form-full"><label>Gabarit DN de bind <span style="font-weight:400;text-transform:none;">(optionnel, alternative à l'UPN)</span><?=$lkN('ldap_user_dn_template')?></label><input type="text" name="ldap_user_dn_template" value="<?=h(ldap_cfg('ldap_user_dn_template'))?>" placeholder="CN={username},OU=Utilisateurs,DC=chatillon,DC=lan" <?=$lk('ldap_user_dn_template')?>></div>
-            <div class="form-group form-full"><label>Fichier CA (PEM) <span style="font-weight:400;text-transform:none;">(optionnel, chemin serveur)</span><?=$lkN('ldap_ca_cert')?></label><input type="text" name="ldap_ca_cert" value="<?=h(ldap_cfg('ldap_ca_cert'))?>" placeholder="C:\certs\ca-interne.pem" <?=$lk('ldap_ca_cert')?>></div>
+            <div class="form-group form-full"><label>Fichier CA (PEM) <span style="font-weight:400;text-transform:none;">(optionnel, chemin serveur)</span><?=$lkN('ldap_ca_cert')?></label><input type="text" name="ldap_ca_cert" value="<?=h(ldap_cfg('ldap_ca_cert'))?>" placeholder="/etc/ssl/certs/ca-interne.pem" <?=$lk('ldap_ca_cert')?>><small style="color:var(--text3);font-size:.75rem;">Chemin vu <strong>par le serveur</strong> — dans le conteneur Docker, pas sur votre poste. Inutile si la validation du certificat est décochée.</small></div>
             <div class="form-group"><label>Compte de service <span style="font-weight:400;text-transform:none;">(bouton Tester)</span><?=$lkN('ldap_bind_user')?></label><input type="text" name="ldap_bind_user" value="<?=h(ldap_cfg('ldap_bind_user'))?>" autocomplete="off" placeholder="svc-simcity@chatillon.lan" <?=$lk('ldap_bind_user')?>></div>
             <div class="form-group"><label>Mot de passe <span style="font-weight:400;text-transform:none;">(vide = inchangé)</span><?=$lkN('ldap_bind_password')?></label><input type="password" name="ldap_bind_password" value="" autocomplete="new-password" <?=$lk('ldap_bind_password')?>></div>
           </div>

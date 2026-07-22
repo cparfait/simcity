@@ -46,7 +46,7 @@ define('CSRF_TOKEN_NAME', '_csrf');
 // En Docker, les variables d'environnement LDAP_* (mêmes noms que Sentinelle :
 // LDAP_ENABLED, LDAP_SERVER, LDAP_PORT, LDAP_USE_SSL, LDAP_VALIDATE_CERT,
 // LDAP_CA_CERT, LDAP_DOMAIN, LDAP_BASE_DN, LDAP_REQUIRED_GROUP,
-// LDAP_USER_DN_TEMPLATE, LDAP_BIND_USER, LDAP_BIND_PASSWORD) PRIMENT sur la
+// LDAP_BIND_USER, LDAP_BIND_PASSWORD) PRIMENT sur la
 // base : le champ correspondant est alors verrouillé dans l'interface.
 // Nécessite l'extension PHP « ldap » (php.ini : extension=ldap).
 

@@ -25,7 +25,6 @@ const LDAP_KEYS = [
     'ldap_domain'           => 'LDAP_DOMAIN',
     'ldap_base_dn'          => 'LDAP_BASE_DN',
     'ldap_required_group'   => 'LDAP_REQUIRED_GROUP',
-    'ldap_user_dn_template' => 'LDAP_USER_DN_TEMPLATE',
     'ldap_bind_user'        => 'LDAP_BIND_USER',
     'ldap_bind_password'    => 'LDAP_BIND_PASSWORD',
 ];
@@ -177,10 +176,9 @@ function ldap_authenticate_user(string $username, string $password): ?array {
     // Un mot de passe vide déclencherait un bind anonyme « réussi » : refusé plus
     // haut, mais on garde la ceinture et les bretelles.
 
-    // Identifiant de bind : UPN (user@domaine) par défaut, sinon gabarit DN.
-    if (ldap_cfg('ldap_user_dn_template') !== '') {
-        $bindUser = str_replace('{username}', $username, ldap_cfg('ldap_user_dn_template'));
-    } elseif (ldap_cfg('ldap_domain') !== '') {
+    // Identifiant de bind : UPN (utilisateur@domaine), qui fonctionne quel que
+    // soit l'emplacement du compte dans l'arborescence AD.
+    if (ldap_cfg('ldap_domain') !== '') {
         $bindUser = $username . '@' . ldap_cfg('ldap_domain');
     } else {
         $bindUser = $username;

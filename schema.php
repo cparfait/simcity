@@ -501,13 +501,17 @@ function simcity_apply_schema(PDO $pdo): void
         ['ldap_domain',           '',  "Domaine AD — bind UPN utilisateur@domaine"],
         ['ldap_base_dn',          '',  "Base DN (ex : DC=exemple,DC=lan)"],
         ['ldap_required_group',   '',  "Groupe AD requis (DN ou nom) — fortement conseillé"],
-        ['ldap_user_dn_template', '',  "Gabarit DN de bind, {username} (alternative à l'UPN)"],
         ['ldap_bind_user',        '',  "Compte de service (bouton Tester la connexion)"],
         ['ldap_bind_password',    '',  "Mot de passe du compte de service"],
     ] as [$k, $v, $l]) {
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);
     }
+
+    // ── Retrait du gabarit DN de bind (remplacé par le seul bind UPN) ──
+    // La valeur devait être supprimée et pas seulement masquée : conservée en
+    // base, elle continuerait de primer sur l'UPN et de casser le bind.
+    $pdo->exec("DELETE FROM settings WHERE setting_key='ldap_user_dn_template'");
 
     // ── Normalisation unique des noms / e-mails existants ────────
     // Nom en MAJUSCULES, prénom en Casse-Titre (composés gérés), e-mail en
