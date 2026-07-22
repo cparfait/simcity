@@ -277,7 +277,9 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
 <!DOCTYPE html><html lang="fr"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>Signature – SimCity</title>
+<?php echo uiPrimaryCssOverride($pdo); ?>
 <style>
+:root{--primary:#4f46e5;--primary-dark:#4338ca;--primary-glow:rgba(79,70,229,.25);}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;min-height:100vh;padding:1rem;}
 .card{background:#fff;border-radius:16px;padding:1.5rem;max-width:500px;margin:0 auto;box-shadow:0 4px 20px rgba(0,0,0,.08);}
@@ -287,13 +289,13 @@ h2{font-size:1.2rem;color:#1e293b;margin-bottom:.25rem;}
 .info strong{display:block;color:#0f172a;font-size:1rem;margin-bottom:.25rem;}
 label{display:block;font-size:.8rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.4rem;}
 input{width:100%;padding:.75rem;border:1px solid #e2e8f0;border-radius:8px;font-size:1rem;margin-bottom:1rem;}
-input:focus{outline:none;border-color:#4f46e5;box-shadow:0 0 0 3px rgba(79,70,229,.25);}
+input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-glow);}
 .canvas-wrap{border:2px dashed #cbd5e1;border-radius:8px;background:#fafafa;margin-bottom:.75rem;position:relative;touch-action:none;}
 canvas{display:block;width:100%;border-radius:8px;}
 .canvas-hint{text-align:center;font-size:.75rem;color:#94a3b8;padding:.35rem;}
 .btn-clear{background:none;border:1px solid #e2e8f0;border-radius:6px;padding:.45rem 1rem;font-size:.82rem;color:#64748b;cursor:pointer;margin-bottom:1rem;}
-.btn-sign{width:100%;padding:1rem;background:#4f46e5;color:#fff;border:none;border-radius:10px;font-size:1.05rem;font-weight:600;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.12);}
-.btn-sign:hover{background:#4338ca;}
+.btn-sign{width:100%;padding:1rem;background:var(--primary);color:#fff;border:none;border-radius:10px;font-size:1.05rem;font-weight:600;cursor:pointer;box-shadow:0 1px 3px rgba(15,23,42,.12);}
+.btn-sign:hover{background:var(--primary-dark);}
 .btn-sign:disabled{background:#cbd5e1;box-shadow:none;cursor:not-allowed;}
 .error{background:#fef2f2;border:1px solid #fecaca;color:#dc2626;border-radius:8px;padding:1rem;margin-bottom:1rem;font-size:.9rem;}
 .success-box{text-align:center;padding:2rem 1rem;}
@@ -601,7 +603,10 @@ function mailRender($pdo, $key, array $vars = []): array {
     $body    = trim(getSetting($pdo, "mail_tpl_{$key}_body", ''))    ?: $t['body'];
     $repl = [];
     foreach ($vars as $k => $v) $repl['{' . $k . '}'] = (string)$v;
-    return [strtr($subject, $repl), requestMailShell(strtr($title, $repl), strtr($body, $repl), $pdo)];
+    // Les liens des gabarits par défaut utilisent le violet d'origine :
+    // on les aligne sur la couleur du bandeau configurée.
+    $body = str_replace('#4f46e5', mailBannerColors($pdo)[0], strtr($body, $repl));
+    return [strtr($subject, $repl), requestMailShell(strtr($title, $repl), $body, $pdo)];
 }
 
 // Circuit par défaut : les 4 visas du formulaire papier. Les valideurs
@@ -781,8 +786,8 @@ function uiPrimaryCssOverride($pdo): string {
     if ($c === '') return '';
     $dark = uiColorMix($c, -0.22); $rgb = uiColorRgb($c);
     $l1 = uiColorMix($c, 0.45); $l2 = uiColorMix($c, 0.25); $lrgb = uiColorRgb($l1);
-    return '<style>:root:root{--primary:' . $c . ';--primary-dark:' . $dark . ';--primary-dim:rgba(' . $rgb . ',.08);--primary-glow:rgba(' . $rgb . ',.35);--ring:0 0 0 3px rgba(' . $rgb . ',.35);}'
-         . ':root:root[data-theme="dark"]{--primary:' . $l1 . ';--primary-dark:' . $l2 . ';--primary-dim:rgba(' . $lrgb . ',.14);--primary-glow:rgba(' . $lrgb . ',.35);--ring:0 0 0 3px rgba(' . $lrgb . ',.35);}</style>';
+    return '<style>:root:root{--primary:' . $c . ';--primary-dark:' . $dark . ';--primary-dim:rgba(' . $rgb . ',.08);--primary-glow:rgba(' . $rgb . ',.35);--primary-soft:rgba(' . $rgb . ',.5);--ring:0 0 0 3px rgba(' . $rgb . ',.35);}'
+         . ':root:root[data-theme="dark"]{--primary:' . $l1 . ';--primary-dark:' . $l2 . ';--primary-dim:rgba(' . $lrgb . ',.14);--primary-glow:rgba(' . $lrgb . ',.35);--primary-soft:rgba(' . $lrgb . ',.5);--ring:0 0 0 3px rgba(' . $lrgb . ',.35);}</style>';
 }
 
 // URL web du logo affiché sur les pages publiques de demande.
@@ -800,7 +805,7 @@ function requestLogoUrl($pdo) {
 // Aligné sur le design Sentinelle / la page de connexion SimCity :
 // IBM Plex Sans, dégradé navy→bleu, indigo + slate, cartes arrondies.
 function requestPublicCss() {
-    return ':root{--primary:#4f46e5;--primary-dark:#4338ca;--text:#334155;--text-strong:#0f172a;--text-muted:#64748b;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--bg-soft:#f1f5f9;--page:#eef2f7;--radius:10px;--radius-lg:14px;--font:\'IBM Plex Sans\',-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;}
+    return ':root{--primary:#4f46e5;--primary-dark:#4338ca;--primary-dim:rgba(79,70,229,.1);--primary-soft:rgba(79,70,229,.5);--primary-glow:rgba(79,70,229,.28);--text:#334155;--text-strong:#0f172a;--text-muted:#64748b;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--bg-soft:#f1f5f9;--page:#eef2f7;--radius:10px;--radius-lg:14px;--font:\'IBM Plex Sans\',-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--font);background:var(--page);min-height:100vh;padding:2rem 1rem;color:var(--text);-webkit-font-smoothing:antialiased;letter-spacing:-.005em;}
 .wrap{max-width:640px;margin:0 auto;}
@@ -808,13 +813,13 @@ body{font-family:var(--font);background:var(--page);min-height:100vh;padding:2re
 .brand img{height:50px;max-width:240px;object-fit:contain;vertical-align:middle;}
 .card{background:#fff;border-radius:var(--radius-lg);border:1px solid var(--border);padding:2rem;margin:0 auto 1.25rem;box-shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);}
 .card-head{display:flex;align-items:center;gap:.75rem;margin-bottom:.35rem;}
-.card-head .ico{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:rgba(79,70,229,.1);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:1.35rem;}
+.card-head .ico{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:var(--primary-dim);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:1.35rem;}
 h2{font-family:var(--font);font-size:1.3rem;font-weight:700;color:var(--text-strong);line-height:1.25;}
 .sub{color:var(--text-muted);font-size:.88rem;line-height:1.5;margin-bottom:1.5rem;}
 label{display:block;font-size:.74rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;margin:1.1rem 0 .4rem;}
 input[type=text],input[type=email],select,textarea{width:100%;padding:.7rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:.95rem;font-family:inherit;background:#fff;color:var(--text);transition:border-color .18s ease,box-shadow .18s ease;}
-input:hover:not(:focus),select:hover:not(:focus),textarea:hover:not(:focus){border-color:rgba(79,70,229,.5);}
-input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.28);}
+input:hover:not(:focus),select:hover:not(:focus),textarea:hover:not(:focus){border-color:var(--primary-soft);}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-glow);}
     input::placeholder,textarea::placeholder{color:var(--text-light);opacity:.75;font-style:italic;}
 textarea{resize:vertical;min-height:96px;line-height:1.5;}
 .field-hint{font-size:.78rem;color:var(--text-light);margin-top:.35rem;}
@@ -822,7 +827,7 @@ textarea{resize:vertical;min-height:96px;line-height:1.5;}
 .radio-row label{display:inline-flex;align-items:center;gap:.45rem;text-transform:none;letter-spacing:0;font-weight:500;font-size:.9rem;color:var(--text);margin:0;padding:.5rem .9rem;border:1px solid var(--border-strong);border-radius:999px;cursor:pointer;transition:border-color .15s,background-color .15s;}
 .radio-row label:hover{border-color:var(--primary);}
 .radio-row input{accent-color:var(--primary);width:16px;height:16px;}
-.radio-row input:checked+span,.radio-row label:has(input:checked){border-color:var(--primary);background:rgba(79,70,229,.07);color:var(--primary-dark);font-weight:600;}
+.radio-row input:checked+span,.radio-row label:has(input:checked){border-color:var(--primary);background:var(--primary-dim);color:var(--primary-dark);font-weight:600;}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;width:100%;padding:.95rem;background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:var(--radius);font-size:1rem;font-weight:600;cursor:pointer;text-align:center;text-decoration:none;transition:background-color .18s ease,transform .05s ease;}
 .btn:hover{background:var(--primary-dark);border-color:var(--primary-dark);}
 .btn:active{transform:translateY(1px);}
@@ -1608,7 +1613,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
         <div class="step" <?=$isMe ? 'style="background:#eef2ff;border-radius:8px;padding:.6rem .5rem;"' : ''?>>
             <span class="ic"><?=$ic?></span>
             <div style="flex:1;">
-                <strong><?=h($s['label'])?></strong><?=$s['validator_name'] ? ' — ' . h($s['validator_name']) : ''?> <?=$isMe ? '<span style="color:#4f46e5;font-size:.78rem;">(vous)</span>' : ''?><br>
+                <strong><?=h($s['label'])?></strong><?=$s['validator_name'] ? ' — ' . h($s['validator_name']) : ''?> <?=$isMe ? '<span style="color:var(--primary);font-size:.78rem;">(vous)</span>' : ''?><br>
                 <span class="meta"><?=$s['decided_at'] ? date('d/m/Y H:i', strtotime($s['decided_at'])) : ''?></span>
                 <?php if ($s['avis'] && $s['decision'] !== null): ?><div style="font-size:.82rem;color:#475569;margin-top:.2rem;">« <?=h($s['avis'])?> »</div><?php endif; ?>
             </div>
@@ -1688,7 +1693,7 @@ th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:.82rem;ver
 th{background:#f5f5f5;}
 .nota{font-size:.75rem;color:#444;border:1px solid #ddd;background:#fafafa;padding:.5rem .75rem;margin-top:1rem;line-height:1.5;}
 .toolbar{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:1rem;}
-.toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#4f46e5;color:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
+.toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>;color:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
 @media print { @page{margin:1cm;} .no-print{display:none!important;} }
 </style></head><body>
 <div class="toolbar no-print"><button onclick="window.print()">🖨️ Imprimer</button></div>
@@ -1984,7 +1989,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .card{background:#fff;border-radius:14px;padding:2rem;max-width:480px;width:100%;box-shadow:0 4px 20px rgba(0,0,0,.08);text-align:center;}
         h2{font-size:1.2rem;color:#1e293b;margin:0 0 1rem;}
         p{color:#475569;font-size:.92rem;line-height:1.6;}
-        .btn{display:inline-block;margin-top:1rem;padding:.75rem 1.75rem;background:#4f46e5;color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:600;cursor:pointer;}
+        .btn{display:inline-block;margin-top:1rem;padding:.75rem 1.75rem;background:<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>;color:#fff;border:none;border-radius:9px;font-size:.95rem;font-weight:600;cursor:pointer;}
         </style></head><body>
         <div class="card">
             <h2>📄 Bon de remise — <?=h($agtName)?></h2>
@@ -2062,7 +2067,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         if ($isPending) {
             $url = baseUrl($pdo).'?page=sign&token='.$bon['token'];
             echo '<div id="qr-'.(int)$bon['id'].'"></div>
-                  <a href="'.htmlspecialchars($url).'" style="display:block;margin-top:3px;font-size:.75rem;color:#4f46e5;text-decoration:none;">Signer en ligne</a>';
+                  <a href="'.htmlspecialchars($url).'" style="display:block;margin-top:3px;font-size:.75rem;color:'.(uiPrimaryColor($pdo) ?: '#4f46e5').';text-decoration:none;">Signer en ligne</a>';
         } else {
             echo '<div style="font-size:.8rem;font-weight:600;">'.bonStatusLabel($bon).'</div>';
         }
@@ -2123,7 +2128,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .toolbar .tb-status{font-size:.8rem;color:#475569;}
         .toolbar form{display:inline;margin:0;}
         .toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
-        .toolbar button.tb-primary{background:#4f46e5;border-color:#4f46e5;color:#fff;}
+        .toolbar button.tb-primary{background:<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>;border-color:<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>;color:#fff;}
         @media print {
             @page { margin: 1cm; }
             body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -4434,7 +4439,7 @@ if ($page === 'dashboard') {
                     datasets: [{
                         label: 'Nombre de lignes',
                         data: <?php echo json_encode($sCounts); ?>,
-                        backgroundColor: '#4f46e5',
+                        backgroundColor: '<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>',
                         borderRadius: 5
                     }]
                 },
@@ -6919,7 +6924,7 @@ elseif ($page === 'stats') {
 
       // Par service (barres groupées)
       bars('stSvc', <?=json_encode($svcNames)?>, [
-        {label:'Lignes',   data:<?=json_encode($svcLines)?>, backgroundColor:'#4f46e5', borderRadius:4},
+        {label:'Lignes',   data:<?=json_encode($svcLines)?>, backgroundColor:'<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>', borderRadius:4},
         {label:'Matériels',data:<?=json_encode($svcMats)?>,  backgroundColor:'#7c3aed', borderRadius:4}
       ]);
 
