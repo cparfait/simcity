@@ -2285,6 +2285,31 @@ if (isset($_GET['ajax_quickadd'])) {
     exit;
 }
 
+// ─── AJAX : RECHERCHE LOCALE D'UN UTILISATEUR (sélecteurs lignes / matériels) ──
+// Remplace les <select> exhaustifs (inutilisables avec beaucoup d'agents) :
+// recherche dans le référentiel local uniquement (pas l'AD). Authentifié.
+if (isset($_GET['ajax_agent_search'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!isset($_SESSION['user_id'])) { echo json_encode([]); exit; }
+    $q = trim($_GET['q'] ?? '');
+    if (mb_strlen($q) < 2) { echo json_encode([]); exit; }
+    $like = '%' . $q . '%';
+    $st = $pdo->prepare("SELECT a.id, a.first_name, a.last_name, a.email, a.service_id, s.name AS service_name
+        FROM agents a LEFT JOIN services s ON a.service_id = s.id
+        WHERE a.archived=0 AND (a.first_name LIKE ? OR a.last_name LIKE ?
+              OR CONCAT(a.first_name,' ',a.last_name) LIKE ? OR CONCAT(a.last_name,' ',a.first_name) LIKE ?
+              OR a.email LIKE ?)
+        ORDER BY a.last_name, a.first_name LIMIT 10");
+    $st->execute([$like, $like, $like, $like, $like]);
+    $out = [];
+    foreach ($st->fetchAll() as $a) {
+        $out[] = ['id' => (int)$a['id'], 'name' => trim($a['last_name'] . ' ' . $a['first_name']),
+                  'email' => (string)($a['email'] ?? ''),
+                  'service_id' => (int)($a['service_id'] ?? 0), 'service_name' => (string)($a['service_name'] ?? '')];
+    }
+    echo json_encode($out); exit;
+}
+
 // ─── AJAX : HISTORIQUE SIM D'UNE LIGNE ───────────────────────
 if (isset($_GET['ajax_sim_history'])) {
     header('Content-Type: application/json');
@@ -4111,7 +4136,6 @@ elseif ($page === 'lines') {
 
     $lines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.pin, l.puk, l.agent_id, l.billing_id, l.plan_id, l.service_id, l.device_id, l.activation_date, l.options_details, l.status, l.notes, l.archived, l.created_at, IFNULL(l.personal_device,0) as personal_device, IFNULL(l.sim_vierge,0) as sim_vierge, IFNULL(l.esim,0) as esim, l.eid, l.activation_code, a.first_name, a.last_name, s.name as service_name, b.account_number, p.name as plan_name, IFNULL(o.name,'') as operator_name, d.imei, d.serial_number, m.brand, m.name as model_name FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id LEFT JOIN billing_accounts b ON l.billing_id=b.id LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id LEFT JOIN devices d ON l.device_id=d.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY l.created_at DESC")->fetchAll();
     
-    $agents = $pdo->query("SELECT id, first_name, last_name, service_id FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     $plans = $pdo->query("SELECT p.id, p.name, IFNULL(o.name,'') as operator_name FROM plan_types p LEFT JOIN operators o ON p.operator_id=o.id ORDER BY o.name, p.name")->fetchAll();
     $billings = $pdo->query("SELECT id, account_number, name FROM billing_accounts ORDER BY name")->fetchAll();
@@ -4239,7 +4263,11 @@ elseif ($page === 'lines') {
           </label>
           <?php endif; ?>
         </div>
-        <div class="form-group"><label>Utilisateur affecté</label><div class="qa-row"><select name="agent_id" id="<?=$act?>-agent_id" onchange="syncServiceFromAgent(this,'<?=$act?>')"><option value="">-- Sélectionner dans le référentiel --</option><?php foreach($agents as $a): ?><option value="<?=$a['id']?>" data-service="<?=(int)$a['service_id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('agent','<?=$act?>-agent_id')" title="Ajouter un utilisateur"><i class="bi bi-plus-lg"></i></button></div></div>
+        <div class="form-group"><label>Utilisateur affecté</label><div style="position:relative;">
+          <input type="text" id="<?=$act?>-agent_search" placeholder="🔎 Nom, prénom ou e-mail (vide = aucun)" autocomplete="off">
+          <input type="hidden" name="agent_id" id="<?=$act?>-agent_id">
+          <div class="adp-box" id="<?=$act?>-agent_suggest"></div>
+        </div></div>
         <div class="form-group"><label>Compte de Facturation</label><div class="qa-row"><select name="billing_id" id="<?=$act?>-billing_id"><option value="">-- Sélectionner --</option><?php foreach($billings as $b): ?><option value="<?=$b['id']?>"><?=h($b['account_number'].' - '.$b['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('billing','<?=$act?>-billing_id')" title="Ajouter un compte de facturation"><i class="bi bi-plus-lg"></i></button></div></div>
         <div class="form-group"><label>Forfait</label><div class="qa-row"><select name="plan_id" id="<?=$act?>-plan_id"><option value="">-- Sélectionner --</option><?php foreach($plans as $p): ?><option value="<?=$p['id']?>"><?= $p['operator_name'] ? h($p['operator_name']).' — ' : '' ?><?=h($p['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('plan','<?=$act?>-plan_id')" title="Ajouter un forfait"><i class="bi bi-plus-lg"></i></button></div></div>
         <div class="form-group"><label>Service / Direction</label><div class="qa-row"><select name="service_id" id="<?=$act?>-service_id"><option value="">-- Sélectionner --</option><?php foreach($services as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('service','<?=$act?>-service_id')" title="Ajouter un service"><i class="bi bi-plus-lg"></i></button></div></div>
@@ -4457,7 +4485,6 @@ elseif ($page === 'devices') {
         FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC")->fetchAll();
     
     $models = $pdo->query("SELECT id, brand, name FROM models ORDER BY brand, name")->fetchAll();
-    $agents = $pdo->query("SELECT id, first_name, last_name, service_id FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     ?>
     <?php if(!$isArchive): ?>
@@ -4591,10 +4618,10 @@ elseif ($page === 'devices') {
           <select name="status" id="<?=$act?>-status"><option value="Stock">En Stock</option><option value="Deployed">Déployé</option><option value="Repair">En réparation</option></select>
         </div>
         <div class="form-group"><label>Utilisateur (Agent)</label>
-          <div class="qa-row">
-          <select name="agent_id" id="<?=$act?>-agent_id" onchange="syncServiceFromAgent(this,'<?=$act?>')"><option value="">-- Aucun --</option>
-          <?php foreach($agents as $a): ?><option value="<?=$a['id']?>" data-service="<?=(int)$a['service_id']?>"><?=h($a['last_name'].' '.$a['first_name'])?></option><?php endforeach; ?></select>
-          <button type="button" class="btn-quickadd" onclick="quickAddOpen('agent','<?=$act?>-agent_id')" title="Ajouter un utilisateur"><i class="bi bi-plus-lg"></i></button>
+          <div style="position:relative;">
+            <input type="text" id="<?=$act?>-agent_search" placeholder="🔎 Nom, prénom ou e-mail (vide = aucun)" autocomplete="off">
+            <input type="hidden" name="agent_id" id="<?=$act?>-agent_id">
+            <div class="adp-box" id="<?=$act?>-agent_suggest"></div>
           </div>
         </div>
         <div class="form-group form-full"><label>Service</label>
@@ -5852,7 +5879,6 @@ elseif ($page === 'requests') {
             $ss->execute([$viewId]);
             $steps = $ss->fetchAll();
             [$stLbl, $stCls] = requestStatusInfo($req['status']);
-            $agents = $pdo->query("SELECT id, first_name, last_name, service_id FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
             $linkedAgent = $req['agent_id'] ? $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=" . (int)$req['agent_id'])->fetch() : null;
             $bonRow = $req['bon_id'] ? $pdo->query("SELECT * FROM bons WHERE id=" . (int)$req['bon_id'])->fetch() : null;
             $smtpConfigured = trim(smtpSetting($pdo, 'smtp_host', '')) !== '';
@@ -5935,12 +5961,11 @@ elseif ($page === 'requests') {
             <input type="hidden" name="_entity" value="request">
             <input type="hidden" name="_action" value="link_agent">
             <input type="hidden" name="request_id" value="<?=$viewId?>">
-            <select name="agent_id" style="flex:1;">
-              <option value="">— Aucun agent lié —</option>
-              <?php foreach ($agents as $a): ?>
-              <option value="<?=$a['id']?>" <?=(int)$req['agent_id'] === (int)$a['id'] ? 'selected' : ''?>><?=h(trim($a['last_name'] . ' ' . $a['first_name']))?></option>
-              <?php endforeach; ?>
-            </select>
+            <div style="position:relative;flex:1;">
+              <input type="text" id="reqlink-agent_search" placeholder="🔎 Rechercher l'agent au référentiel (vide = délier)" autocomplete="off" value="<?=$linkedAgent ? h(trim($linkedAgent['last_name'] . ' ' . $linkedAgent['first_name'])) : ''?>">
+              <input type="hidden" name="agent_id" id="reqlink-agent_id" value="<?=$req['agent_id'] ? (int)$req['agent_id'] : ''?>">
+              <div class="adp-box" id="reqlink-agent_suggest"></div>
+            </div>
             <button type="submit" class="btn-secondary" style="white-space:nowrap;">🔗 Lier</button>
           </form>
           <?php endif; ?>
@@ -6894,14 +6919,14 @@ const QA_CSRF = { name: <?= json_encode(CSRF_TOKEN_NAME) ?>, token: <?= json_enc
 const QA_CONFIG = {
   service:  { title:'Ajouter un service',  icon:'building',  fields:[{name:'name',label:'Nom du service',required:true}] },
   model:    { title:'Ajouter un modèle',   icon:'phone',     fields:[{name:'brand',label:'Marque',required:true},{name:'name',label:'Modèle',required:true},{name:'category',label:'Catégorie',type:'select',options:['Smartphone','Tablette','Clé 4G','Modem','Autre']}] },
-  agent:    { title:'Ajouter un utilisateur', icon:'person', fields:[{name:'first_name',label:'Prénom'},{name:'last_name',label:'Nom',required:true}] },
+  agent:    { title:'Ajouter un utilisateur', icon:'person', fields:[{name:'first_name',label:'Prénom'},{name:'last_name',label:'Nom',required:true},{name:'email',label:'E-mail'}] },
   plan:     { title:'Ajouter un forfait',  icon:'globe2',    fields:[{name:'name',label:'Nom du forfait',required:true},{name:'data_limit',label:'Enveloppe data (ex : 100 Go)'}] },
   billing:  { title:'Ajouter un compte de facturation', icon:'cash-coin', fields:[{name:'account_number',label:'N° de compte',required:true},{name:'name',label:'Nom / Entité'}] },
   operator: { title:'Ajouter un opérateur',icon:'broadcast', fields:[{name:'name',label:"Nom de l'opérateur",required:true}] },
 };
 let _qaEntity=null, _qaTarget=null;
 function qaError(msg){ const b=document.getElementById('qa-error'); if(b){ b.textContent=msg||''; b.style.display=msg?'block':'none'; } }
-function quickAddOpen(entity, targetSelectId){
+function quickAddOpen(entity, targetSelectId, prefill){
   const cfg = QA_CONFIG[entity]; if(!cfg) return;
   _qaEntity = entity; _qaTarget = targetSelectId;
   document.getElementById('qa-title').innerHTML = '<i class="bi bi-'+(cfg.icon||'plus-lg')+'"></i> ' + cfg.title;
@@ -6917,6 +6942,8 @@ function quickAddOpen(entity, targetSelectId){
     }
     return '<div class="form-group"><label>'+f.label+req+'</label>'+input+'</div>';
   }).join('');
+  // Pré-remplissage (ex : nom saisi dans un sélecteur d'agent avant « Créer »)
+  if(prefill){ Object.keys(prefill).forEach(k=>{ const f = wrap.querySelector('[data-qa="'+k+'"]'); if(f) f.value = prefill[k]; }); }
   openModal('modal-quickadd');
   const first = wrap.querySelector('[data-qa]'); if(first) setTimeout(()=>first.focus(), 50);
 }
@@ -6942,9 +6969,17 @@ function quickAddSave(){
       if(!j || !j.ok){ qaError((j&&j.error)||'Échec de la création.'); return; }
       const sel = document.getElementById(_qaTarget);
       if(sel){
-        const opt = document.createElement('option');
-        opt.value = j.id; opt.textContent = j.label; opt.selected = true;
-        sel.appendChild(opt);
+        if(sel.tagName === 'SELECT'){
+          const opt = document.createElement('option');
+          opt.value = j.id; opt.textContent = j.label; opt.selected = true;
+          sel.appendChild(opt);
+        } else {
+          // Cible = champ caché d'un sélecteur à autocomplétion (agent picker) :
+          // on pose l'id et on affiche le nom dans le champ de recherche associé.
+          sel.value = j.id;
+          const vis = document.getElementById(_qaTarget.replace(/agent_id$/, 'agent_search'));
+          if(vis) vis.value = j.label;
+        }
         sel.dispatchEvent(new Event('change', {bubbles:true}));
       }
       closeModal('modal-quickadd');
@@ -7004,6 +7039,11 @@ function openEditModal(data, ent){
   });
   // Réinitialise le champ de recherche annuaire (aide de saisie, non persistée)
   if(ent === 'agent'){ const s=document.getElementById('edit-ad-search'); if(s) s.value=''; const b=document.getElementById('edit-ad-suggest'); if(b){ b.style.display='none'; b.innerHTML=''; } }
+  // Sélecteur d'utilisateur (lignes / matériels) : affiche le nom de l'agent affecté
+  if(ent === 'line' || ent === 'device'){
+    const as = document.getElementById('edit-agent_search');
+    if(as) as.value = data.agent_id ? ((data.last_name||'')+' '+(data.first_name||'')).trim() : '';
+  }
   // Restaure la case is_admin pour les comptes admin
   if(ent === 'admin') {
     const chkAdmin = document.getElementById('edit-is_admin');
@@ -7101,14 +7141,61 @@ function statusFormCheck(act, cfg) {
   });
   return false;   // bloque la soumission initiale ; la modale décide de la suite
 }
-// Auto-attribution du service : sélectionner un utilisateur pré-remplit le
-// champ « Service / Direction » avec le service de cet agent (modifiable).
-function syncServiceFromAgent(sel, act) {
-  if (!sel.value) return;   // « Aucun » agent : on ne modifie pas le service
-  const svc = sel.selectedOptions[0] ? sel.selectedOptions[0].getAttribute('data-service') : '';
-  const svcSel = document.getElementById(act + '-service_id');
-  if (svcSel) svcSel.value = (svc && svc !== '0') ? svc : '';
+// ── Sélecteur d'utilisateur à autocomplétion (lignes, matériels, demandes) ──
+// Remplace les <select> exhaustifs, inutilisables avec beaucoup d'agents :
+// recherche le référentiel LOCAL (ajax_agent_search) et, si la personne n'y
+// est pas, propose sa création (modale d'ajout rapide pré-remplie).
+// Convention d'ids : {prefix}-agent_search (texte), {prefix}-agent_id (hidden),
+// {prefix}-agent_suggest (boîte). Sélection → remplit aussi {prefix}-service_id.
+function bindAgentPicker(prefix){
+  const inp = document.getElementById(prefix+'-agent_search');
+  if(!inp || inp._apBound) return;
+  inp._apBound = true;
+  const hid = document.getElementById(prefix+'-agent_id');
+  const box = document.getElementById(prefix+'-agent_suggest');
+  const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+  const hide = () => { box.style.display='none'; box.innerHTML=''; };
+  let timer=null;
+  inp.addEventListener('input', ()=>{
+    hid.value = '';                 // texte modifié : la sélection ne vaut plus
+    const q = inp.value.trim();
+    clearTimeout(timer);
+    if(q.length < 2){ hide(); return; }
+    timer = setTimeout(async ()=>{
+      try {
+        const r = await fetch('index.php?ajax_agent_search=1&q='+encodeURIComponent(q));
+        const items = await r.json();
+        let html = (Array.isArray(items) ? items : []).map((a,i)=>
+          '<div class="adp-item" data-i="'+i+'"><strong>'+esc(a.name)+'</strong>'
+          + '<br><span class="muted" style="font-size:.75rem;">'+esc([a.service_name, a.email].filter(Boolean).join(' · ') || 'Aucun service')+'</span></div>').join('');
+        html += '<div class="adp-item adp-create"><span style="color:var(--primary);font-weight:600;">➕ Créer « '+esc(q)+' »</span>'
+              + '<br><span class="muted" style="font-size:.75rem;">Nouvel utilisateur au référentiel</span></div>';
+        box.innerHTML = html; box.style.display='block';
+        [...box.querySelectorAll('.adp-item:not(.adp-create)')].forEach(el=>el.addEventListener('mousedown', e=>{
+          e.preventDefault(); const a = items[+el.dataset.i];
+          inp.value = a.name; hid.value = a.id; hide();
+          // Auto-attribution du service de l'agent (modifiable ensuite)
+          const svcSel = document.getElementById(prefix+'-service_id');
+          if(svcSel && a.service_id) svcSel.value = a.service_id;
+        }));
+        box.querySelector('.adp-create').addEventListener('mousedown', e=>{
+          e.preventDefault(); hide();
+          // Découpe « Prénom Nom » (corrigeable dans la modale)
+          const parts = q.split(/\s+/);
+          const prefill = parts.length > 1
+            ? {first_name: parts.slice(0, -1).join(' '), last_name: parts[parts.length-1]}
+            : {last_name: q};
+          quickAddOpen('agent', prefix+'-agent_id', prefill);
+        });
+      } catch(e){ hide(); }
+    }, 250);
+  });
+  inp.addEventListener('blur', ()=>setTimeout(()=>{
+    hide();
+    if(hid.value === '') inp.value = '';   // pas de sélection : champ vidé (= aucun agent)
+  }, 180));
 }
+document.addEventListener('DOMContentLoaded', ()=>{ ['add','edit','reqlink'].forEach(bindAgentPicker); });
 function lineFormCheck(act) {
   const simVierge = document.getElementById(act + '-sim_vierge');
   if (simVierge && simVierge.checked) return true;   // SIM vierge : reste en stock
