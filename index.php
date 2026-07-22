@@ -5150,10 +5150,10 @@ elseif ($page === 'refs') {
           <input type="hidden" name="_entity" value="smtp_test">
           <input type="hidden" name="_action" value="test">
           <label style="display:block;font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.4rem;">Tester l'envoi</label>
-          <div style="display:flex;flex-wrap:wrap;gap:.35rem 1.1rem;margin-bottom:.75rem;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:.4rem .9rem;margin-bottom:.85rem;">
             <?php foreach (mailTemplates() as $tk => $tpl): ?>
-            <label style="display:flex;align-items:center;gap:.4rem;font-size:.84rem;cursor:pointer;">
-              <input type="checkbox" name="tpl[]" value="<?=h($tk)?>" <?=$tk==='test'?'checked':''?> style="width:14px;height:14px;accent-color:var(--primary);">
+            <label style="display:flex;align-items:center;gap:.45rem;font-size:.84rem;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--text);cursor:pointer;margin:0;">
+              <input type="checkbox" name="tpl[]" value="<?=h($tk)?>" <?=$tk==='test'?'checked':''?> style="width:14px;height:14px;accent-color:var(--primary);flex-shrink:0;">
               <span><?=h($tpl['label'])?></span>
             </label>
             <?php endforeach; ?>
