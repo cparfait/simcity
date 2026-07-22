@@ -5044,7 +5044,7 @@ elseif ($page === 'refs') {
     <!-- Sous-menu : chaque section regroupe des réglages proches. -->
     <div style="display:flex; gap:8px; margin-bottom:1.5rem; flex-wrap:wrap;">
       <?php foreach($subMenu as $sk => $slabel): ?>
-      <a href="?page=refs&tab=settings&sub=<?=$sk?>" class="tab-btn <?=$settingsSub===$sk?'active':''?>" style="border-radius:8px;"><?=$slabel?></a>
+      <a href="?page=refs&tab=settings&sub=<?=$sk?>" class="subtab-btn <?=$settingsSub===$sk?'active':''?>"><?=$slabel?></a>
       <?php endforeach; ?>
     </div>
 
@@ -6957,7 +6957,8 @@ input::placeholder,textarea::placeholder{color:var(--text3);opacity:.75;font-sty
 .kpi-add:hover{background:var(--primary);color:#fff;}
 .shortcut-btn{display:flex;flex-direction:column;gap:.35rem;padding:1.25rem;border-radius:var(--radius);border:1px solid var(--border);text-decoration:none;transition:border-color .2s;} .shortcut-btn:hover{border-color:var(--primary);}
 .shortcut-label{font-weight:700;color:var(--text-strong)} .shortcut-in{background:rgba(5,150,105,.07);} .shortcut-order{background:rgba(79,70,229,.07);} .shortcut-resa{background:rgba(37,99,235,.07);}
-.tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);margin-bottom:-2px;z-index:2;}
+.tab-btn{padding:.6rem 1.2rem;border:1px solid transparent;border-radius:var(--radius-sm) var(--radius-sm) 0 0;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;} .tab-btn.active{background:var(--card);border-color:var(--border);border-bottom-color:var(--card);color:var(--primary);font-weight:700;margin-bottom:-2px;z-index:2;box-shadow:inset 0 3px 0 var(--primary);}
+.subtab-btn{padding:.55rem 1.1rem;border:1px solid transparent;border-radius:8px;text-decoration:none;color:var(--text2);font-weight:600;font-size:.9rem;transition:background-color .15s,color .15s;} .subtab-btn:hover{color:var(--primary);} .subtab-btn.active{background:var(--primary);border-color:var(--primary);color:#fff;}
 @media(max-width:900px){.sidebar{transform:translateX(-100%);transition:transform .25s ease;box-shadow:var(--shadow-lg)}.sidebar.open{transform:translateX(0)}.main{margin-left:0}.btn-hamburger{display:inline-flex}}
 a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 /* Ajout rapide (+) : select accolé à un bouton d'ajout d'entité liée */
