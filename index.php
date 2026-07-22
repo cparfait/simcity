@@ -915,7 +915,10 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
     <form method="post" autocomplete="off">
         <input type="text" name="website" value="" style="display:none" tabindex="-1" aria-hidden="true">
         <label>Vos prénom et nom (demandeur) *</label>
-        <input type="text" name="requester_name" required placeholder="Prénom Nom" value="<?=h($_POST['requester_name'] ?? '')?>">
+        <div style="position:relative;">
+            <input type="text" name="requester_name" id="req-name" required placeholder="Prénom Nom" autocomplete="off" value="<?=h($_POST['requester_name'] ?? '')?>">
+            <div id="req-suggest" class="suggest"></div>
+        </div>
         <label>Votre e-mail (demandeur) *</label>
         <input type="email" name="requester_email" id="req-email" required placeholder="prenom.nom@collectivite.fr" value="<?=h($_POST['requester_email'] ?? '')?>">
         <div class="field-hint">Pour recevoir l'accusé de réception et le lien de suivi. N'intervient pas dans le circuit de validation.</div>
@@ -1049,6 +1052,46 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
       last.addEventListener('blur', ()=>{ setTimeout(hideSug,150); loadEquip(); });
       email.addEventListener('blur', loadEquip);
       if (last.value.trim() || email.value.trim()) loadEquip();
+    })();
+
+    // ── Demandeur : même annuaire (AD + référentiel) ; la sélection ──
+    //    remplit le nom complet et l'e-mail du demandeur.
+    (function(){
+      const name  = document.getElementById('req-name'),
+            email = document.getElementById('req-email'),
+            sug   = document.getElementById('req-suggest');
+      if (!name || !sug) return;
+      const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+      const hideSug = () => { sug.style.display='none'; sug.innerHTML=''; };
+      let timer=null;
+      name.addEventListener('input', ()=>{
+        const q = name.value.trim();
+        clearTimeout(timer);
+        if (q.length < 2){ hideSug(); return; }
+        timer = setTimeout(async ()=>{
+          try {
+            const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
+            const items = await r.json();
+            if (!Array.isArray(items) || !items.length){ hideSug(); return; }
+            sug.innerHTML = items.map((p,i) =>
+              '<div class="suggest-item" data-i="'+i+'">'
+              + '<div class="s-name">'+esc(p.name || ((p.first_name||'')+' '+(p.last_name||'')))
+              + (p.source==='ad' ? ' <span class="s-badge s-ad">AD</span>' : '')+'</div>'
+              + '<div class="s-meta">'+esc([p.fonction, p.email].filter(Boolean).join(' · '))+'</div>'
+              + '</div>').join('');
+            sug.style.display='block';
+            [...sug.querySelectorAll('.suggest-item')].forEach(el=>{
+              el.addEventListener('mousedown', e=>{
+                e.preventDefault(); const p = items[+el.dataset.i];
+                name.value = p.name || ((p.first_name||'')+' '+(p.last_name||'')).trim();
+                if (p.email){ email.value = p.email; email.dispatchEvent(new Event('blur')); }
+                hideSug();
+              });
+            });
+          } catch(e){ hideSug(); }
+        }, 250);
+      });
+      name.addEventListener('blur', ()=>setTimeout(hideSug,150));
     })();
 
     // ── Agent remplacé : recherche AD/référentiel + dotation actuelle ──
