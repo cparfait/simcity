@@ -582,6 +582,12 @@ function mailDemoVars($pdo): array {
     ];
 }
 
+// Vrai si l'envoi de ce type d'e-mail est activé (activé par défaut ;
+// désactivable dans Paramètres → Envoi d'e-mails).
+function mailTplEnabled($pdo, $key): bool {
+    return getSetting($pdo, "mail_tpl_{$key}_enabled", '1') !== '0';
+}
+
 // Rendu d'un gabarit : [sujet, corps HTML complet]. Les valeurs de $vars
 // sont déjà échappées/HTML par l'appelant.
 function mailRender($pdo, $key, array $vars = []): array {
@@ -611,6 +617,7 @@ function requestDefaultSteps($pdo, $serviceId) {
 // Retourne true, ou un message d'erreur lisible.
 function requestSendStepEmail($pdo, $req, $step, $isReminder = false) {
     if (empty($step['validator_email'])) return "Aucune adresse e-mail pour l'étape « {$step['label']} ».";
+    if (!mailTplEnabled($pdo, 'visa')) return "L'envoi des e-mails « Visa requis » est désactivé (Paramètres → Envoi d'e-mails).";
     $url = baseUrl($pdo) . '?page=valider&token=' . $step['token'];
     [$subject, $html] = mailRender($pdo, 'visa', [
         'validateur'   => $step['validator_name'] ? ' ' . h($step['validator_name']) : '',
@@ -650,7 +657,7 @@ function requestAdvance($pdo, $reqId) {
     // Pas d'e-mail de suivi au demandeur à chaque étape : il consulte l'avancement
     // via son lien de suivi. Seule la boîte de base (DSI) est notifiée pour agir.
     $notify = trim(getSetting($pdo, 'request_notify_email', ''));
-    if ($notify) {
+    if ($notify && mailTplEnabled($pdo, 'validee')) {
         $adm = baseUrl($pdo) . '?page=requests&view=' . (int)$reqId;
         [$subject, $html] = mailRender($pdo, 'validee', ['numero' => h($req['numero']), 'beneficiaire' => h($req['agent_name']), 'lien' => h($adm)]);
         smtpSendMail($pdo, $notify, $subject, $html);
@@ -913,8 +920,10 @@ if (isset($_GET['ajax_request_send_links'])) {
                 $url = baseUrl($pdo) . '?page=demande_suivi&token=' . $r['track_token'];
                 $items .= '<p style="margin:.5rem 0;"><strong>' . h($r['numero']) . '</strong> — ' . h($r['agent_name']) . ' <span style="color:#666;">(' . h($lbl) . ')</span><br><a href="' . h($url) . '">' . h($url) . '</a></p>';
             }
-            [$subject, $html] = mailRender($pdo, 'suivi', ['liste' => $items]);
-            smtpSendMail($pdo, $email, $subject, $html);
+            if (mailTplEnabled($pdo, 'suivi')) {
+                [$subject, $html] = mailRender($pdo, 'suivi', ['liste' => $items]);
+                smtpSendMail($pdo, $email, $subject, $html);
+            }
             $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('req_links', 0, ?, 'Formulaire public')")->execute([$email]);
         }
     }
@@ -996,7 +1005,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
             // 1) Notification à l'adresse de base (« E-mail notifié à chaque
             //    nouvelle demande ») : c'est elle qui pilote la qualification.
             $notify = trim(getSetting($pdo, 'request_notify_email', ''));
-            if ($notify) {
+            if ($notify && mailTplEnabled($pdo, 'nouvelle')) {
                 $adm = baseUrl($pdo) . '?page=requests&view=' . $reqId;
                 [$subject, $html] = mailRender($pdo, 'nouvelle', [
                     'numero' => h($numero), 'type' => h(requestTypeLabel($type)),
@@ -1011,11 +1020,13 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
             }
             // 2) Accusé de réception au demandeur (l'e-mail qu'il a saisi) : simple
             //    confirmation + lien de suivi. N'intervient pas dans le circuit.
-            [$subject, $html] = mailRender($pdo, 'accuse', [
-                'numero' => h($numero), 'beneficiaire' => h($agentName),
-                'bouton' => requestMailButton($suivi, 'Suivre ma demande'),
-            ]);
-            smtpSendMail($pdo, $requesterEmail, $subject, $html);
+            if (mailTplEnabled($pdo, 'accuse')) {
+                [$subject, $html] = mailRender($pdo, 'accuse', [
+                    'numero' => h($numero), 'beneficiaire' => h($agentName),
+                    'bouton' => requestMailButton($suivi, 'Suivre ma demande'),
+                ]);
+                smtpSendMail($pdo, $requesterEmail, $subject, $html);
+            }
 
             header('Location: ?page=demande&ok=' . urlencode($numero) . '&t=' . $track); exit;
         }
@@ -1441,7 +1452,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
                             ->execute([mb_substr("Refus au visa « {$step['label']} »" . ($name ? " ($name)" : ''), 0, 255), (int)$req['id']]);
                         // Le demandeur n'est pas notifié à chaque étape : il suit via son lien.
                         $notify = trim(getSetting($pdo, 'request_notify_email', ''));
-                        if ($notify) {
+                        if ($notify && mailTplEnabled($pdo, 'refusee')) {
                             $adm = baseUrl($pdo) . '?page=requests&view=' . (int)$req['id'];
                             [$subject, $html] = mailRender($pdo, 'refusee', [
                                 'numero' => h($req['numero']), 'beneficiaire' => h($req['agent_name']),
@@ -3402,6 +3413,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash('error', "Ce bon n'est plus signable (signé, annulé ou expiré) — rien à envoyer.");
                 } elseif (empty($b['email'])) {
                     flash('error', "Cet agent n'a pas d'adresse e-mail. Renseignez-la dans sa fiche.");
+                } elseif (!mailTplEnabled($pdo, 'bon')) {
+                    flash('error', "L'envoi des e-mails « Signature d'un bon » est désactivé (Paramètres → Envoi d'e-mails).");
                 } else {
                     $typeLbl = $b['type'] === 'remise' ? 'remise' : 'restitution';
                     $url     = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
@@ -3714,6 +3727,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // le gabarit continuera de suivre les évolutions de l'application.
                     if ($val === trim($def[$part])) $val = '';
                     $up->execute(["mail_tpl_{$tk}_{$part}", $val, "$lbl e-mail « {$tk} » (vide = défaut)"]);
+                }
+                // Activation de l'envoi (le gabarit « test » n'est pas désactivable)
+                if ($tk !== 'test') {
+                    $up->execute(["mail_tpl_{$tk}_enabled", !empty($d['tpl_enabled'][$tk]) ? '1' : '0', "Envoi de l'e-mail « {$tk} » activé (0/1)"]);
                 }
             }
             // Couleurs du bandeau (validées : hex 6 chiffres, sinon ignorées)
@@ -5230,12 +5247,19 @@ elseif ($page === 'refs') {
               $ovT = trim(getSetting($pdo, "mail_tpl_{$tk}_title", ''));
               $ovB = trim(getSetting($pdo, "mail_tpl_{$tk}_body", ''));
               $customized = $ovS !== '' || $ovT !== '' || $ovB !== '';
+              $enabled = mailTplEnabled($pdo, $tk);
           ?>
-          <details style="border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:.6rem;" data-tpl="<?=h($tk)?>">
+          <details style="border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:.6rem;<?=$enabled?'':'opacity:.65;'?>" data-tpl="<?=h($tk)?>">
             <summary style="cursor:pointer;padding:.65rem .9rem;font-size:.88rem;font-weight:600;">
-              <?=h($tpl['label'])?><?=$customized ? ' <span class="badge badge-info" style="font-size:.68rem;">personnalisé</span>' : ''?>
+              <?=h($tpl['label'])?><?=$customized ? ' <span class="badge badge-info" style="font-size:.68rem;">personnalisé</span>' : ''?><?=$enabled ? '' : ' <span class="badge badge-danger" style="font-size:.68rem;">désactivé</span>'?>
             </summary>
             <div style="padding:.35rem .9rem .9rem;">
+              <?php if ($tk !== 'test'): ?>
+              <label style="display:flex;align-items:center;gap:.45rem;font-size:.84rem;font-weight:400;text-transform:none;letter-spacing:normal;cursor:pointer;margin:0 0 .75rem;">
+                <input type="checkbox" name="tpl_enabled[<?=h($tk)?>]" value="1" <?=$enabled?'checked':''?> style="width:14px;height:14px;accent-color:var(--primary);">
+                <span>Envoi activé — décochez pour que cet e-mail ne parte plus jamais.</span>
+              </label>
+              <?php endif; ?>
               <div class="form-group form-full"><label>Sujet</label>
                 <input type="text" name="tpl_subject[<?=h($tk)?>]" value="<?=h($ovS !== '' ? $ovS : $tpl['subject'])?>"></div>
               <div class="form-group form-full"><label>Titre (bandeau du message)</label>
