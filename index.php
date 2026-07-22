@@ -3625,7 +3625,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $page = preg_replace('/[^a-z_]/', '', $_GET['page'] ?? 'dashboard');
 $tab = preg_replace('/[^a-z_]/', '', $_GET['tab'] ?? 'active');
 
-$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise', 'requests' => 'Demandes de téléphone'];
+$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise', 'requests' => 'Demandes de téléphone', 'stats' => 'Statistiques'];
 ob_start();
 
 // ==================================================================
@@ -4449,8 +4449,11 @@ elseif ($page === 'refs') {
         $data = $q->fetchAll();
         $cols = ['Nom'=>'last_name', 'Prénom'=>'first_name', 'Fonction'=>'fonction', 'Email'=>'email', 'Service'=>'service_name']; $ent = 'agent';
     } elseif ($tab === 'services') {
-        $data = $pdo->query("SELECT * FROM services ORDER BY name")->fetchAll();
-        $cols = ['Nom'=>'name', 'Direction'=>'direction', 'Visa Chef de service'=>'chef_name', 'Visa D.G.A.'=>'dga_name', 'Notes'=>'notes']; $ent = 'service';
+        $data = $pdo->query("SELECT s.*,
+                (SELECT COUNT(*) FROM mobile_lines l WHERE l.service_id=s.id AND l.archived=0) AS nb_lines,
+                (SELECT COUNT(*) FROM devices d WHERE d.service_id=s.id AND d.archived=0)      AS nb_devices
+            FROM services s ORDER BY s.name")->fetchAll();
+        $cols = ['Nom'=>'name', 'Direction'=>'direction', 'Lignes'=>'nb_lines', 'Matériels'=>'nb_devices', 'Visa Chef de service'=>'chef_name', 'Visa D.G.A.'=>'dga_name', 'Notes'=>'notes']; $ent = 'service';
     } elseif ($tab === 'models') {
         $data = $pdo->query("SELECT * FROM models ORDER BY brand, name")->fetchAll();
         $cols = ['Marque'=>'brand', 'Modèle'=>'name', 'Catégorie'=>'category']; $ent = 'model';
@@ -5785,6 +5788,170 @@ elseif ($page === 'requests') {
     }
 }
 
+// ==================================================================
+// VUE : STATISTIQUES
+// ==================================================================
+elseif ($page === 'stats') {
+    $col = fn($rows, $k) => array_map(fn($r) => $r[$k], $rows);
+
+    // ── Chiffres-clés ──
+    $sDevActive   = (int)$pdo->query("SELECT COUNT(*) FROM devices WHERE archived=0")->fetchColumn();
+    $sDevDeployed = (int)$pdo->query("SELECT COUNT(*) FROM devices WHERE archived=0 AND status='Deployed'")->fetchColumn();
+    $sLinesActive = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND status='Active'")->fetchColumn();
+    $sAgents      = (int)$pdo->query("SELECT COUNT(*) FROM agents WHERE archived=0")->fetchColumn();
+    $sReqTotal    = (int)$pdo->query("SELECT COUNT(*) FROM requests")->fetchColumn();
+    $sReqOpen     = (int)$pdo->query("SELECT COUNT(*) FROM requests WHERE status IN ('a_qualifier','en_validation','validee')")->fetchColumn();
+
+    // ── 1. Parc & stock ──
+    $statBrand   = $pdo->query("SELECT m.brand AS k, COUNT(d.id) AS c FROM devices d JOIN models m ON d.model_id=m.id WHERE d.archived=0 GROUP BY m.brand ORDER BY c DESC")->fetchAll();
+    $devStatusMap = ['Deployed'=>'Déployé', 'Stock'=>'En stock', 'Repair'=>'Réparation', 'HS'=>'HS / Rebut', 'Lost'=>'Perdu / Volé'];
+    $statDevStat = $pdo->query("SELECT status AS k, COUNT(*) AS c FROM devices WHERE archived=0 GROUP BY status ORDER BY c DESC")->fetchAll();
+    $statOper    = $pdo->query("SELECT IFNULL(o.name,'Sans opérateur') AS k, COUNT(l.id) AS c FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id WHERE l.archived=0 AND l.sim_vierge=0 GROUP BY o.name ORDER BY c DESC")->fetchAll();
+    $statPlan    = $pdo->query("SELECT IFNULL(p.name,'Sans forfait') AS k, COUNT(l.id) AS c FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.archived=0 AND l.sim_vierge=0 GROUP BY p.name ORDER BY c DESC LIMIT 8")->fetchAll();
+    $sEsim    = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND esim=1")->fetchColumn();
+    $sPhysSim = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND esim=0 AND sim_vierge=0")->fetchColumn();
+    $sByod    = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND personal_device=1")->fetchColumn();
+
+    // ── 2. Par service ──
+    $statSvc = $pdo->query("SELECT s.name AS k,
+            (SELECT COUNT(*) FROM mobile_lines l WHERE l.service_id=s.id AND l.archived=0) AS lignes,
+            (SELECT COUNT(*) FROM devices d WHERE d.service_id=s.id AND d.archived=0)      AS mats
+        FROM services s HAVING lignes+mats > 0 ORDER BY lignes+mats DESC LIMIT 10")->fetchAll();
+
+    // ── 3. Demandes de téléphone ──
+    $statReqMonth  = $pdo->query("SELECT DATE_FORMAT(created_at,'%Y-%m') AS k, COUNT(*) AS c FROM requests WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) GROUP BY k ORDER BY k")->fetchAll();
+    $reqStatusMap  = ['a_qualifier'=>'À qualifier','en_validation'=>'En validation','validee'=>'Validée','livree'=>'Livrée','refusee'=>'Refusée','annulee'=>'Annulée'];
+    $statReqStatus = $pdo->query("SELECT status AS k, COUNT(*) AS c FROM requests GROUP BY status")->fetchAll();
+    $statReqType   = $pdo->query("SELECT type AS k, COUNT(*) AS c FROM requests GROUP BY type")->fetchAll();
+    $statReqMotif  = $pdo->query("SELECT replace_motif AS k, COUNT(*) AS c FROM requests WHERE replace_device=1 AND replace_motif IS NOT NULL AND replace_motif<>'' GROUP BY replace_motif ORDER BY c DESC")->fetchAll();
+    $sReqValidated = (int)$pdo->query("SELECT COUNT(*) FROM requests WHERE status IN ('validee','livree')")->fetchColumn();
+    $sReqRefused   = (int)$pdo->query("SELECT COUNT(*) FROM requests WHERE status='refusee'")->fetchColumn();
+    $sReqAvgDays   = $pdo->query("SELECT ROUND(AVG(DATEDIFF(closed_at, launched_at)),1) FROM requests WHERE status IN ('validee','livree') AND launched_at IS NOT NULL AND closed_at IS NOT NULL")->fetchColumn();
+
+    // ── 4. Incidents & renouvellement ──
+    // Matériels archivés par motif (extrait des journaux « Archivé — Motif : X »)
+    $archLogs = $pdo->query("SELECT action_desc FROM history_logs WHERE entity_type='device' AND action_desc LIKE '%Motif :%'")->fetchAll(PDO::FETCH_COLUMN);
+    $motifCounts = [];
+    foreach ($archLogs as $desc) {
+        if (preg_match('/Motif\s*:\s*([^—\-]+)/u', $desc, $mm)) { $mo = trim($mm[1]); if ($mo !== '') $motifCounts[$mo] = ($motifCounts[$mo] ?? 0) + 1; }
+    }
+    arsort($motifCounts);
+    // Vieillissement du parc (matériels actifs par tranche d'âge)
+    $ageBuckets = ['< 1 an'=>0, '1–2 ans'=>0, '2–3 ans'=>0, '3–4 ans'=>0, '> 4 ans'=>0, 'Sans date'=>0];
+    foreach ($pdo->query("SELECT purchase_date FROM devices WHERE archived=0")->fetchAll(PDO::FETCH_COLUMN) as $pd) {
+        if (!$pd) { $ageBuckets['Sans date']++; continue; }
+        $y = (time() - strtotime($pd)) / 31557600;
+        if ($y < 1) $ageBuckets['< 1 an']++; elseif ($y < 2) $ageBuckets['1–2 ans']++;
+        elseif ($y < 3) $ageBuckets['2–3 ans']++; elseif ($y < 4) $ageBuckets['3–4 ans']++;
+        else $ageBuckets['> 4 ans']++;
+    }
+    $statSimReason = $pdo->query("SELECT IFNULL(NULLIF(reason,''),'Non précisé') AS k, COUNT(*) AS c FROM sim_history GROUP BY reason ORDER BY c DESC LIMIT 8")->fetchAll();
+
+    // Rendu d'une carte-graphique (canvas + état vide)
+    $chartCard = function($title, $icon, $canvasId, $hasData, $empty = 'Aucune donnée pour l\'instant.') {
+        echo '<div class="card" style="margin-bottom:0;"><div class="card-header"><span><i class="bi bi-' . $icon . '"></i> ' . h($title) . '</span></div><div style="padding:1rem;height:260px;">';
+        echo $hasData ? '<canvas id="' . $canvasId . '"></canvas>'
+                      : '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:.88rem;text-align:center;">' . h($empty) . '</div>';
+        echo '</div></div>';
+    };
+    $svcNames = $col($statSvc, 'k'); $svcLines = array_map('intval', $col($statSvc, 'lignes')); $svcMats = array_map('intval', $col($statSvc, 'mats'));
+    ?>
+    <div style="display:flex;flex-direction:column;gap:1.5rem;">
+
+      <!-- Chiffres-clés -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;">
+        <?php foreach ([
+            ['👤 Utilisateurs', $sAgents, 'var(--success)'],
+            ['📞 Lignes actives', $sLinesActive, '#2563eb'],
+            ['📱 Matériels actifs', $sDevActive, '#7c3aed'],
+            ['🚀 Déployés', $sDevDeployed, '#0891b2'],
+            ['📨 Demandes (total)', $sReqTotal, '#d97706'],
+            ['⏳ Demandes en cours', $sReqOpen, '#dc2626'],
+        ] as [$lbl, $val, $clr]): ?>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;border-left:4px solid <?=$clr?>;">
+          <div style="font-family:var(--font-mono);font-size:1.7rem;font-weight:600;color:var(--text-strong);line-height:1;"><?=$val?></div>
+          <div style="font-size:.76rem;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;margin-top:.3rem;"><?=$lbl?></div>
+        </div>
+        <?php endforeach; ?>
+      </div>
+
+      <!-- 1. PARC & STOCK -->
+      <h3 style="font-size:1rem;color:var(--text-strong);margin-top:.5rem;"><i class="bi bi-hdd-stack"></i> Parc &amp; stock</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">
+        <?php $chartCard('Matériels par marque', 'phone', 'stBrand', (bool)$statBrand); ?>
+        <?php $chartCard('Statut des matériels', 'pie-chart', 'stDevStat', (bool)$statDevStat); ?>
+        <?php $chartCard('Lignes par opérateur', 'broadcast', 'stOper', (bool)$statOper); ?>
+        <?php $chartCard('Lignes par forfait', 'globe2', 'stPlan', (bool)$statPlan); ?>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;"><div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:600;color:#7c3aed;"><?=$sEsim?></div><div style="font-size:.78rem;color:var(--text2);">eSIM</div></div>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;"><div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:600;color:#2563eb;"><?=$sPhysSim?></div><div style="font-size:.78rem;color:var(--text2);">SIM physique</div></div>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;"><div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:600;color:#0891b2;"><?=$sByod?></div><div style="font-size:.78rem;color:var(--text2);">Appareils perso (BYOD)</div></div>
+      </div>
+
+      <!-- 2. PAR SERVICE -->
+      <h3 style="font-size:1rem;color:var(--text-strong);margin-top:.5rem;"><i class="bi bi-building"></i> Par service / direction</h3>
+      <?php $chartCard('Lignes & matériels par service (top 10)', 'bar-chart', 'stSvc', (bool)$statSvc); ?>
+
+      <!-- 3. DEMANDES -->
+      <h3 style="font-size:1rem;color:var(--text-strong);margin-top:.5rem;"><i class="bi bi-inbox"></i> Demandes de téléphone</h3>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--success);"><div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--success);"><?=$sReqValidated?></div><div style="font-size:.78rem;color:var(--text2);">Validées / livrées</div></div>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--danger);"><div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--danger);"><?=$sReqRefused?></div><div style="font-size:.78rem;color:var(--text2);">Refusées</div></div>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--primary);"><div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--primary);"><?=$sReqAvgDays !== null && $sReqAvgDays !== false ? h($sReqAvgDays) . ' j' : '—'?></div><div style="font-size:.78rem;color:var(--text2);">Délai moyen du circuit</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">
+        <?php $chartCard('Demandes par mois (12 mois)', 'calendar3', 'stReqMonth', (bool)$statReqMonth); ?>
+        <?php $chartCard('Répartition par statut', 'pie-chart', 'stReqStatus', (bool)$statReqStatus); ?>
+        <?php $chartCard('Par type de demande', 'tags', 'stReqType', (bool)$statReqType); ?>
+        <?php $chartCard('Motifs de remplacement', 'exclamation-triangle', 'stReqMotif', (bool)$statReqMotif, 'Aucun renouvellement avec motif.'); ?>
+      </div>
+
+      <!-- 4. INCIDENTS & RENOUVELLEMENT -->
+      <h3 style="font-size:1rem;color:var(--text-strong);margin-top:.5rem;"><i class="bi bi-tools"></i> Incidents &amp; renouvellement</h3>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">
+        <?php $chartCard('Matériels archivés par motif', 'trash3', 'stArch', (bool)$motifCounts, 'Aucun matériel archivé.'); ?>
+        <?php $chartCard('Vieillissement du parc (matériels actifs)', 'hourglass-split', 'stAge', array_sum($ageBuckets) > 0); ?>
+        <?php $chartCard('Changements de SIM par motif', 'sim', 'stSim', (bool)$statSimReason, 'Aucun changement de SIM.'); ?>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const PAL = ['#4f46e5','#2563eb','#7c3aed','#d97706','#059669','#dc2626','#0891b2','#db2777','#65a30d','#ea580c'];
+      function doughnut(id, labels, data){ const el=document.getElementById(id); if(!el||!labels.length)return;
+        new Chart(el,{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:PAL,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#94a3b8',boxWidth:12,padding:10}}}}}); }
+      function bars(id, labels, datasets, horizontal){ const el=document.getElementById(id); if(!el||!labels.length)return;
+        new Chart(el,{type:'bar',data:{labels,datasets},options:{indexAxis:horizontal?'y':'x',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true,ticks:{color:'#94a3b8',precision:0},grid:{color:'rgba(148,163,184,.15)'}},y:{beginAtZero:true,ticks:{color:'#94a3b8',precision:0},grid:{color:'rgba(148,163,184,.15)'}}},plugins:{legend:{display:datasets.length>1,labels:{color:'#94a3b8'}}}}}); }
+
+      // Parc & stock
+      doughnut('stBrand', <?=json_encode($col($statBrand,'k'))?>, <?=json_encode(array_map('intval',$col($statBrand,'c')))?>);
+      doughnut('stDevStat', <?=json_encode(array_map(fn($k)=>$devStatusMap[$k]??$k, $col($statDevStat,'k')))?>, <?=json_encode(array_map('intval',$col($statDevStat,'c')))?>);
+      bars('stOper', <?=json_encode($col($statOper,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statOper,'c')))?>,backgroundColor:'#2563eb',borderRadius:4}]);
+      bars('stPlan', <?=json_encode($col($statPlan,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statPlan,'c')))?>,backgroundColor:'#7c3aed',borderRadius:4}], true);
+
+      // Par service (barres groupées)
+      bars('stSvc', <?=json_encode($svcNames)?>, [
+        {label:'Lignes',   data:<?=json_encode($svcLines)?>, backgroundColor:'#4f46e5', borderRadius:4},
+        {label:'Matériels',data:<?=json_encode($svcMats)?>,  backgroundColor:'#7c3aed', borderRadius:4}
+      ]);
+
+      // Demandes
+      bars('stReqMonth', <?=json_encode($col($statReqMonth,'k'))?>, [{label:'Demandes',data:<?=json_encode(array_map('intval',$col($statReqMonth,'c')))?>,backgroundColor:'#d97706',borderRadius:4}]);
+      doughnut('stReqStatus', <?=json_encode(array_map(fn($k)=>$reqStatusMap[$k]??$k, $col($statReqStatus,'k')))?>, <?=json_encode(array_map('intval',$col($statReqStatus,'c')))?>);
+      doughnut('stReqType', <?=json_encode(array_map(fn($k)=>$k==='renouvellement'?'Renouvellement':'Attribution', $col($statReqType,'k')))?>, <?=json_encode(array_map('intval',$col($statReqType,'c')))?>);
+      bars('stReqMotif', <?=json_encode($col($statReqMotif,'k'))?>, [{label:'Demandes',data:<?=json_encode(array_map('intval',$col($statReqMotif,'c')))?>,backgroundColor:'#dc2626',borderRadius:4}]);
+
+      // Incidents & renouvellement
+      bars('stArch', <?=json_encode(array_keys($motifCounts))?>, [{label:'Matériels',data:<?=json_encode(array_values($motifCounts))?>,backgroundColor:'#dc2626',borderRadius:4}]);
+      bars('stAge', <?=json_encode(array_keys($ageBuckets))?>, [{label:'Matériels',data:<?=json_encode(array_values($ageBuckets))?>,backgroundColor:'#0891b2',borderRadius:4}]);
+      bars('stSim', <?=json_encode($col($statSimReason,'k'))?>, [{label:'Changements',data:<?=json_encode(array_map('intval',$col($statSimReason,'c')))?>,backgroundColor:'#65a30d',borderRadius:4}], true);
+    });
+    </script>
+    <?php
+}
+
 $content = ob_get_clean();
 ?>
 
@@ -5928,6 +6095,7 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
     <?php $navReqPending = (int)$pdo->query("SELECT COUNT(*) FROM requests WHERE status IN ('a_qualifier','en_validation')")->fetchColumn(); ?>
     <a href="?page=requests" class="nav-item <?=$page==='requests'?'active':''?>"><i class="bi bi-inbox nav-icon"></i><span class="nav-label">Demandes de téléphone</span><?php if($navReqPending): ?><span style="margin-left:auto;background:var(--primary);color:#fff;font-size:.68rem;font-weight:700;border-radius:999px;padding:.1rem .5rem;"><?=$navReqPending?></span><?php endif; ?></a>
     <a href="?page=history" class="nav-item <?=$page==='history'?'active':''?>"><i class="bi bi-file-earmark-text nav-icon"></i><span class="nav-label">Historique des bons</span></a>
+    <a href="?page=stats" class="nav-item <?=$page==='stats'?'active':''?>"><i class="bi bi-bar-chart-line nav-icon"></i><span class="nav-label">Statistiques</span></a>
     <a href="?page=refs&tab=services" class="nav-item <?=($navRefsTab!=='' && $navRefsTab!=='agents')?'active':''?>"><i class="bi bi-gear nav-icon"></i><span class="nav-label">Référentiels & Comptes</span></a>
     <?php
     $navOperators = $pdo->query("SELECT name, website FROM operators WHERE website IS NOT NULL AND website != '' ORDER BY name")->fetchAll();
