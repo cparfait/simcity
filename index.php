@@ -454,12 +454,37 @@ function requestStatusInfo($s) {
     return $map[$s] ?? [$s, 'badge-muted'];
 }
 
-// Gabarit d'e-mail commun aux demandes (aligné sur celui des bons)
+// Bouton d'action pour les e-mails : mise en page en table, seule forme
+// fiable sous Outlook (les <a> stylés en bloc y perdent leur padding).
+function requestMailButton($url, $label) {
+    return '<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:28px auto;"><tr>'
+         . '<td style="background-color:#4f46e5;border-radius:8px;" bgcolor="#4f46e5">'
+         . '<a href="' . h($url) . '" style="display:inline-block;padding:14px 36px;font-family:Arial,Helvetica,sans-serif;font-size:15px;font-weight:bold;color:#ffffff;text-decoration:none;">' . $label . '</a>'
+         . '</td></tr></table>';
+}
+
+// Gabarit d'e-mail commun (demandes, bons, notifications) : structure en
+// tables imbriquées — le rendu HTML moderne (flex, max-width sur div) est
+// ignoré par Outlook, qui reste le client des destinataires internes.
 function requestMailShell($title, $inner) {
-    return '<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">'
-         . '<h2 style="color:#4f46e5;">📱 SimCity — ' . $title . '</h2>'
-         . $inner
-         . '<hr style="border:0;border-top:1px solid #eee;margin:24px 0;"><p style="font-size:12px;color:#999;">Message automatique — merci de ne pas répondre.</p></div>';
+    return '<!DOCTYPE html><html lang="fr"><body style="margin:0;padding:0;background-color:#eef1f6;">'
+         . '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#eef1f6"><tr><td align="center" style="padding:32px 12px;">'
+         . '<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;">'
+         // Bandeau
+         . '<tr><td bgcolor="#4f46e5" style="background:#4f46e5;background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);border-radius:12px 12px 0 0;padding:26px 36px;">'
+         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:bold;color:#ffffff;">📱 SimCity</div>'
+         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#c7d2fe;letter-spacing:1px;text-transform:uppercase;margin-top:4px;">Gestion de la flotte mobile</div>'
+         . '</td></tr>'
+         // Corps
+         . '<tr><td bgcolor="#ffffff" style="background-color:#ffffff;padding:34px 36px;">'
+         . '<h1 style="margin:0 0 18px;font-family:Arial,Helvetica,sans-serif;font-size:19px;line-height:1.35;color:#111827;">' . $title . '</h1>'
+         . '<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.65;color:#374151;">' . $inner . '</div>'
+         . '</td></tr>'
+         // Pied
+         . '<tr><td bgcolor="#f8fafc" style="background-color:#f8fafc;border-top:1px solid #e5e7eb;border-radius:0 0 12px 12px;padding:18px 36px;">'
+         . '<p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#94a3b8;">Message automatique envoyé par SimCity — merci de ne pas répondre.</p>'
+         . '</td></tr>'
+         . '</table></td></tr></table></body></html>';
 }
 
 // Circuit par défaut : les 4 visas du formulaire papier. Les valideurs
@@ -484,7 +509,7 @@ function requestSendStepEmail($pdo, $req, $step, $isReminder = false) {
            . ($isReminder ? '<p style="color:#c2410c;"><strong>Rappel :</strong> cette demande attend votre avis depuis plusieurs jours.</p>' : '')
            . '<p>La demande de téléphone <strong>' . h($req['numero']) . '</strong> (' . h(requestTypeLabel($req['type'])) . ') pour <strong>' . h($req['agent_name']) . '</strong>'
            . ($req['service_name'] ? ' — service ' . h($req['service_name']) : '') . ' attend votre visa <strong>« ' . h($step['label']) . ' »</strong>.</p>'
-           . '<p style="margin:28px 0;text-align:center;"><a href="' . h($url) . '" style="background:#4f46e5;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">👁️ Examiner et viser la demande</a></p>'
+           . requestMailButton($url, '👁️ Examiner et viser la demande')
            . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '">' . h($url) . '</a></p>'
            . '<p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>';
     $res = smtpSendMail($pdo, $step['validator_email'], ($isReminder ? 'Rappel — ' : '') . "Visa requis — Demande de téléphone {$req['numero']}", requestMailShell('Visa requis', $inner));
@@ -865,7 +890,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
                 smtpSendMail($pdo, $notify, "Nouvelle demande de téléphone $numero — $agentName",
                     requestMailShell('Nouvelle demande', '<p>Une nouvelle demande de téléphone vient d\'être déposée :</p>'
                     . '<p><strong>' . h($numero) . '</strong> — ' . h(requestTypeLabel($type)) . '<br>Bénéficiaire : <strong>' . h($agentName) . '</strong>' . ($fonction ? ' (' . h($fonction) . ')' : '') . ($agentEmail ? '<br>E-mail : ' . h($agentEmail) : '') . '<br>Service : ' . h($svcRow['name']) . '<br>Demandeur : <strong>' . h($requesterName) . '</strong> (' . h($requesterEmail) . ')</p>'
-                    . '<p style="margin:24px 0;text-align:center;"><a href="' . h($adm) . '" style="background:#4f46e5;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Qualifier la demande</a></p>'));
+                    . requestMailButton($adm, 'Qualifier la demande')));
             }
             // 2) Accusé de réception au demandeur (l'e-mail qu'il a saisi) : simple
             //    confirmation + lien de suivi. N'intervient pas dans le circuit.
@@ -873,7 +898,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
                 requestMailShell('Demande enregistrée', '<p>Bonjour,</p>'
                 . '<p>Votre demande de téléphone <strong>' . h($numero) . '</strong> pour <strong>' . h($agentName) . '</strong> a bien été enregistrée.</p>'
                 . '<p>Elle va être examinée par la DSI puis suivre le circuit de validation. Vous pouvez suivre son avancement à tout moment :</p>'
-                . '<p style="margin:24px 0;text-align:center;"><a href="' . h($suivi) . '" style="background:#4f46e5;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">📍 Suivre ma demande</a></p>'));
+                . requestMailButton($suivi, '📍 Suivre ma demande')));
 
             header('Location: ?page=demande&ok=' . urlencode($numero) . '&t=' . $track); exit;
         }
@@ -3233,14 +3258,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $typeLbl = $b['type'] === 'remise' ? 'remise' : 'restitution';
                     $url     = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
                     $expFmt  = $b['expires_at'] ? date('d/m/Y', strtotime($b['expires_at'])) : null;
-                    $html = '<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">'
-                          . '<h2 style="color:#4f46e5;">📱 SimCity — Signature requise</h2>'
-                          . '<p>Bonjour ' . h($b['first_name']) . ',</p>'
+                    $html = requestMailShell('Signature requise',
+                            '<p>Bonjour ' . h($b['first_name']) . ',</p>'
                           . '<p>Le bon de <strong>' . $typeLbl . ' de matériel</strong> n° <strong>' . h($b['numero']) . '</strong> vous attend pour signature électronique.</p>'
-                          . '<p style="margin:28px 0;text-align:center;"><a href="' . h($url) . '" style="background:#4f46e5;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">✍️ Signer le bon</a></p>'
-                          . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '">' . h($url) . '</a></p>'
-                          . ($expFmt ? '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . $expFmt . '</strong>.</p>' : '')
-                          . '<hr style="border:0;border-top:1px solid #eee;margin:24px 0;"><p style="font-size:12px;color:#999;">Message automatique — merci de ne pas répondre.</p></div>';
+                          . requestMailButton($url, '✍️ Signer le bon')
+                          . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '" style="color:#4f46e5;">' . h($url) . '</a></p>'
+                          . ($expFmt ? '<p style="font-size:13px;color:#666;">Ce lien est valable jusqu\'au <strong>' . $expFmt . '</strong>.</p>' : ''));
                     $res = smtpSendMail($pdo, $b['email'], "Signature requise — Bon de $typeLbl {$b['numero']}", $html);
                     if ($res === true) {
                         logHistory($pdo, 'agent', (int)$b['agent_id'], "📧 Lien de signature du bon {$b['numero']} envoyé à {$b['email']}", (int)$b['agent_id']);
