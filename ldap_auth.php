@@ -226,6 +226,62 @@ function ldap_authenticate_user(string $username, string $password): ?array {
 }
 
 /**
+ * Recherche d'annuaire (people picker) via le COMPTE DE SERVICE.
+ * Utilisé par le formulaire public de demande pour pré-remplir le bénéficiaire
+ * depuis l'Active Directory. Nécessite ldap_bind_user / ldap_bind_password.
+ *
+ * $query : fragment de nom (prénom, nom, login, e-mail). Recherche sur
+ *          givenName, sn, displayName, cn, sAMAccountName et mail.
+ * Retourne un tableau de personnes :
+ *   [['first_name','last_name','display_name','email','title','login'], …]
+ * Tableau vide si LDAP indisponible, compte de service absent ou aucune réponse.
+ */
+function ldap_search_people(string $query, int $limit = 10): array {
+    $query = trim($query);
+    if (!ldap_auth_enabled() || mb_strlen($query) < 2) return [];
+    $bindUser = ldap_cfg('ldap_bind_user');
+    $bindPw   = ldap_cfg('ldap_bind_password');
+    $base     = ldap_cfg('ldap_base_dn');
+    // Sans compte de service ni base DN, pas de recherche possible (on ne veut
+    // pas exposer un bind anonyme depuis une page publique).
+    if ($bindUser === '' || $bindPw === '' || $base === '') return [];
+
+    $conn = ldap_open_connection();
+    if (!$conn) return [];
+    if (!@ldap_bind($conn, $bindUser, $bindPw)) { @ldap_unbind($conn); return []; }
+
+    $q = ldap_esc($query);
+    // Personnes uniquement (comptes utilisateurs), correspondance « contient ».
+    $filter = "(&(objectCategory=person)(objectClass=user)"
+            . "(|(givenName=*{$q}*)(sn=*{$q}*)(displayName=*{$q}*)(cn=*{$q}*)(sAMAccountName=*{$q}*)(mail=*{$q}*)))";
+    $sr = @ldap_search($conn, $base, $filter,
+        ['givenname', 'sn', 'displayname', 'cn', 'mail', 'title', 'samaccountname'], 0, max(1, min(50, $limit)));
+    if (!$sr) { @ldap_unbind($conn); return []; }
+    $entries = ldap_get_entries($conn, $sr);
+    @ldap_unbind($conn);
+    if (!$entries || ($entries['count'] ?? 0) === 0) return [];
+
+    $people = [];
+    for ($i = 0; $i < $entries['count']; $i++) {
+        $e = $entries[$i];
+        $first = $e['givenname'][0]   ?? '';
+        $last  = $e['sn'][0]          ?? '';
+        $disp  = $e['displayname'][0] ?? ($e['cn'][0] ?? trim("$first $last"));
+        $people[] = [
+            'first_name'   => $first,
+            'last_name'    => $last,
+            'display_name' => $disp,
+            'email'        => $e['mail'][0]  ?? '',
+            'title'        => $e['title'][0] ?? '',
+            'login'        => $e['samaccountname'][0] ?? '',
+        ];
+    }
+    // Tri alphabétique par nom affiché
+    usort($people, fn($a, $b) => strcasecmp($a['display_name'], $b['display_name']));
+    return array_slice($people, 0, $limit);
+}
+
+/**
  * Teste la connexion LDAP (et le bind du compte de service si renseigné).
  * Retourne [ok: bool, message: string] pour affichage direct à l'admin.
  */

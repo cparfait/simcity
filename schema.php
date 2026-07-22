@@ -207,6 +207,63 @@ function simcity_apply_schema(PDO $pdo): void
         INDEX idx_bons_parent (parent_id)
     ) ENGINE=InnoDB;");
 
+    // ── Demandes de téléphone (attribution / renouvellement) ─
+    // La demande reprend le formulaire papier « Demande de téléphone
+    // portable » : identité de l'agent, contexte, motivation, puis un
+    // circuit de visas. agent_name/service_name sont des snapshots :
+    // le formulaire est public, l'agent peut ne pas exister au référentiel.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS requests (
+        id                  INT AUTO_INCREMENT PRIMARY KEY,
+        numero              VARCHAR(20) UNIQUE,
+        type                VARCHAR(20) NOT NULL DEFAULT 'attribution',
+        agent_id            INT NULL,
+        agent_name          VARCHAR(200),
+        agent_fonction      VARCHAR(150) NULL,
+        service_id          INT NULL,
+        service_name        VARCHAR(150) NULL,
+        replace_agent       TINYINT(1) NOT NULL DEFAULT 0,
+        replaced_agent_name VARCHAR(200) NULL,
+        replace_device      TINYINT(1) NOT NULL DEFAULT 0,
+        replace_motif       VARCHAR(30) NULL,
+        motivation          TEXT,
+        requester_email     VARCHAR(150) NULL,
+        track_token         VARCHAR(64) UNIQUE,
+        status              VARCHAR(20) NOT NULL DEFAULT 'a_qualifier',
+        current_step        INT NOT NULL DEFAULT 0,
+        refusal_reason      VARCHAR(255) NULL,
+        device_id           INT NULL,
+        line_id             INT NULL,
+        bon_id              INT NULL,
+        created_at          DATETIME DEFAULT CURRENT_TIMESTAMP,
+        launched_at         DATETIME NULL,
+        closed_at           DATETIME NULL,
+        delivered_at        DATETIME NULL,
+        INDEX idx_requests_status (status),
+        INDEX idx_requests_agent (agent_id)
+    ) ENGINE=InnoDB;");
+
+    // Circuit de validation FIGÉ sur la demande (snapshot, concept Sesame) :
+    // les étapes sont copiées du circuit proposé au lancement et ne bougent
+    // plus, même si les valideurs par défaut changent ensuite.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS request_steps (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        request_id      INT NOT NULL,
+        ordre           INT NOT NULL,
+        label           VARCHAR(100),
+        validator_name  VARCHAR(200) NULL,
+        validator_email VARCHAR(150),
+        token           VARCHAR(64) UNIQUE,
+        expires_at      DATETIME NULL,
+        decision        VARCHAR(10) NULL,
+        avis            TEXT NULL,
+        decided_at      DATETIME NULL,
+        ip              VARCHAR(45) NULL,
+        notified_at     DATETIME NULL,
+        reminded_at     DATETIME NULL,
+        INDEX idx_reqsteps_request (request_id),
+        INDEX idx_reqsteps_email (validator_email)
+    ) ENGINE=InnoDB;");
+
     // ── Tentatives de connexion (anti-brute-force) ───────────
     $pdo->exec("CREATE TABLE IF NOT EXISTS login_attempts (
         id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -310,6 +367,34 @@ function simcity_apply_schema(PDO $pdo): void
         $pdo->exec("ALTER TABLE bons ADD COLUMN dsi_signature_data MEDIUMTEXT NULL AFTER signature_data");
     }
 
+    // settings.setting_value passe en TEXT : les textes paramétrables du
+    // formulaire public de demande (intro, nota…) dépassent 255 caractères.
+    $svCol = $pdo->query("SHOW COLUMNS FROM settings LIKE 'setting_value'")->fetch();
+    if ($svCol && stripos($svCol['Type'], 'varchar') !== false) {
+        $pdo->exec("ALTER TABLE settings MODIFY setting_value TEXT");
+    }
+
+    // requests.agent_email : e-mail du bénéficiaire (pré-rempli depuis l'AD).
+    // Sert au rapprochement fiable avec le référentiel ; n'est PAS une cible de
+    // notification (le circuit part sur l'adresse de base paramétrée).
+    if (empty($pdo->query("SHOW COLUMNS FROM requests LIKE 'agent_email'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE requests ADD COLUMN agent_email VARCHAR(150) NULL AFTER agent_fonction");
+    }
+
+    // agents.fonction : intitulé de poste de la fiche utilisateur (pré-rempli
+    // depuis l'AD à la création).
+    if (empty($pdo->query("SHOW COLUMNS FROM agents LIKE 'fonction'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE agents ADD COLUMN fonction VARCHAR(150) NULL AFTER last_name");
+    }
+
+    // services : valideurs du circuit de demande (chef de service, DGA de secteur)
+    if (empty($pdo->query("SHOW COLUMNS FROM services LIKE 'chef_name'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE services ADD COLUMN chef_name  VARCHAR(200) NULL AFTER direction");
+        $pdo->exec("ALTER TABLE services ADD COLUMN chef_email VARCHAR(150) NULL AFTER chef_name");
+        $pdo->exec("ALTER TABLE services ADD COLUMN dga_name   VARCHAR(200) NULL AFTER chef_email");
+        $pdo->exec("ALTER TABLE services ADD COLUMN dga_email  VARCHAR(150) NULL AFTER dga_name");
+    }
+
     // ─────────────────────────────────────────────────────────
     // MIGRATION UNIQUE : sign_tokens / signatures → bons
     // Reprend l'historique de l'ancien système. Les tokens copiés
@@ -390,6 +475,21 @@ function simcity_apply_schema(PDO $pdo): void
         ['smtp_from',          '',    "Adresse e-mail expéditrice"],
         ['smtp_from_name',     'SimCity — DSI', "Nom de l'expéditeur"],
         ['last_auto_backup',   '',    "Horodatage de la dernière sauvegarde automatique"],
+        // Demandes de téléphone (formulaire public + circuit de validation)
+        ['request_notify_email',        '',  "Adresse notifiée à chaque nouvelle demande de téléphone"],
+        ['request_reminder_days',       '5', "Relance automatique des valideurs après N jours sans réponse"],
+        ['request_dsi_name',            '',  "Visa D.S.I. — nom du valideur par défaut"],
+        ['request_dsi_email',           '',  "Visa D.S.I. — e-mail du valideur par défaut"],
+        ['request_dgs_name',            '',  "Visa D.G.S. — nom du valideur par défaut"],
+        ['request_dgs_email',           '',  "Visa D.G.S. — e-mail du valideur par défaut"],
+        ['request_last_reminder_check', '',  "Horodatage du dernier contrôle de relances des demandes"],
+        // Textes du formulaire public de demande (modifiables dans Paramètres)
+        ['request_form_title',            'Demande de téléphone portable', "Formulaire public — titre"],
+        ['request_form_intro',            "Attribution ou renouvellement — la demande suivra le circuit de validation habituel (Direction du service, D.S.I., D.G.A., D.G.S.).", "Formulaire public — texte d'introduction"],
+        ['request_form_motivation_label', "Motivation du besoin (astreinte, types de déplacement, fréquence d'utilisation…)", "Formulaire public — libellé du champ motivation"],
+        ['request_form_motifs',           "Panne\nCasse\nPerte\nVol\nObsolescence", "Formulaire public — motifs de remplacement (un par ligne)"],
+        ['request_form_nota',             "Nous vous rappelons que l'attribution d'un téléphone portable relève des avantages en nature susceptibles de demande de justificatif par la Chambre Régionale des Comptes. Il vous appartient de bien évaluer le besoin et d'en contrôler l'usage.", "Formulaire public — nota affiché sous le formulaire"],
+        ['request_form_success',          "Votre demande a bien été transmise à la DSI. Un accusé de réception vous a été envoyé par e-mail ; vous pourrez suivre son avancement via le lien ci-dessous.", "Formulaire public — message de confirmation"],
         // Authentification LDAP / Active Directory (modifiable dans Paramètres ;
         // les variables d'environnement LDAP_* priment si définies — Docker)
         ['ldap_enabled',          '0', "Authentification Active Directory activée (0/1)"],

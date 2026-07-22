@@ -197,6 +197,12 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
                             $pdo->prepare("UPDATE mobile_lines SET agent_id=NULL, service_id=NULL, device_id=NULL, status='Stock' WHERE agent_id=? AND archived=0")->execute([$agentId]);
                         }
                     }
+                    // Demande de téléphone liée à ce bon : la signature de la
+                    // remise clôt le cycle → la demande passe en « livrée ».
+                    if ($bon['type'] === 'remise') {
+                        $pdo->prepare("UPDATE requests SET status='livree', delivered_at=NOW() WHERE bon_id=? AND status='validee'")
+                            ->execute([(int)$bon['id']]);
+                    }
                     $justSigned = true;
                 }
                 $pdo->commit();
@@ -395,6 +401,1001 @@ canvas{display:block;width:100%;border-radius:8px;}
 </div></body></html>
 <?php exit; }
 
+// ─── Réglages SMTP : surcharge par variables d'environnement ──
+// Mêmes noms que Sentinelle (MAIL_SERVER, MAIL_PORT, MAIL_USERNAME,
+// MAIL_PASSWORD, MAIL_DEFAULT_SENDER, MAIL_USE_TLS) : si la variable est
+// définie (Docker), elle PRIME sur la base et le champ correspondant est
+// verrouillé dans Paramètres — même logique que la configuration LDAP.
+// Déclarée AVANT les pages publiques « demandes » (les const ne sont pas
+// hoistées comme les fonctions et ces pages envoient des e-mails).
+const SMTP_ENV_KEYS = [
+    'smtp_host'      => 'MAIL_SERVER',
+    'smtp_port'      => 'MAIL_PORT',
+    'smtp_secure'    => 'MAIL_SECURE',          // tls | ssl | none
+    'smtp_user'      => 'MAIL_USERNAME',
+    'smtp_pass'      => 'MAIL_PASSWORD',
+    'smtp_from'      => 'MAIL_DEFAULT_SENDER',
+    'smtp_from_name' => 'MAIL_FROM_NAME',
+];
+
+// ─── 2c. DEMANDES DE TÉLÉPHONE : HELPERS ──────────────────────
+// Attribution / renouvellement de téléphone : formulaire public, circuit
+// de visas par liens magiques, suivi. Réutilise le socle des bons
+// (tokens, SMTP, snapshot de dotation).
+
+// Numéro séquentiel : DT-2026-0042
+function requestNumero($pdo) {
+    $prefix = 'DT-' . date('Y') . '-';
+    $st = $pdo->prepare("SELECT MAX(CAST(SUBSTRING(numero, ?) AS UNSIGNED)) FROM requests WHERE numero LIKE ?");
+    $st->execute([strlen($prefix) + 1, $prefix . '%']);
+    return $prefix . str_pad((string)((int)$st->fetchColumn() + 1), 4, '0', STR_PAD_LEFT);
+}
+
+function requestTypeLabel($t) { return $t === 'renouvellement' ? 'Renouvellement / remplacement' : 'Première attribution'; }
+
+// [libellé, classe badge] d'un statut de demande
+function requestStatusInfo($s) {
+    $map = [
+        'a_qualifier'   => ['📥 À qualifier',   'badge-warning'],
+        'en_validation' => ['⏳ En validation', 'badge-info'],
+        'validee'       => ['✅ Validée',       'badge-success'],
+        'refusee'       => ['⛔ Refusée',       'badge-danger'],
+        'livree'        => ['📦 Livrée',        'badge-success'],
+        'annulee'       => ['🚫 Annulée',       'badge-muted'],
+    ];
+    return $map[$s] ?? [$s, 'badge-muted'];
+}
+
+// Gabarit d'e-mail commun aux demandes (aligné sur celui des bons)
+function requestMailShell($title, $inner) {
+    return '<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;">'
+         . '<h2 style="color:#4f46e5;">📱 SimCity — ' . $title . '</h2>'
+         . $inner
+         . '<hr style="border:0;border-top:1px solid #eee;margin:24px 0;"><p style="font-size:12px;color:#999;">Message automatique — merci de ne pas répondre.</p></div>';
+}
+
+// Circuit par défaut : les 4 visas du formulaire papier. Les valideurs
+// variables (chef de service, DGA de secteur) viennent du référentiel des
+// services ; la DSI et le DGS des paramètres généraux.
+function requestDefaultSteps($pdo, $serviceId) {
+    $svc = $serviceId ? $pdo->query("SELECT * FROM services WHERE id=" . (int)$serviceId)->fetch() : null;
+    return [
+        ['label' => 'Direction du service', 'name' => trim($svc['chef_name'] ?? ''), 'email' => trim($svc['chef_email'] ?? '')],
+        ['label' => 'D.S.I.',               'name' => trim(getSetting($pdo, 'request_dsi_name', '')), 'email' => trim(getSetting($pdo, 'request_dsi_email', ''))],
+        ['label' => 'D.G.A. de secteur',    'name' => trim($svc['dga_name'] ?? ''),  'email' => trim($svc['dga_email'] ?? '')],
+        ['label' => 'D.G.S.',               'name' => trim(getSetting($pdo, 'request_dgs_name', '')), 'email' => trim(getSetting($pdo, 'request_dgs_email', ''))],
+    ];
+}
+
+// Envoi (ou relance) de l'e-mail de visa au valideur d'une étape.
+// Retourne true, ou un message d'erreur lisible.
+function requestSendStepEmail($pdo, $req, $step, $isReminder = false) {
+    if (empty($step['validator_email'])) return "Aucune adresse e-mail pour l'étape « {$step['label']} ».";
+    $url = baseUrl($pdo) . '?page=valider&token=' . $step['token'];
+    $inner = '<p>Bonjour' . ($step['validator_name'] ? ' ' . h($step['validator_name']) : '') . ',</p>'
+           . ($isReminder ? '<p style="color:#c2410c;"><strong>Rappel :</strong> cette demande attend votre avis depuis plusieurs jours.</p>' : '')
+           . '<p>La demande de téléphone <strong>' . h($req['numero']) . '</strong> (' . h(requestTypeLabel($req['type'])) . ') pour <strong>' . h($req['agent_name']) . '</strong>'
+           . ($req['service_name'] ? ' — service ' . h($req['service_name']) : '') . ' attend votre visa <strong>« ' . h($step['label']) . ' »</strong>.</p>'
+           . '<p style="margin:28px 0;text-align:center;"><a href="' . h($url) . '" style="background:#4f46e5;color:#fff;padding:14px 32px;border-radius:8px;text-decoration:none;font-weight:bold;">👁️ Examiner et viser la demande</a></p>'
+           . '<p style="font-size:13px;color:#666;">Ou copiez ce lien dans votre navigateur :<br><a href="' . h($url) . '">' . h($url) . '</a></p>'
+           . '<p style="font-size:13px;color:#666;">Aucun compte n\'est nécessaire : ce lien vous est personnel.</p>';
+    $res = smtpSendMail($pdo, $step['validator_email'], ($isReminder ? 'Rappel — ' : '') . "Visa requis — Demande de téléphone {$req['numero']}", requestMailShell('Visa requis', $inner));
+    if ($res === true) {
+        $pdo->prepare("UPDATE request_steps SET " . ($isReminder ? 'reminded_at' : 'notified_at') . "=NOW() WHERE id=?")->execute([(int)$step['id']]);
+    }
+    return $res;
+}
+
+// Fait avancer le circuit d'une demande : notifie l'étape suivante en
+// attente, ou clôt la demande en « validée » quand tous les visas sont posés.
+function requestAdvance($pdo, $reqId) {
+    $rq = $pdo->prepare("SELECT * FROM requests WHERE id=?"); $rq->execute([(int)$reqId]);
+    $req = $rq->fetch();
+    if (!$req) return;
+    $st = $pdo->prepare("SELECT * FROM request_steps WHERE request_id=? AND decision IS NULL ORDER BY ordre ASC LIMIT 1");
+    $st->execute([(int)$reqId]);
+    if ($next = $st->fetch()) {
+        $pdo->prepare("UPDATE requests SET status='en_validation', current_step=? WHERE id=?")->execute([(int)$next['ordre'], (int)$reqId]);
+        requestSendStepEmail($pdo, $req, $next);
+        return;
+    }
+    // Plus d'étape en attente : la demande est validée
+    $pdo->prepare("UPDATE requests SET status='validee', current_step=0, closed_at=NOW() WHERE id=?")->execute([(int)$reqId]);
+    $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, agent_id, author) VALUES ('request', ?, ?, ?, 'Système')")
+        ->execute([(int)$reqId, "✅ Demande {$req['numero']} validée — circuit de visas complet", $req['agent_id'] ?: null]);
+    // Pas d'e-mail de suivi au demandeur à chaque étape : il consulte l'avancement
+    // via son lien de suivi. Seule la boîte de base (DSI) est notifiée pour agir.
+    $notify = trim(getSetting($pdo, 'request_notify_email', ''));
+    if ($notify) {
+        $adm = baseUrl($pdo) . '?page=requests&view=' . (int)$reqId;
+        smtpSendMail($pdo, $notify, "Demande {$req['numero']} validée — à traiter",
+            requestMailShell('Demande validée', '<p>La demande <strong>' . h($req['numero']) . '</strong> (' . h($req['agent_name']) . ') a terminé son circuit de validation.</p><p>Vous pouvez attribuer le matériel et générer le bon de remise.</p><p style="font-size:13px;color:#666;"><a href="' . h($adm) . '">Ouvrir la demande dans SimCity</a></p>'));
+    }
+}
+
+// Dotation actuelle d'un agent, en HTML autonome (affichable sur les pages
+// publiques sans le CSS de l'application) — la plus-value vs le papier.
+// $compact=true : version allégée pour le formulaire public (sans IMEI/ICCID,
+// identifiants sensibles inutiles au demandeur).
+function requestEquipmentHtml($pdo, $agentId, $compact = false) {
+    if (!$agentId) return '';
+    $dot = bonSnapshotItems($pdo, (int)$agentId);
+    if (empty($dot['devices']) && empty($dot['lines'])) {
+        return '<div style="font-size:.85rem;color:#64748b;font-style:italic;">Aucun équipement actuellement attribué à cet agent.</div>';
+    }
+    $html = '';
+    foreach ($dot['devices'] as $it) {
+        $id = $compact ? '' : ' <span style="color:#94a3b8;font-size:.78rem;">IMEI ' . h($it['imei'] ?? '') . '</span>';
+        $html .= '<div style="margin-bottom:.3rem;font-size:.88rem;">📱 ' . h(trim(($it['brand'] ?? '') . ' ' . ($it['name'] ?? ''))) . $id . '</div>';
+    }
+    foreach ($dot['lines'] as $it) {
+        $tags = '';
+        if (!empty($it['esim'])) $tags .= ' <span style="background:#ede9fe;color:#6d28d9;padding:0 4px;border-radius:3px;font-size:.72rem;">eSIM</span>';
+        if (!empty($it['personal_device'])) $tags .= ' <span style="color:#94a3b8;font-size:.78rem;">(appareil personnel)</span>';
+        $html .= '<div style="margin-bottom:.3rem;font-size:.88rem;">📞 ' . formatPhone($it['phone_number'] ?? '') . $tags . ' <span style="color:#94a3b8;font-size:.78rem;">' . h($it['plan_name'] ?? '') . '</span></div>';
+    }
+    return $html;
+}
+
+// Rapproche un bénéficiaire (e-mail prioritaire, sinon nom exact unique) d'un
+// agent du référentiel. Retourne la ligne agent ou null. Partagé par le
+// formulaire public (équipement, auto-lien) et l'AJAX.
+function requestMatchAgent($pdo, $email, $fullName) {
+    $email = trim((string)$email);
+    if ($email !== '') {
+        $st = $pdo->prepare("SELECT * FROM agents WHERE archived=0 AND email IS NOT NULL AND LOWER(email)=LOWER(?) LIMIT 1");
+        $st->execute([$email]);
+        if ($a = $st->fetch()) return $a;
+    }
+    $fullName = trim((string)$fullName);
+    if ($fullName !== '') {
+        $st = $pdo->prepare("SELECT * FROM agents WHERE archived=0 AND (LOWER(CONCAT(first_name,' ',last_name))=LOWER(?) OR LOWER(CONCAT(last_name,' ',first_name))=LOWER(?))");
+        $st->execute([$fullName, $fullName]);
+        $rows = $st->fetchAll();
+        if (count($rows) === 1) return $rows[0];
+    }
+    return null;
+}
+
+// ── Relances automatiques « sans cron » (même principe que la sauvegarde) ──
+// Déclenchées par le trafic, au plus une fois toutes les 6 h (verrou en
+// base). Relance le valideur de l'étape courante muet depuis N jours.
+function requestProcessReminders($pdo) {
+    try {
+        $days = max(1, (int)getSetting($pdo, 'request_reminder_days', 5));
+        $claim = $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='request_last_reminder_check' AND (setting_value='' OR setting_value < ?)");
+        $claim->execute([date('Y-m-d H:i:s'), date('Y-m-d H:i:s', time() - 6 * 3600)]);
+        if ($claim->rowCount() !== 1) return;
+        $st = $pdo->prepare("SELECT s.* FROM request_steps s
+            JOIN requests r ON s.request_id = r.id
+            WHERE r.status='en_validation' AND s.ordre = r.current_step AND s.decision IS NULL
+              AND s.notified_at IS NOT NULL
+              AND COALESCE(s.reminded_at, s.notified_at) < DATE_SUB(NOW(), INTERVAL ? DAY)");
+        $st->execute([$days]);
+        foreach ($st->fetchAll() as $step) {
+            $rq = $pdo->prepare("SELECT * FROM requests WHERE id=?"); $rq->execute([(int)$step['request_id']]);
+            if ($req = $rq->fetch()) requestSendStepEmail($pdo, $req, $step, true);
+        }
+    } catch (Throwable $e) {
+        error_log('SimCity relances demandes : ' . $e->getMessage());
+    }
+}
+if (PHP_SAPI !== 'cli') requestProcessReminders($pdo);
+
+// URL web du logo affiché sur les pages publiques de demande.
+// Priorité au logo paramétré (celui des bons PDF), sinon le logo de l'app.
+function requestLogoUrl($pdo) {
+    $logo = getSetting($pdo, 'pdf_logo_path', '');
+    if ($logo && file_exists($logo)) {
+        // pdf_logo_path est un chemin serveur relatif au webroot (ex. uploads/…)
+        return str_replace('\\', '/', $logo);
+    }
+    return 'assets/logo.svg';
+}
+
+// CSS partagé des pages publiques « demandes » (autonome, mobile).
+// Aligné sur le design Sentinelle / la page de connexion SimCity :
+// IBM Plex Sans, dégradé navy→bleu, indigo + slate, cartes arrondies.
+function requestPublicCss() {
+    return ':root{--primary:#4f46e5;--primary-dark:#4338ca;--text:#334155;--text-strong:#0f172a;--text-muted:#64748b;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--bg-soft:#f1f5f9;--page:#eef2f7;--radius:10px;--radius-lg:14px;--font:\'IBM Plex Sans\',-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--page);min-height:100vh;padding:2rem 1rem;color:var(--text);-webkit-font-smoothing:antialiased;letter-spacing:-.005em;}
+.wrap{max-width:640px;margin:0 auto;}
+.brand{text-align:center;margin-bottom:1.25rem;background:#fff;border:1px solid var(--border);border-radius:var(--radius-lg);padding:1.15rem;box-shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);}
+.brand img{height:50px;max-width:240px;object-fit:contain;vertical-align:middle;}
+.card{background:#fff;border-radius:var(--radius-lg);border:1px solid var(--border);padding:2rem;margin:0 auto 1.25rem;box-shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);}
+.card-head{display:flex;align-items:center;gap:.75rem;margin-bottom:.35rem;}
+.card-head .ico{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:rgba(79,70,229,.1);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:1.35rem;}
+h2{font-family:var(--font);font-size:1.3rem;font-weight:700;color:var(--text-strong);line-height:1.25;}
+.sub{color:var(--text-muted);font-size:.88rem;line-height:1.5;margin-bottom:1.5rem;}
+label{display:block;font-size:.74rem;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;margin:1.1rem 0 .4rem;}
+input[type=text],input[type=email],select,textarea{width:100%;padding:.7rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:.95rem;font-family:inherit;background:#fff;color:var(--text);transition:border-color .18s ease,box-shadow .18s ease;}
+input:hover:not(:focus),select:hover:not(:focus),textarea:hover:not(:focus){border-color:rgba(79,70,229,.5);}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(79,70,229,.28);}
+textarea{resize:vertical;min-height:96px;line-height:1.5;}
+.field-hint{font-size:.78rem;color:var(--text-light);margin-top:.35rem;}
+.radio-row{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.15rem;}
+.radio-row label{display:inline-flex;align-items:center;gap:.45rem;text-transform:none;letter-spacing:0;font-weight:500;font-size:.9rem;color:var(--text);margin:0;padding:.5rem .9rem;border:1px solid var(--border-strong);border-radius:999px;cursor:pointer;transition:border-color .15s,background-color .15s;}
+.radio-row label:hover{border-color:var(--primary);}
+.radio-row input{accent-color:var(--primary);width:16px;height:16px;}
+.radio-row input:checked+span,.radio-row label:has(input:checked){border-color:var(--primary);background:rgba(79,70,229,.07);color:var(--primary-dark);font-weight:600;}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;width:100%;padding:.95rem;background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:var(--radius);font-size:1rem;font-weight:600;cursor:pointer;text-align:center;text-decoration:none;transition:background-color .18s ease,transform .05s ease;}
+.btn:hover{background:var(--primary-dark);border-color:var(--primary-dark);}
+.btn:active{transform:translateY(1px);}
+.btn-inline{width:auto;padding:.7rem 1.75rem;}
+.error{background:#fef2f2;border:1px solid #fecaca;color:#dc2626;border-radius:var(--radius);padding:.9rem 1rem;margin-bottom:1.25rem;font-size:.9rem;display:flex;gap:.5rem;align-items:flex-start;}
+.info{background:var(--bg-soft);border:1px solid var(--border);border-radius:var(--radius);padding:1rem 1.1rem;margin-bottom:1rem;font-size:.9rem;line-height:1.5;}
+.nota{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:var(--radius);padding:.9rem 1.1rem;font-size:.82rem;line-height:1.55;margin-top:1.5rem;}
+.notice{border-radius:var(--radius);padding:.85rem 1rem;margin:.6rem 0 0;font-size:.86rem;line-height:1.5;}
+.notice-warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e;}
+.btn-soft{display:inline-block;padding:.5rem 1rem;background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius);font-size:.85rem;font-weight:600;color:var(--primary);cursor:pointer;}
+.btn-soft:hover{border-color:var(--primary);}
+.btn-soft:disabled{opacity:.6;cursor:default;}
+.divider{height:1px;background:var(--border);margin:1.5rem 0;border:none;}
+.step{display:flex;gap:.85rem;align-items:flex-start;padding:.7rem 0;border-bottom:1px solid var(--bg-soft);font-size:.9rem;}
+.step:last-child{border-bottom:none;}
+.step .ic{flex-shrink:0;width:26px;text-align:center;font-size:1.05rem;}
+.step .meta{color:var(--text-light);font-size:.78rem;}
+.tag{display:inline-block;padding:.18rem .65rem;border-radius:999px;font-size:.72rem;font-weight:600;white-space:nowrap;}
+.tag-ok{background:#d1fae5;color:#065f46;} .tag-ko{background:#fee2e2;color:#991b1b;} .tag-wait{background:#dbeafe;color:#1e40af;} .tag-todo{background:#f1f5f9;color:#64748b;} .tag-warn{background:#fef3c7;color:#92400e;}
+.success-hero{text-align:center;padding:1rem 0 .5rem;}
+.success-hero .check{width:76px;height:76px;margin:0 auto 1rem;border-radius:50%;background:#d1fae5;color:#059669;display:flex;align-items:center;justify-content:center;font-size:2.4rem;}
+.success-hero h2{color:#059669;}
+.foot{text-align:center;color:var(--text-light);font-size:.78rem;margin-top:.5rem;}
+.foot a{color:var(--text-muted);}
+.name-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem;}
+.suggest{position:absolute;left:0;right:0;top:100%;z-index:30;background:#fff;border:1px solid var(--border-strong);border-radius:var(--radius);box-shadow:0 12px 28px rgba(15,23,42,.14);margin-top:.3rem;max-height:280px;overflow-y:auto;display:none;}
+.suggest-item{padding:.6rem .8rem;cursor:pointer;border-bottom:1px solid var(--bg-soft);}
+.suggest-item:last-child{border-bottom:none;}
+.suggest-item:hover{background:var(--bg-soft);}
+.s-name{font-size:.92rem;font-weight:600;color:var(--text-strong);}
+.s-meta{font-size:.78rem;color:var(--text-light);margin-top:.1rem;}
+.s-badge{display:inline-block;font-size:.64rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;background:#d1fae5;color:#065f46;border-radius:999px;padding:.05rem .45rem;vertical-align:middle;margin-left:.35rem;}
+.s-badge.s-ad{background:#dbeafe;color:#1e40af;}
+.equip-panel{background:#eff6ff;border:1px solid #bfdbfe;border-radius:var(--radius);padding:.85rem 1rem;margin-top:.85rem;}
+.equip-title{font-size:.76rem;font-weight:700;color:#1e40af;text-transform:uppercase;letter-spacing:.02em;margin-bottom:.5rem;}
+@media(max-width:520px){.card{padding:1.5rem 1.25rem;}.name-grid{grid-template-columns:1fr;}}';
+}
+
+// Bandeau logo + nom d'app, commun aux pages publiques (design Sentinelle)
+function requestPublicBrand($pdo) {
+    $logo = h(requestLogoUrl($pdo));
+    return '<div class="brand"><img src="' . $logo . '" alt="Logo"></div>';
+}
+
+// ─── AJAX PUBLIC : recherche de bénéficiaire (AD prioritaire + référentiel) ──
+// Alimente l'autocomplétion du formulaire public. Sans authentification (le
+// formulaire est public) : longueur minimale et nombre de résultats limités.
+if (isset($_GET['ajax_request_lookup'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $q = trim($_GET['q'] ?? '');
+    if (mb_strlen($q) < 2) { echo json_encode([]); exit; }
+    $out = []; $seenEmail = [];
+
+    // 1) Active Directory en priorité (via le compte de service)
+    foreach (ldap_search_people($q, 8) as $p) {
+        $name  = trim($p['display_name']) ?: trim($p['first_name'] . ' ' . $p['last_name']);
+        $email = strtolower(trim($p['email']));
+        $agent = requestMatchAgent($pdo, $email, $name);
+        $out[] = ['first_name' => $p['first_name'], 'last_name' => $p['last_name'], 'name' => $name,
+                  'email' => $email, 'fonction' => $p['title'], 'source' => 'ad', 'in_tool' => (bool)$agent];
+        if ($email) $seenEmail[$email] = true;
+    }
+
+    // 2) Référentiel local (agents déjà connus, complète/remplace l'AD si absent)
+    $like = '%' . $q . '%';
+    $st = $pdo->prepare("SELECT a.first_name, a.last_name, a.fonction, a.email FROM agents a
+        WHERE a.archived=0 AND (a.first_name LIKE ? OR a.last_name LIKE ?
+              OR CONCAT(a.first_name,' ',a.last_name) LIKE ? OR CONCAT(a.last_name,' ',a.first_name) LIKE ?
+              OR a.email LIKE ?) ORDER BY a.last_name, a.first_name LIMIT 8");
+    $st->execute([$like, $like, $like, $like, $like]);
+    foreach ($st->fetchAll() as $a) {
+        $email = strtolower(trim((string)$a['email']));
+        if ($email && isset($seenEmail[$email])) continue;   // déjà couvert par l'AD
+        $out[] = ['first_name' => $a['first_name'], 'last_name' => $a['last_name'],
+                  'name' => trim($a['first_name'] . ' ' . $a['last_name']),
+                  'email' => $email, 'fonction' => (string)($a['fonction'] ?? ''), 'source' => 'local', 'in_tool' => true];
+    }
+    echo json_encode(array_slice($out, 0, 12));
+    exit;
+}
+
+// ─── AJAX PUBLIC : équipement actuel d'un bénéficiaire déjà connu ────────────
+// Révélé uniquement sur correspondance EXACTE (e-mail, ou nom complet unique) :
+// le demandeur doit connaître l'identité précise — pas d'énumération à l'aveugle.
+// Version compacte (sans IMEI/ICCID).
+if (isset($_GET['ajax_request_equipment'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $agent = requestMatchAgent($pdo, $_GET['email'] ?? '', $_GET['name'] ?? '');
+    if (!$agent) { echo json_encode(['found' => false]); exit; }
+    echo json_encode(['found' => true,
+        'name' => trim($agent['first_name'] . ' ' . $agent['last_name']),
+        'html' => requestEquipmentHtml($pdo, (int)$agent['id'], true)]);
+    exit;
+}
+
+// Demandes « en cours » (non closes) liées à une adresse (demandeur ou bénéficiaire).
+function requestOpenByEmail($pdo, $email) {
+    $email = fmtEmail($email);
+    if (!$email || !filter_var($email, FILTER_VALIDATE_EMAIL)) return [];
+    $st = $pdo->prepare("SELECT numero, track_token, status, agent_name, created_at
+        FROM requests
+        WHERE status IN ('a_qualifier','en_validation','validee')
+          AND (LOWER(requester_email)=? OR LOWER(agent_email)=?)
+        ORDER BY created_at DESC");
+    $st->execute([$email, $email]);
+    return $st->fetchAll();
+}
+
+// ─── AJAX PUBLIC : « ai-je déjà des demandes ? » (prévention de doublon) ─────
+// Ne renvoie qu'un COMPTE, aucun détail (garde-fou : le détail part par e-mail).
+if (isset($_GET['ajax_request_has'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['count' => count(requestOpenByEmail($pdo, $_GET['email'] ?? ''))]);
+    exit;
+}
+
+// ─── AJAX PUBLIC : envoi des liens de suivi par e-mail (lien magique) ────────
+// Les détails (numéros, liens de suivi) ne sont JAMAIS affichés à l'écran : ils
+// partent dans la boîte de l'adresse saisie, ce qui prouve qu'on la possède.
+// Anti-« bombing » : au plus un envoi toutes les 5 min par adresse.
+if (isset($_GET['ajax_request_send_links'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $email = fmtEmail(NV($_POST, 'email'));
+    if ($email && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $recent = $pdo->prepare("SELECT COUNT(*) FROM history_logs WHERE entity_type='req_links' AND action_desc=? AND action_date > DATE_SUB(NOW(), INTERVAL 5 MINUTE)");
+        $recent->execute([$email]);
+        $rows = ((int)$recent->fetchColumn() === 0) ? requestOpenByEmail($pdo, $email) : [];
+        if ($rows) {
+            $items = '';
+            foreach ($rows as $r) {
+                [$lbl, ] = requestStatusInfo($r['status']);
+                $url = baseUrl($pdo) . '?page=demande_suivi&token=' . $r['track_token'];
+                $items .= '<p style="margin:.5rem 0;"><strong>' . h($r['numero']) . '</strong> — ' . h($r['agent_name']) . ' <span style="color:#666;">(' . h($lbl) . ')</span><br><a href="' . h($url) . '">' . h($url) . '</a></p>';
+            }
+            smtpSendMail($pdo, $email, "Vos demandes de téléphone — liens de suivi",
+                requestMailShell('Vos liens de suivi', '<p>Voici les demandes de téléphone en cours associées à votre adresse et leur lien de suivi :</p>' . $items . '<p style="font-size:13px;color:#666;">Ces liens sont personnels — ne les partagez pas.</p>'));
+            $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('req_links', 0, ?, 'Formulaire public')")->execute([$email]);
+        }
+    }
+    // Réponse volontairement neutre (n'en dit pas plus que l'écran)
+    echo json_encode(['ok' => true]);
+    exit;
+}
+
+// ─── 2d. PAGE PUBLIQUE : FORMULAIRE DE DEMANDE ────────────────
+if (isset($_GET['page']) && $_GET['page'] === 'demande') {
+    $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
+    $formError = null;
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        // Pot de miel anti-robots : ce champ caché doit rester vide
+        if (trim($_POST['website'] ?? '') !== '') { header('Location: ?page=demande'); exit; }
+        // Bénéficiaire : prénom + nom séparés (pré-remplis depuis l'AD), fonction,
+        // e-mail. Le nom complet stocké reste « Prénom Nom » (compat affichage).
+        $firstName     = trim(strip_tags($_POST['agent_first_name'] ?? ''));
+        $lastName      = trim(strip_tags($_POST['agent_last_name'] ?? ''));
+        $agentName     = trim($firstName . ' ' . $lastName);
+        $agentEmail    = fmtEmail(NV($_POST, 'agent_email'));
+        $fonction      = trim(strip_tags($_POST['agent_fonction'] ?? ''));
+        // E-mail du demandeur : sert UNIQUEMENT à lui envoyer l'accusé de
+        // réception + le lien de suivi. N'intervient pas dans le circuit.
+        $requesterEmail = fmtEmail(NV($_POST, 'requester_email'));
+        $serviceId     = (int)($_POST['service_id'] ?? 0);
+        $replAgent     = !empty($_POST['replace_agent']) ? 1 : 0;
+        $replAgentName = $replAgent ? trim(strip_tags($_POST['replaced_agent_name'] ?? '')) : '';
+        $replDevice    = !empty($_POST['replace_device']) ? 1 : 0;
+        // Motifs paramétrables (un par ligne dans les réglages)
+        $motifsOk      = array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', getSetting($pdo, 'request_form_motifs', "Panne\nCasse\nPerte\nVol\nObsolescence")))));
+        $motif         = ($replDevice && in_array($_POST['replace_motif'] ?? '', $motifsOk, true)) ? $_POST['replace_motif'] : null;
+        $motivation    = trim(strip_tags($_POST['motivation'] ?? ''));
+        $svcRow        = $serviceId ? $pdo->query("SELECT id, name FROM services WHERE id=" . (int)$serviceId)->fetch() : null;
+
+        if ($lastName === '' || !$svcRow || $motivation === '') {
+            $formError = "Veuillez remplir tous les champs obligatoires (nom du bénéficiaire, service et motivation).";
+        } elseif (!filter_var((string)$requesterEmail, FILTER_VALIDATE_EMAIL)) {
+            $formError = "Indiquez votre adresse e-mail (demandeur) pour recevoir l'accusé de réception.";
+        } elseif ($agentEmail !== null && !filter_var($agentEmail, FILTER_VALIDATE_EMAIL)) {
+            $formError = "L'adresse e-mail du bénéficiaire n'est pas valide.";
+        } elseif ($replDevice && !$motif) {
+            $formError = "Précisez le motif du remplacement du téléphone existant.";
+        } else {
+            // Rapprochement avec le référentiel : e-mail prioritaire, sinon nom
+            // exact unique (dans les deux ordres). Sinon la DSI liera à la main.
+            $agentRow = requestMatchAgent($pdo, $agentEmail ?? '', $agentName);
+            $agentId  = $agentRow ? (int)$agentRow['id'] : null;
+
+            $type  = $replDevice ? 'renouvellement' : 'attribution';
+            $track = bin2hex(random_bytes(32));
+            $ins = $pdo->prepare("INSERT INTO requests (numero, type, agent_id, agent_name, agent_fonction, agent_email, service_id, service_name, replace_agent, replaced_agent_name, replace_device, replace_motif, motivation, requester_email, track_token)
+                                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+            // Numéro MAX+1 sans verrou : on réessaie sur collision (comme les bons)
+            for ($attempt = 0; ; $attempt++) {
+                try {
+                    $ins->execute([requestNumero($pdo), $type, $agentId, $agentName, $fonction ?: null, $agentEmail, (int)$svcRow['id'], $svcRow['name'],
+                                   $replAgent, $replAgentName ?: null, $replDevice, $motif, $motivation, $requesterEmail, $track]);
+                    break;
+                } catch (PDOException $e) {
+                    if ($e->getCode() === '23000' && $attempt < 5) continue;
+                    throw $e;
+                }
+            }
+            $reqId  = (int)$pdo->lastInsertId();
+            $numero = $pdo->query("SELECT numero FROM requests WHERE id=$reqId")->fetchColumn();
+            $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, agent_id, author) VALUES ('request', ?, ?, ?, 'Formulaire public')")
+                ->execute([$reqId, "📥 Demande $numero déposée pour $agentName", $agentId]);
+
+            // Deux e-mails à l'enregistrement (échec silencieux, la demande vit
+            // dans l'application même sans SMTP) :
+            $suivi = baseUrl($pdo) . '?page=demande_suivi&token=' . $track;
+            // 1) Notification à l'adresse de base (« E-mail notifié à chaque
+            //    nouvelle demande ») : c'est elle qui pilote la qualification.
+            $notify = trim(getSetting($pdo, 'request_notify_email', ''));
+            if ($notify) {
+                $adm = baseUrl($pdo) . '?page=requests&view=' . $reqId;
+                smtpSendMail($pdo, $notify, "Nouvelle demande de téléphone $numero — $agentName",
+                    requestMailShell('Nouvelle demande', '<p>Une nouvelle demande de téléphone vient d\'être déposée :</p>'
+                    . '<p><strong>' . h($numero) . '</strong> — ' . h(requestTypeLabel($type)) . '<br>Bénéficiaire : <strong>' . h($agentName) . '</strong>' . ($fonction ? ' (' . h($fonction) . ')' : '') . ($agentEmail ? '<br>E-mail : ' . h($agentEmail) : '') . '<br>Service : ' . h($svcRow['name']) . '<br>Demandeur : ' . h($requesterEmail) . '</p>'
+                    . '<p style="margin:24px 0;text-align:center;"><a href="' . h($adm) . '" style="background:#4f46e5;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">Qualifier la demande</a></p>'));
+            }
+            // 2) Accusé de réception au demandeur (l'e-mail qu'il a saisi) : simple
+            //    confirmation + lien de suivi. N'intervient pas dans le circuit.
+            smtpSendMail($pdo, $requesterEmail, "Demande de téléphone $numero enregistrée",
+                requestMailShell('Demande enregistrée', '<p>Bonjour,</p>'
+                . '<p>Votre demande de téléphone <strong>' . h($numero) . '</strong> pour <strong>' . h($agentName) . '</strong> a bien été enregistrée.</p>'
+                . '<p>Elle va être examinée par la DSI puis suivre le circuit de validation. Vous pouvez suivre son avancement à tout moment :</p>'
+                . '<p style="margin:24px 0;text-align:center;"><a href="' . h($suivi) . '" style="background:#4f46e5;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;">📍 Suivre ma demande</a></p>'));
+
+            header('Location: ?page=demande&ok=' . urlencode($numero) . '&t=' . $track); exit;
+        }
+    }
+    $okNumero = trim($_GET['ok'] ?? '');
+    $okTrack  = preg_replace('/[^a-zA-Z0-9]/', '', $_GET['t'] ?? '');
+    // Textes paramétrables (repli sur les valeurs par défaut)
+    $fTitle   = getSetting($pdo, 'request_form_title', 'Demande de téléphone portable');
+    $fIntro   = getSetting($pdo, 'request_form_intro', "Attribution ou renouvellement — la demande suivra le circuit de validation habituel (Direction du service, D.S.I., D.G.A., D.G.S.).");
+    $fMotivLbl = getSetting($pdo, 'request_form_motivation_label', "Motivation du besoin (astreinte, types de déplacement, fréquence d'utilisation…)");
+    $fNota    = getSetting($pdo, 'request_form_nota', "Nous vous rappelons que l'attribution d'un téléphone portable relève des avantages en nature susceptibles de demande de justificatif par la Chambre Régionale des Comptes. Il vous appartient de bien évaluer le besoin et d'en contrôler l'usage.");
+    $fSuccess = getSetting($pdo, 'request_form_success', "Votre demande a bien été transmise à la DSI. Un accusé de réception vous a été envoyé par e-mail ; vous pourrez suivre son avancement via le lien ci-dessous.");
+    $fMotifs  = array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', getSetting($pdo, 'request_form_motifs', "Panne\nCasse\nPerte\nVol\nObsolescence")))));
+    ?>
+<!DOCTYPE html><html lang="fr"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title><?=h($fTitle)?> – SimCity</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style><?=requestPublicCss()?></style>
+</head><body>
+<div class="wrap">
+<?=requestPublicBrand($pdo)?>
+<div class="card">
+<?php if ($okNumero): ?>
+    <div class="success-hero">
+        <div class="check">✓</div>
+        <h2>Demande enregistrée</h2>
+        <p style="color:var(--text-muted);margin-top:.75rem;line-height:1.6;">Votre demande <strong style="color:var(--text-strong);"><?=h($okNumero)?></strong> a bien été enregistrée.<br><?=nl2br(h($fSuccess))?></p>
+        <?php if ($okTrack): ?>
+        <p style="margin-top:1.75rem;"><a class="btn btn-inline" href="?page=demande_suivi&token=<?=h($okTrack)?>">📍 Suivre ma demande</a></p>
+        <?php endif; ?>
+        <p style="margin-top:1.25rem;font-size:.85rem;"><a href="?page=demande" style="color:var(--primary);">Déposer une autre demande</a></p>
+    </div>
+<?php else: ?>
+    <div class="card-head"><span class="ico">📱</span><h2><?=h($fTitle)?></h2></div>
+    <div class="sub"><?=nl2br(h($fIntro))?></div>
+    <?php if ($formError): ?><div class="error"><span>⚠️</span><span><?=h($formError)?></span></div><?php endif; ?>
+    <form method="post" autocomplete="off">
+        <input type="text" name="website" value="" style="display:none" tabindex="-1" aria-hidden="true">
+        <label>Votre e-mail (demandeur) *</label>
+        <input type="email" name="requester_email" id="req-email" required placeholder="prenom.nom@collectivite.fr" value="<?=h($_POST['requester_email'] ?? '')?>">
+        <div class="field-hint">Pour recevoir l'accusé de réception et le lien de suivi. N'intervient pas dans le circuit de validation.</div>
+        <div id="req-existing" style="display:none;"></div>
+
+        <hr class="divider">
+        <label>Service *</label>
+        <select name="service_id" required>
+            <option value="">— Sélectionner le service —</option>
+            <?php foreach ($services as $s): ?>
+            <option value="<?=$s['id']?>" <?=((int)($_POST['service_id'] ?? 0) === (int)$s['id']) ? 'selected' : ''?>><?=h($s['name'])?></option>
+            <?php endforeach; ?>
+        </select>
+        <label>Bénéficiaire *</label>
+        <?php if (ldap_auth_enabled()): ?>
+        <div class="field-hint" style="margin:-.2rem 0 .5rem;">🔎 Commencez à taper le nom : l'annuaire propose l'agent et pré-remplit ses coordonnées (modifiables).</div>
+        <?php endif; ?>
+        <div style="position:relative;">
+            <div class="name-grid">
+                <input type="text" name="agent_first_name" id="bene-first" placeholder="Prénom" autocomplete="off" value="<?=h($_POST['agent_first_name'] ?? '')?>">
+                <input type="text" name="agent_last_name" id="bene-last" required placeholder="Nom *" autocomplete="off" value="<?=h($_POST['agent_last_name'] ?? '')?>">
+            </div>
+            <div id="bene-suggest" class="suggest"></div>
+        </div>
+        <label>Fonction</label>
+        <input type="text" name="agent_fonction" id="bene-fonction" placeholder="ex : Responsable voirie" value="<?=h($_POST['agent_fonction'] ?? '')?>">
+        <label>E-mail du bénéficiaire</label>
+        <input type="email" name="agent_email" id="bene-email" placeholder="prenom.nom@collectivite.fr" value="<?=h($_POST['agent_email'] ?? '')?>">
+        <div id="bene-equip" class="equip-panel" style="display:none;"></div>
+
+        <label>Remplacement d'un(e) agent sur ce poste ?</label>
+        <div class="radio-row">
+            <label><input type="radio" name="replace_agent" value="1" <?=!empty($_POST['replace_agent']) ? 'checked' : ''?> onchange="document.getElementById('repl-agent-name').style.display='block'"> Oui</label>
+            <label><input type="radio" name="replace_agent" value="" <?=empty($_POST['replace_agent']) ? 'checked' : ''?> onchange="document.getElementById('repl-agent-name').style.display='none'"> Non</label>
+        </div>
+        <div id="repl-agent-name" style="display:<?=!empty($_POST['replace_agent']) ? 'block' : 'none'?>;">
+            <label>Nom de l'agent remplacé</label>
+            <input type="text" name="replaced_agent_name" placeholder="Prénom Nom" value="<?=h($_POST['replaced_agent_name'] ?? '')?>">
+        </div>
+
+        <label>Remplacement d'un téléphone existant ?</label>
+        <div class="radio-row">
+            <label><input type="radio" name="replace_device" value="1" <?=!empty($_POST['replace_device']) ? 'checked' : ''?> onchange="document.getElementById('repl-motif').style.display='block'"> Oui</label>
+            <label><input type="radio" name="replace_device" value="" <?=empty($_POST['replace_device']) ? 'checked' : ''?> onchange="document.getElementById('repl-motif').style.display='none'"> Non</label>
+        </div>
+        <div id="repl-motif" style="display:<?=!empty($_POST['replace_device']) ? 'block' : 'none'?>;">
+            <label>Si oui, motif</label>
+            <div class="radio-row">
+                <?php foreach ($fMotifs as $mo): ?>
+                <label><input type="radio" name="replace_motif" value="<?=h($mo)?>" <?=(($_POST['replace_motif'] ?? '') === $mo) ? 'checked' : ''?>> <?=h($mo)?></label>
+                <?php endforeach; ?>
+            </div>
+        </div>
+
+        <label><?=h($fMotivLbl)?> *</label>
+        <textarea name="motivation" rows="4" required placeholder="Décrivez précisément le besoin"><?=h($_POST['motivation'] ?? '')?></textarea>
+
+        <?php if (trim($fNota) !== ''): ?>
+        <div class="nota"><strong>Nota :</strong> <?=nl2br(h($fNota))?></div>
+        <?php endif; ?>
+
+        <button type="submit" class="btn" style="margin-top:1.5rem;">📨 Envoyer la demande</button>
+    </form>
+    <script>
+    (function(){
+      const first = document.getElementById('bene-first'),
+            last  = document.getElementById('bene-last'),
+            fonction = document.getElementById('bene-fonction'),
+            email = document.getElementById('bene-email'),
+            sug   = document.getElementById('bene-suggest'),
+            equip = document.getElementById('bene-equip');
+      if (!last) return;
+      const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+      const hideSug = () => { sug.style.display='none'; sug.innerHTML=''; };
+      let timer=null, equipTimer=null;
+
+      function renderSug(items){
+        if (!Array.isArray(items) || !items.length){ hideSug(); return; }
+        sug.innerHTML = items.map((p,i) =>
+          '<div class="suggest-item" data-i="'+i+'">'
+          + '<div class="s-name">'+esc(p.name || ((p.first_name||'')+' '+(p.last_name||'')))
+          + (p.in_tool ? ' <span class="s-badge">déjà dans l\'outil</span>' : '')
+          + (p.source==='ad' ? ' <span class="s-badge s-ad">AD</span>' : '')+'</div>'
+          + '<div class="s-meta">'+esc([p.fonction, p.email].filter(Boolean).join(' · '))+'</div>'
+          + '</div>').join('');
+        sug.style.display='block';
+        [...sug.querySelectorAll('.suggest-item')].forEach(el=>{
+          el.addEventListener('mousedown', e=>{ e.preventDefault(); pick(items[+el.dataset.i]); });
+        });
+      }
+      function pick(p){
+        first.value = p.first_name || '';
+        last.value  = p.last_name || '';
+        if (p.fonction) fonction.value = p.fonction;
+        email.value = p.email || '';
+        hideSug(); loadEquip();
+      }
+      function search(inp){
+        const q = inp.value.trim();
+        clearTimeout(timer);
+        if (q.length < 2){ hideSug(); return; }
+        timer = setTimeout(async ()=>{
+          try { const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q)); renderSug(await r.json()); }
+          catch(e){ hideSug(); }
+        }, 250);
+      }
+      function loadEquip(){
+        clearTimeout(equipTimer);
+        equipTimer = setTimeout(async ()=>{
+          const em = email.value.trim(), nm = (first.value.trim()+' '+last.value.trim()).trim();
+          if (!em && last.value.trim()===''){ equip.style.display='none'; return; }
+          try {
+            const r = await fetch('index.php?ajax_request_equipment=1&email='+encodeURIComponent(em)+'&name='+encodeURIComponent(nm));
+            const j = await r.json();
+            if (j && j.found){ equip.innerHTML = '<div class="equip-title">📦 Équipement déjà attribué à '+esc(j.name)+'</div>'+(j.html||''); equip.style.display='block'; }
+            else { equip.style.display='none'; equip.innerHTML=''; }
+          } catch(e){ equip.style.display='none'; }
+        }, 300);
+      }
+      first.addEventListener('input', ()=>search(first));
+      last.addEventListener('input', ()=>search(last));
+      first.addEventListener('blur', ()=>setTimeout(hideSug,150));
+      last.addEventListener('blur', ()=>{ setTimeout(hideSug,150); loadEquip(); });
+      email.addEventListener('blur', loadEquip);
+      if (last.value.trim() || email.value.trim()) loadEquip();
+    })();
+
+    // ── Garde-fou anti-doublon : à la saisie de l'e-mail demandeur, on signale
+    //    l'existence de demandes SANS révéler le détail (envoi des liens par e-mail).
+    (function(){
+      const em = document.getElementById('req-email');
+      const box = document.getElementById('req-existing');
+      if (!em || !box) return;
+      const valid = v => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
+      async function check(){
+        const v = em.value.trim();
+        box.style.display='none'; box.innerHTML='';
+        if (!valid(v)) return;
+        try {
+          const r = await fetch('index.php?ajax_request_has=1&email='+encodeURIComponent(v));
+          const j = await r.json();
+          if (j && j.count > 0) {
+            box.innerHTML =
+              '<div class="notice notice-warn">⚠️ Une ou plusieurs demandes sont déjà enregistrées avec cette adresse. '
+              + 'Pour éviter un doublon, vérifiez leur avancement avant d\'en déposer une nouvelle.'
+              + '<div style="margin-top:.6rem;"><button type="button" class="btn-soft" id="req-send">📧 Recevoir mes liens de suivi par e-mail</button>'
+              + '<span id="req-sent" style="display:none;color:#065f46;font-weight:600;">✅ E-mail envoyé — consultez votre boîte.</span></div></div>';
+            box.style.display='block';
+            document.getElementById('req-send').addEventListener('click', async function(){
+              this.disabled = true;
+              const fd = new FormData(); fd.append('email', v);
+              try { await fetch('index.php?ajax_request_send_links=1', {method:'POST', body:fd}); } catch(e){}
+              this.style.display='none';
+              document.getElementById('req-sent').style.display='inline';
+            });
+          }
+        } catch(e){}
+      }
+      em.addEventListener('blur', check);
+      if (em.value.trim()) check();
+    })();
+    </script>
+<?php endif; ?>
+</div>
+</div>
+</body></html>
+<?php exit; }
+
+// ─── 2e. PAGE PUBLIQUE : SUIVI D'UNE DEMANDE (demandeur) ──────
+if (isset($_GET['page']) && $_GET['page'] === 'demande_suivi') {
+    $token = preg_replace('/[^a-zA-Z0-9]/', '', $_GET['token'] ?? '');
+    $req = null; $steps = [];
+    if ($token) {
+        $st = $pdo->prepare("SELECT * FROM requests WHERE track_token=?"); $st->execute([$token]);
+        $req = $st->fetch();
+        if ($req) {
+            $ss = $pdo->prepare("SELECT * FROM request_steps WHERE request_id=? ORDER BY ordre");
+            $ss->execute([(int)$req['id']]);
+            $steps = $ss->fetchAll();
+        }
+    }
+    ?>
+<!DOCTYPE html><html lang="fr"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Suivi de demande – SimCity</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style><?=requestPublicCss()?></style>
+</head><body>
+<div class="wrap">
+<?=requestPublicBrand($pdo)?>
+<div class="card">
+<?php if (!$req): ?>
+    <div class="error"><span>⛔</span><span>Ce lien de suivi est invalide.</span></div>
+<?php else: [$stLbl, ] = requestStatusInfo($req['status']); ?>
+    <div class="card-head"><span class="ico">📍</span><h2>Suivi — <?=h($req['numero'])?></h2></div>
+    <div class="sub"><?=h(requestTypeLabel($req['type']))?> pour <strong><?=h($req['agent_name'])?></strong><?=$req['service_name'] ? ' — ' . h($req['service_name']) : ''?></div>
+    <div class="info">
+        Statut actuel : <strong><?=h($stLbl)?></strong><br>
+        <span style="color:var(--text-light);font-size:.8rem;">Déposée le <?=date('d/m/Y à H:i', strtotime($req['created_at']))?></span>
+        <?php if ($req['status'] === 'refusee' && $req['refusal_reason']): ?>
+        <div style="margin-top:.5rem;color:#dc2626;font-size:.85rem;"><?=h($req['refusal_reason'])?></div>
+        <?php endif; ?>
+        <?php if ($req['status'] === 'livree'): ?>
+        <div style="margin-top:.5rem;color:#059669;font-size:.85rem;">Le matériel a été remis<?=$req['delivered_at'] ? ' le ' . date('d/m/Y', strtotime($req['delivered_at'])) : ''?>.</div>
+        <?php endif; ?>
+    </div>
+    <?php if ($req['status'] === 'a_qualifier'): ?>
+    <div class="step"><span class="ic">🕐</span><div>La demande est en cours d'examen par la DSI avant le lancement du circuit de validation.</div></div>
+    <?php endif; ?>
+    <?php foreach ($steps as $s):
+        if ($s['decision'] === 'approuve')      { $ic = '✅'; $txt = 'Visa favorable le ' . date('d/m/Y', strtotime($s['decided_at'])); }
+        elseif ($s['decision'] === 'refuse')    { $ic = '⛔'; $txt = 'Visa défavorable le ' . date('d/m/Y', strtotime($s['decided_at'])); }
+        elseif ($req['status'] === 'en_validation' && (int)$req['current_step'] === (int)$s['ordre']) { $ic = '⏳'; $txt = 'En attente de visa'; }
+        elseif (in_array($req['status'], ['refusee', 'annulee'], true)) { $ic = '➖'; $txt = 'Sans objet'; }
+        else { $ic = '•'; $txt = 'À venir'; }
+    ?>
+    <div class="step"><span class="ic"><?=$ic?></span>
+        <div><strong><?=h($s['label'])?></strong><?=$s['validator_name'] ? ' — ' . h($s['validator_name']) : ''?><br><span class="meta"><?=h($txt)?></span></div>
+    </div>
+    <?php endforeach; ?>
+<?php endif; ?>
+</div>
+</div>
+</body></html>
+<?php exit; }
+
+// ─── 2f. PAGE PUBLIQUE : VISA D'UN VALIDEUR (lien magique) ────
+if (isset($_GET['page']) && $_GET['page'] === 'valider') {
+    $token = preg_replace('/[^a-zA-Z0-9]/', '', $_GET['token'] ?? '');
+    $step = null; $req = null; $formError = null;
+    if ($token) {
+        $st = $pdo->prepare("SELECT * FROM request_steps WHERE token=?"); $st->execute([$token]);
+        $step = $st->fetch();
+        if ($step) {
+            $rq = $pdo->prepare("SELECT * FROM requests WHERE id=?"); $rq->execute([(int)$step['request_id']]);
+            $req = $rq->fetch();
+        }
+    }
+    $stepActive = function($step, $req) {
+        return $step && $req && $req['status'] === 'en_validation'
+            && (int)$req['current_step'] === (int)$step['ordre'] && $step['decision'] === null
+            && (!$step['expires_at'] || strtotime($step['expires_at']) >= time());
+    };
+    $isActive = $stepActive($step, $req);
+
+    if ($_SERVER['REQUEST_METHOD'] === 'POST' && $isActive) {
+        $decision = ($_POST['decision'] ?? '') === 'refuse' ? 'refuse' : 'approuve';
+        $name     = trim(strip_tags($_POST['validator_name'] ?? '')) ?: ($step['validator_name'] ?? '');
+        $avis     = trim(strip_tags($_POST['avis'] ?? ''));
+        if ($decision === 'refuse' && $avis === '') {
+            $formError = "Un avis motivé est obligatoire pour refuser la demande.";
+        } else {
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+            $pdo->beginTransaction();
+            try {
+                // Verrou + re-vérification : une étape ne se vise qu'une seule fois
+                $lock = $pdo->prepare("SELECT id FROM request_steps WHERE id=? AND decision IS NULL FOR UPDATE");
+                $lock->execute([(int)$step['id']]);
+                if ($lock->fetchColumn()) {
+                    $pdo->prepare("UPDATE request_steps SET decision=?, avis=?, validator_name=?, decided_at=NOW(), ip=? WHERE id=?")
+                        ->execute([$decision, $avis ?: null, $name ?: null, $ip, (int)$step['id']]);
+                    $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, agent_id, author) VALUES ('request', ?, ?, ?, ?)")
+                        ->execute([(int)$req['id'],
+                                   ($decision === 'approuve' ? '✅' : '⛔') . " Visa « {$step['label']} » " . ($decision === 'approuve' ? 'favorable' : 'défavorable') . " — demande {$req['numero']}",
+                                   $req['agent_id'] ?: null, $name ?: 'Valideur']);
+                    if ($decision === 'approuve') {
+                        requestAdvance($pdo, (int)$req['id']);
+                    } else {
+                        $pdo->prepare("UPDATE requests SET status='refusee', refusal_reason=?, closed_at=NOW(), current_step=0 WHERE id=?")
+                            ->execute([mb_substr("Refus au visa « {$step['label']} »" . ($name ? " ($name)" : ''), 0, 255), (int)$req['id']]);
+                        // Le demandeur n'est pas notifié à chaque étape : il suit via son lien.
+                        $notify = trim(getSetting($pdo, 'request_notify_email', ''));
+                        if ($notify) {
+                            smtpSendMail($pdo, $notify, "Demande {$req['numero']} refusée",
+                                requestMailShell('Demande refusée', '<p>La demande <strong>' . h($req['numero']) . '</strong> (' . h($req['agent_name']) . ') a été refusée au visa « ' . h($step['label']) . ' »' . ($name ? ' par ' . h($name) : '') . '.</p><p>Avis : ' . h($avis) . '</p>'));
+                        }
+                    }
+                }
+                $pdo->commit();
+            } catch (Exception $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+            }
+            // Recharger l'état réel (double soumission, avancement du circuit…)
+            $st = $pdo->prepare("SELECT * FROM request_steps WHERE token=?"); $st->execute([$token]); $step = $st->fetch();
+            $rq = $pdo->prepare("SELECT * FROM requests WHERE id=?"); $rq->execute([(int)$step['request_id']]); $req = $rq->fetch();
+            $isActive = false;
+        }
+    }
+
+    $allSteps = $req ? $pdo->prepare("SELECT * FROM request_steps WHERE request_id=? ORDER BY ordre") : null;
+    $steps = [];
+    if ($allSteps) { $allSteps->execute([(int)$req['id']]); $steps = $allSteps->fetchAll(); }
+
+    // « Mes validations » : toutes les demandes liées à cet e-mail de valideur
+    $myList = [];
+    if ($step && $step['validator_email']) {
+        $ml = $pdo->prepare("SELECT s.token as stoken, s.label, s.decision, s.decided_at, s.ordre,
+                r.numero, r.agent_name, r.service_name, r.type, r.status, r.current_step, r.created_at as req_created
+            FROM request_steps s JOIN requests r ON s.request_id = r.id
+            WHERE s.validator_email = ? AND s.id != ?
+            ORDER BY (s.decision IS NULL AND r.status='en_validation' AND r.current_step = s.ordre) DESC, r.created_at DESC
+            LIMIT 30");
+        $ml->execute([$step['validator_email'], (int)$step['id']]);
+        $myList = $ml->fetchAll();
+    }
+    ?>
+<!DOCTYPE html><html lang="fr"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Visa d'une demande – SimCity</title>
+<link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style><?=requestPublicCss()?>
+.btn-approve{background:#059669;border-color:#059669;} .btn-approve:hover{background:#047857;border-color:#047857;}
+.btn-refuse{background:#fff;color:#dc2626;border:1px solid #fecaca;} .btn-refuse:hover{background:#fef2f2;}
+.btn-row{display:flex;gap:.75rem;margin-top:1.25rem;} .btn-row .btn{width:auto;flex:1;}
+.dl{display:grid;grid-template-columns:190px 1fr;gap:.4rem .75rem;font-size:.9rem;}
+.dl dt{color:var(--text-muted);font-size:.8rem;} .dl dd{margin:0;}
+@media(max-width:520px){.dl{grid-template-columns:1fr;} .dl dt{margin-top:.4rem;}}
+</style>
+</head><body>
+<div class="wrap">
+<?=requestPublicBrand($pdo)?>
+<div class="card">
+<?php if (!$step || !$req): ?>
+    <div class="error"><span>⛔</span><span>Ce lien de validation est invalide.</span></div>
+<?php else: [$stLbl, ] = requestStatusInfo($req['status']); ?>
+    <div class="card-head"><span class="ico">🖊️</span><h2>Visa « <?=h($step['label'])?> »</h2></div>
+    <div class="sub">Demande de téléphone <strong><?=h($req['numero'])?></strong> — <?=h($stLbl)?></div>
+
+    <?php if ($step['decision'] !== null): ?>
+    <div class="info" style="background:<?=$step['decision'] === 'approuve' ? '#f0fdf4' : '#fef2f2'?>;">
+        <?=$step['decision'] === 'approuve' ? '✅ <strong>Visa favorable enregistré</strong>' : '⛔ <strong>Visa défavorable enregistré</strong>'?>
+        <?=$step['validator_name'] ? ' par ' . h($step['validator_name']) : ''?> le <?=date('d/m/Y à H:i', strtotime($step['decided_at']))?>.
+        <?php if ($step['avis']): ?><div style="margin-top:.4rem;font-size:.85rem;color:#475569;">Avis : « <?=h($step['avis'])?> »</div><?php endif; ?>
+    </div>
+    <?php elseif (in_array($req['status'], ['refusee', 'annulee'], true)): ?>
+    <div class="error" style="background:#f8fafc;border-color:#e2e8f0;color:#475569;">Cette demande est close (<?=$req['status'] === 'refusee' ? 'refusée à une étape précédente' : 'annulée par la DSI'?>) — aucun visa n'est attendu de votre part.</div>
+    <?php elseif (!$isActive && $req['status'] === 'en_validation' && (int)$req['current_step'] < (int)$step['ordre']): ?>
+    <div class="info" style="background:#fffbeb;">⏳ Ce n'est pas encore votre tour : la demande est au visa « <?=h($steps[(int)$req['current_step'] - 1]['label'] ?? '')?> ». Vous serez notifié(e) par e-mail quand elle arrivera à votre étape.</div>
+    <?php elseif (!$isActive && $req['status'] === 'a_qualifier'): ?>
+    <div class="info" style="background:#fffbeb;">🕐 La demande est encore en cours de qualification par la DSI.</div>
+    <?php endif; ?>
+
+    <!-- Détail de la demande -->
+    <div class="info">
+        <dl class="dl">
+            <dt>Type</dt><dd><?=h(requestTypeLabel($req['type']))?></dd>
+            <dt>Agent</dt><dd><strong><?=h($req['agent_name'])?></strong><?=$req['agent_fonction'] ? ' — ' . h($req['agent_fonction']) : ''?></dd>
+            <dt>Service</dt><dd><?=h($req['service_name'] ?: '—')?></dd>
+            <dt>Remplacement d'agent</dt><dd><?=$req['replace_agent'] ? 'Oui' . ($req['replaced_agent_name'] ? ' — ' . h($req['replaced_agent_name']) : '') : 'Non'?></dd>
+            <dt>Remplacement de téléphone</dt><dd><?=$req['replace_device'] ? 'Oui — motif : ' . h($req['replace_motif'] ?: 'non précisé') : 'Non'?></dd>
+            <dt>Déposée le</dt><dd><?=date('d/m/Y à H:i', strtotime($req['created_at']))?></dd>
+        </dl>
+        <div style="margin-top:.75rem;padding-top:.75rem;border-top:1px solid #e2e8f0;">
+            <div style="font-size:.75rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.3rem;">Motivation du besoin</div>
+            <div style="font-size:.9rem;white-space:pre-line;"><?=h($req['motivation'])?></div>
+        </div>
+    </div>
+
+    <?php if ($req['agent_id']): ?>
+    <div class="info">
+        <div style="font-size:.75rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.5rem;">📦 Équipement actuel de l'agent (parc DSI)</div>
+        <?=requestEquipmentHtml($pdo, (int)$req['agent_id'])?>
+    </div>
+    <?php endif; ?>
+
+    <!-- Circuit et avis déjà posés -->
+    <div class="info" style="background:#fff;border:1px solid #e2e8f0;">
+        <div style="font-size:.75rem;font-weight:600;color:#64748b;text-transform:uppercase;margin-bottom:.4rem;">Circuit de validation</div>
+        <?php foreach ($steps as $s):
+            $isMe = ((int)$s['id'] === (int)$step['id']);
+            if ($s['decision'] === 'approuve')   { $ic = '✅'; $tag = '<span class="tag tag-ok">Favorable</span>'; }
+            elseif ($s['decision'] === 'refuse') { $ic = '⛔'; $tag = '<span class="tag tag-ko">Défavorable</span>'; }
+            elseif ($req['status'] === 'en_validation' && (int)$req['current_step'] === (int)$s['ordre']) { $ic = '⏳'; $tag = '<span class="tag tag-wait">En cours</span>'; }
+            else { $ic = '•'; $tag = '<span class="tag tag-todo">À venir</span>'; }
+        ?>
+        <div class="step" <?=$isMe ? 'style="background:#eef2ff;border-radius:8px;padding:.6rem .5rem;"' : ''?>>
+            <span class="ic"><?=$ic?></span>
+            <div style="flex:1;">
+                <strong><?=h($s['label'])?></strong><?=$s['validator_name'] ? ' — ' . h($s['validator_name']) : ''?> <?=$isMe ? '<span style="color:#4f46e5;font-size:.78rem;">(vous)</span>' : ''?><br>
+                <span class="meta"><?=$s['decided_at'] ? date('d/m/Y H:i', strtotime($s['decided_at'])) : ''?></span>
+                <?php if ($s['avis'] && $s['decision'] !== null): ?><div style="font-size:.82rem;color:#475569;margin-top:.2rem;">« <?=h($s['avis'])?> »</div><?php endif; ?>
+            </div>
+            <?=$tag?>
+        </div>
+        <?php endforeach; ?>
+    </div>
+
+    <?php if ($isActive): ?>
+    <?php if ($formError): ?><div class="error">⚠️ <?=h($formError)?></div><?php endif; ?>
+    <form method="post">
+        <label>Votre nom</label>
+        <input type="text" name="validator_name" required placeholder="Prénom Nom" value="<?=h($step['validator_name'] ?: '')?>">
+        <label>Avis motivé sur la demande <span style="font-weight:400;text-transform:none;">(obligatoire en cas de refus)</span></label>
+        <textarea name="avis" rows="3" placeholder="Votre avis…"><?=h($_POST['avis'] ?? '')?></textarea>
+        <div class="btn-row">
+            <button type="submit" name="decision" value="approuve" class="btn btn-approve">✅ Approuver</button>
+            <button type="submit" name="decision" value="refuse" class="btn btn-refuse" onclick="return confirm('Confirmer le refus de cette demande ? Elle sera close et le demandeur informé.')">⛔ Refuser</button>
+        </div>
+        <p style="font-size:.75rem;color:var(--text-light);margin-top:.75rem;">Votre décision est horodatée et tracée. Ce lien vous est strictement personnel.</p>
+    </form>
+    <?php endif; ?>
+<?php endif; ?>
+</div>
+
+<?php if ($myList): ?>
+<div class="card">
+    <div class="card-head"><span class="ico">🗂️</span><h2 style="font-size:1.1rem;">Mes autres demandes à viser</h2></div>
+    <div class="sub">Toutes les demandes associées à votre adresse (<?=h($step['validator_email'])?>)</div>
+    <?php foreach ($myList as $m):
+        $pendingMine = ($m['decision'] === null && $m['status'] === 'en_validation' && (int)$m['current_step'] === (int)$m['ordre']);
+        if ($pendingMine)                       { $tag = '<span class="tag tag-warn">⏳ À viser</span>'; }
+        elseif ($m['decision'] === 'approuve')  { $tag = '<span class="tag tag-ok">Visé favorable</span>'; }
+        elseif ($m['decision'] === 'refuse')    { $tag = '<span class="tag tag-ko">Visé défavorable</span>'; }
+        elseif (in_array($m['status'], ['refusee', 'annulee'], true)) { $tag = '<span class="tag tag-todo">Close</span>'; }
+        else                                    { $tag = '<span class="tag tag-todo">En amont</span>'; }
+    ?>
+    <div class="step">
+        <span class="ic"><?=$pendingMine ? '🔔' : '📄'?></span>
+        <div style="flex:1;">
+            <a href="?page=valider&token=<?=h($m['stoken'])?>" style="color:var(--primary);font-weight:600;text-decoration:none;"><?=h($m['numero'])?></a>
+            — <?=h($m['agent_name'])?> <span class="meta">(<?=h($m['service_name'] ?: '—')?>)</span><br>
+            <span class="meta">Visa « <?=h($m['label'])?> » · déposée le <?=date('d/m/Y', strtotime($m['req_created']))?></span>
+        </div>
+        <?=$tag?>
+    </div>
+    <?php endforeach; ?>
+</div>
+<?php endif; ?>
+</div>
+</body></html>
+<?php exit; }
+
+// ─── 2g. RÉCAPITULATIF IMPRIMABLE D'UNE DEMANDE (admin) ───────
+// Pièce justificative (CRC) : reprend le formulaire papier avec les visas
+// électroniques posés. Lecture seule, réservé aux comptes connectés.
+if (isset($_GET['page']) && $_GET['page'] === 'pdf_demande') {
+    if (!isset($_SESSION['user_id'])) die("Accès refusé.");
+    $rq = $pdo->prepare("SELECT * FROM requests WHERE id=?"); $rq->execute([(int)($_GET['id'] ?? 0)]);
+    $req = $rq->fetch();
+    if (!$req) die("Demande introuvable.");
+    $ss = $pdo->prepare("SELECT * FROM request_steps WHERE request_id=? ORDER BY ordre");
+    $ss->execute([(int)$req['id']]);
+    $steps = $ss->fetchAll();
+    $pdfLogo = getSetting($pdo, 'pdf_logo_path', '');
+    [$stLbl, ] = requestStatusInfo($req['status']);
+    ?>
+<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>Demande <?=h($req['numero'])?> — <?=h($req['agent_name'])?></title>
+<style>
+*{box-sizing:border-box;} body{font-family:sans-serif;padding:1.5rem;font-size:13px;color:#111;}
+.header{display:grid;grid-template-columns:200px 1fr 200px;align-items:center;border-bottom:2px solid #000;padding-bottom:.75rem;margin-bottom:1.25rem;}
+.header-logo{max-height:60px;max-width:170px;object-fit:contain;}
+h1{margin:0;font-size:1.15rem;text-align:center;}
+.section{margin-bottom:1.1rem;} .section h3{font-size:.92rem;margin-bottom:.4rem;border-bottom:1px solid #ddd;padding-bottom:.25rem;}
+table{width:100%;border-collapse:collapse;margin-top:.4rem;}
+th,td{border:1px solid #ccc;padding:6px 8px;text-align:left;font-size:.82rem;vertical-align:top;}
+th{background:#f5f5f5;}
+.nota{font-size:.75rem;color:#444;border:1px solid #ddd;background:#fafafa;padding:.5rem .75rem;margin-top:1rem;line-height:1.5;}
+.toolbar{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:1rem;}
+.toolbar button{padding:.5rem 1rem;border-radius:8px;border:1px solid #cbd5e1;background:#4f46e5;color:#fff;font-size:.85rem;cursor:pointer;font-weight:600;}
+@media print { @page{margin:1cm;} .no-print{display:none!important;} }
+</style></head><body>
+<div class="toolbar no-print"><button onclick="window.print()">🖨️ Imprimer</button></div>
+<div class="header">
+    <div><?=($pdfLogo && file_exists($pdfLogo)) ? '<img src="' . h($pdfLogo) . '" class="header-logo" alt="Logo">' : ''?></div>
+    <div><h1>DEMANDE DE TÉLÉPHONE PORTABLE</h1>
+        <p style="margin:.25rem 0 0;font-size:.85rem;font-weight:700;text-align:center;">N° <?=h($req['numero'])?> — <?=h($stLbl)?></p>
+        <p style="margin:.15rem 0 0;font-size:.75rem;color:#555;text-align:center;">Déposée le <?=date('d/m/Y à H:i', strtotime($req['created_at']))?></p></div>
+    <div></div>
+</div>
+<div class="section"><h3>👤 Demande</h3>
+<table>
+    <tr><th style="width:220px;">Type de demande</th><td><?=h(requestTypeLabel($req['type']))?></td></tr>
+    <tr><th>Service</th><td><?=h($req['service_name'] ?: '—')?></td></tr>
+    <tr><th>Nom de l'agent</th><td><strong><?=h($req['agent_name'])?></strong></td></tr>
+    <tr><th>Fonction</th><td><?=h($req['agent_fonction'] ?: '—')?></td></tr>
+    <tr><th>Remplacement d'un(e) agent sur ce poste</th><td><?=$req['replace_agent'] ? '☑ Oui' . ($req['replaced_agent_name'] ? ' — ' . h($req['replaced_agent_name']) : '') : '☐ Non'?></td></tr>
+    <tr><th>Remplacement d'un téléphone existant</th><td><?=$req['replace_device'] ? '☑ Oui — motif : ' . h($req['replace_motif'] ?: 'non précisé') : '☐ Non'?></td></tr>
+    <tr><th>Motivation du besoin</th><td style="white-space:pre-line;"><?=h($req['motivation'])?></td></tr>
+    <tr><th>E-mail du bénéficiaire</th><td><?=h($req['agent_email'] ?: '—')?></td></tr>
+    <tr><th>E-mail du demandeur</th><td><?=h($req['requester_email'] ?: '—')?></td></tr>
+</table>
+</div>
+<div class="section"><h3>🖊️ Circuit de validation</h3>
+<table>
+    <thead><tr><th style="width:170px;">Visa</th><th style="width:170px;">Valideur</th><th style="width:110px;">Date</th><th style="width:90px;">Décision</th><th>Avis motivé</th></tr></thead>
+    <tbody>
+    <?php if (!$steps): ?><tr><td colspan="5" style="text-align:center;font-style:italic;color:#999;">Circuit non lancé</td></tr><?php endif; ?>
+    <?php foreach ($steps as $s): ?>
+    <tr>
+        <td><?=h($s['label'])?></td>
+        <td><?=h($s['validator_name'] ?: '—')?></td>
+        <td><?=$s['decided_at'] ? date('d/m/Y H:i', strtotime($s['decided_at'])) : '—'?></td>
+        <td><?=$s['decision'] === 'approuve' ? '✅ Favorable' : ($s['decision'] === 'refuse' ? '⛔ Défavorable' : '—')?></td>
+        <td><?=h($s['avis'] ?: '')?></td>
+    </tr>
+    <?php endforeach; ?>
+    </tbody>
+</table>
+<?php if ($req['status'] === 'refusee' && $req['refusal_reason']): ?>
+<p style="color:#dc2626;font-size:.82rem;margin-top:.5rem;"><strong><?=h($req['refusal_reason'])?></strong></p>
+<?php endif; ?>
+<?php if ($req['status'] === 'livree'): ?>
+<p style="color:#059669;font-size:.82rem;margin-top:.5rem;"><strong>📦 Matériel remis<?=$req['delivered_at'] ? ' le ' . date('d/m/Y', strtotime($req['delivered_at'])) : ''?><?=$req['bon_id'] ? ' — voir bon de remise associé' : ''?>.</strong></p>
+<?php endif; ?>
+</div>
+<div class="nota"><strong>Nota :</strong> Nous vous rappelons que l'attribution d'un téléphone portable relève des avantages en nature susceptibles de demande de justificatif par la Chambre Régionale des Comptes. Il vous appartient de bien évaluer le besoin et d'en contrôler l'usage. Les visas ci-dessus ont été recueillis électroniquement (liens personnels horodatés, adresse IP conservée).</div>
+</body></html>
+<?php exit; }
+
 // ─── 3. GENERATION PDF (BON DE REMISE) ────────────────────────
 function formatPhone($phone) { $val = preg_replace('/[^0-9]/', '', (string)$phone); return $val ? implode(' ', str_split($val, 2)) : ''; }
 function baseUrl($pdo = null) {
@@ -493,19 +1494,8 @@ function createBon($pdo, $type, $agentId, $items, $parentId = null) {
 }
 
 // ─── Réglages SMTP : surcharge par variables d'environnement ──
-// Mêmes noms que Sentinelle (MAIL_SERVER, MAIL_PORT, MAIL_USERNAME,
-// MAIL_PASSWORD, MAIL_DEFAULT_SENDER, MAIL_USE_TLS) : si la variable est
-// définie (Docker), elle PRIME sur la base et le champ correspondant est
-// verrouillé dans Paramètres — même logique que la configuration LDAP.
-const SMTP_ENV_KEYS = [
-    'smtp_host'      => 'MAIL_SERVER',
-    'smtp_port'      => 'MAIL_PORT',
-    'smtp_secure'    => 'MAIL_SECURE',          // tls | ssl | none
-    'smtp_user'      => 'MAIL_USERNAME',
-    'smtp_pass'      => 'MAIL_PASSWORD',
-    'smtp_from'      => 'MAIL_DEFAULT_SENDER',
-    'smtp_from_name' => 'MAIL_FROM_NAME',
-];
+// (La constante SMTP_ENV_KEYS est déclarée plus haut, avant les pages
+// publiques « demandes » qui envoient des e-mails.)
 
 function smtp_env_locked(string $key): bool {
     $env = SMTP_ENV_KEYS[$key] ?? '';
@@ -1770,6 +2760,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='smtp_pass'")->execute([$d['smtp_pass']]);
                 }
             }
+            // Paramètres des demandes de téléphone (formulaire public + circuit)
+            if (isset($d['request_form'])) {
+                $set = $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?");
+                foreach (['request_notify_email', 'request_dsi_email', 'request_dgs_email'] as $key) {
+                    if (array_key_exists($key, $d)) $set->execute([(string)(fmtEmail($d[$key]) ?? ''), $key]);
+                }
+                foreach (['request_dsi_name', 'request_dgs_name'] as $key) {
+                    if (array_key_exists($key, $d)) $set->execute([trim($d[$key]), $key]);
+                }
+                if (isset($d['request_reminder_days'])) $set->execute([(string)max(1, (int)$d['request_reminder_days']), 'request_reminder_days']);
+            }
+            // Personnalisation des textes du formulaire public de demande.
+            // strip_tags : le texte est ré-échappé à l'affichage (h()), on retire
+            // simplement tout balisage HTML pour éviter les surprises.
+            if (isset($d['request_form_texts'])) {
+                $set = $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?");
+                foreach (['request_form_title', 'request_form_intro', 'request_form_motivation_label', 'request_form_motifs', 'request_form_nota', 'request_form_success'] as $key) {
+                    if (array_key_exists($key, $d)) {
+                        $val = trim(strip_tags((string)$d[$key]));
+                        // Titre et libellé motivation : non vides (repli si vidés)
+                        if (in_array($key, ['request_form_title', 'request_form_motivation_label'], true) && $val === '') continue;
+                        $set->execute([$val, $key]);
+                    }
+                }
+                // Au moins un motif de remplacement doit rester
+                if (array_key_exists('request_form_motifs', $d) && trim(strip_tags($d['request_form_motifs'])) === '') {
+                    $set->execute(["Panne\nCasse\nPerte\nVol\nObsolescence", 'request_form_motifs']);
+                }
+            }
             // Suppression du logo
             if (!empty($d['delete_logo'])) {
                 $oldLogo = getSetting($pdo, 'pdf_logo_path', '');
@@ -2024,6 +3043,114 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->commit();
                 header('Location: index.php?page=pdf_bon&bon_id=' . $bonId); exit;
             }
+        } elseif ($ent === 'request') {
+            // ── Demandes de téléphone : qualification, circuit, traitement ──
+            $reqId = (int)($d['request_id'] ?? 0);
+            $rq = $pdo->prepare("SELECT * FROM requests WHERE id=?"); $rq->execute([$reqId]);
+            $req = $rq->fetch();
+            $backTo = 'index.php?page=requests' . ($reqId ? '&view=' . $reqId : '');
+            if (!$req) {
+                flash('error', 'Demande introuvable.');
+                $backTo = 'index.php?page=requests';
+            } elseif ($act === 'link_agent') {
+                $aid = IV($d, 'agent_id');
+                $pdo->prepare("UPDATE requests SET agent_id=? WHERE id=?")->execute([$aid, $reqId]);
+                logHistory($pdo, 'request', $reqId, $aid ? "🔗 Demande {$req['numero']} liée à la fiche de " . getAgentName($pdo, $aid) : "Demande {$req['numero']} déliée du référentiel", $aid);
+                flash('success', $aid ? 'Agent du référentiel lié à la demande — sa dotation actuelle est maintenant visible des valideurs.' : 'Agent délié.');
+            } elseif ($act === 'launch') {
+                if ($req['status'] !== 'a_qualifier') {
+                    flash('error', 'Cette demande a déjà été lancée ou close.');
+                } else {
+                    // Circuit saisi/ajusté par la DSI : chaque étape = libellé + e-mail
+                    $labels = (array)($d['step_label'] ?? []); $names = (array)($d['step_name'] ?? []); $emails = (array)($d['step_email'] ?? []);
+                    $steps = [];
+                    foreach ($labels as $i => $lbl) {
+                        $lbl = trim(strip_tags((string)$lbl));
+                        $nm  = trim(strip_tags((string)($names[$i] ?? '')));
+                        $em  = trim((string)($emails[$i] ?? ''));
+                        if ($lbl === '' && $nm === '' && $em === '') continue;   // ligne vide : ignorée
+                        if ($lbl === '' || !filter_var($em, FILTER_VALIDATE_EMAIL)) { $steps = null; break; }
+                        $steps[] = ['label' => $lbl, 'name' => $nm, 'email' => $em];
+                    }
+                    if ($steps === null || !$steps) {
+                        flash('error', 'Circuit invalide : chaque étape doit avoir un libellé et une adresse e-mail valide (retirez les lignes inutiles).');
+                    } else {
+                        $pdo->prepare("DELETE FROM request_steps WHERE request_id=?")->execute([$reqId]);
+                        $insStep = $pdo->prepare("INSERT INTO request_steps (request_id, ordre, label, validator_name, validator_email, token, expires_at) VALUES (?,?,?,?,?,?,?)");
+                        $expires = date('Y-m-d H:i:s', strtotime('+120 days'));
+                        foreach ($steps as $i => $s) {
+                            $insStep->execute([$reqId, $i + 1, $s['label'], $s['name'] ?: null, $s['email'], bin2hex(random_bytes(32)), $expires]);
+                        }
+                        $pdo->prepare("UPDATE requests SET status='en_validation', current_step=1, launched_at=NOW() WHERE id=?")->execute([$reqId]);
+                        logHistory($pdo, 'request', $reqId, "🚀 Circuit de validation lancé (" . count($steps) . " étape(s)) — demande {$req['numero']}", $req['agent_id'] ?: null);
+                        $first = $pdo->prepare("SELECT * FROM request_steps WHERE request_id=? AND ordre=1"); $first->execute([$reqId]);
+                        $res = requestSendStepEmail($pdo, $req, $first->fetch());
+                        flash($res === true ? 'success' : 'error', $res === true
+                            ? "Circuit lancé — e-mail envoyé au premier valideur ({$steps[0]['email']})."
+                            : "Circuit lancé, mais l'e-mail au premier valideur n'a pas pu partir : $res — corrigez puis utilisez « Renvoyer l'e-mail ».");
+                    }
+                }
+            } elseif ($act === 'resend') {
+                if ($req['status'] !== 'en_validation') {
+                    flash('error', "Cette demande n'est pas en cours de validation.");
+                } else {
+                    $cs = $pdo->prepare("SELECT * FROM request_steps WHERE request_id=? AND ordre=?");
+                    $cs->execute([$reqId, (int)$req['current_step']]);
+                    $step = $cs->fetch();
+                    $res = $step ? requestSendStepEmail($pdo, $req, $step) : 'Étape courante introuvable.';
+                    flash($res === true ? 'success' : 'error', $res === true
+                        ? "E-mail renvoyé à {$step['validator_email']}."
+                        : "Échec de l'envoi : $res");
+                }
+            } elseif ($act === 'refuse') {
+                if (!in_array($req['status'], ['a_qualifier', 'en_validation'], true)) {
+                    flash('error', 'Cette demande est déjà close.');
+                } else {
+                    $reason = S($d, 'reason', 'Refus DSI');
+                    $pdo->prepare("UPDATE requests SET status='refusee', refusal_reason=?, closed_at=NOW(), current_step=0 WHERE id=?")
+                        ->execute([mb_substr("Refus DSI : $reason", 0, 255), $reqId]);
+                    logHistory($pdo, 'request', $reqId, "⛔ Demande {$req['numero']} refusée par la DSI — $reason", $req['agent_id'] ?: null);
+                    // Le demandeur consulte le refus (et son motif) via son lien de suivi.
+                    flash('success', 'Demande refusée. Le demandeur peut consulter le motif via son lien de suivi.');
+                }
+            } elseif ($act === 'cancel') {
+                if (!in_array($req['status'], ['a_qualifier', 'en_validation'], true)) {
+                    flash('error', 'Cette demande est déjà close.');
+                } else {
+                    $pdo->prepare("UPDATE requests SET status='annulee', closed_at=NOW(), current_step=0 WHERE id=?")->execute([$reqId]);
+                    logHistory($pdo, 'request', $reqId, "🚫 Demande {$req['numero']} annulée par la DSI", $req['agent_id'] ?: null);
+                    flash('success', 'Demande annulée.');
+                }
+            } elseif ($act === 'generate_bon') {
+                if ($req['status'] !== 'validee') {
+                    flash('error', 'Le bon de remise se génère une fois la demande validée.');
+                } elseif (!$req['agent_id']) {
+                    flash('error', 'Liez d\'abord la demande à un agent du référentiel.');
+                } else {
+                    $items = bonSnapshotItems($pdo, (int)$req['agent_id']);
+                    if (empty($items['devices']) && empty($items['lines'])) {
+                        flash('error', "Aucun équipement attribué à cet agent — attribuez d'abord un matériel et/ou une ligne (fiche agent), puis générez le bon.");
+                    } else {
+                        cancelPendingBons($pdo, (int)$req['agent_id'], "Bon généré depuis la demande {$req['numero']}");
+                        $bonId = createBon($pdo, 'remise', (int)$req['agent_id'], $items);
+                        $pdo->prepare("UPDATE requests SET bon_id=? WHERE id=?")->execute([$bonId, $reqId]);
+                        $numero = $pdo->query("SELECT numero FROM bons WHERE id=$bonId")->fetchColumn();
+                        logHistory($pdo, 'request', $reqId, "📄 Bon de remise $numero généré depuis la demande {$req['numero']}", (int)$req['agent_id']);
+                        $pdo->commit();
+                        header('Location: index.php?page=pdf_bon&bon_id=' . $bonId); exit;
+                    }
+                }
+            } elseif ($act === 'deliver') {
+                if ($req['status'] !== 'validee') {
+                    flash('error', 'Seule une demande validée peut être marquée livrée.');
+                } else {
+                    $pdo->prepare("UPDATE requests SET status='livree', delivered_at=NOW() WHERE id=?")->execute([$reqId]);
+                    logHistory($pdo, 'request', $reqId, "📦 Demande {$req['numero']} marquée livrée", $req['agent_id'] ?: null);
+                    flash('success', 'Demande marquée comme livrée.');
+                }
+            }
+            if ($pdo->inTransaction()) $pdo->commit();
+            header('Location: ' . $backTo); exit;
         } elseif ($ent === 'backup') {
             // Sauvegarde / restauration — super-admin uniquement
             if (empty($_SESSION['is_admin'])) {
@@ -2087,14 +3214,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Le DROP TABLE (DDL) commite implicitement : on sort proprement de la transaction
                 if ($pdo->inTransaction()) $pdo->commit();
                 $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-                $pdo->exec("DROP TABLE IF EXISTS `bons`,`signatures`,`sign_tokens`,`sim_history`,`attachments`,`mobile_lines`,`devices`,`history_logs`,`agents`,`billing_accounts`,`plan_types`,`operators`,`models`,`services`,`settings`,`users`");
+                $pdo->exec("DROP TABLE IF EXISTS `request_steps`,`requests`,`bons`,`signatures`,`sign_tokens`,`sim_history`,`attachments`,`mobile_lines`,`devices`,`history_logs`,`agents`,`billing_accounts`,`plan_types`,`operators`,`models`,`services`,`settings`,`users`");
                 $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
                 session_destroy();
                 header('Location: install.php'); exit;
             }
         } elseif ($ent === 'service') {
-            if ($act === 'add') $pdo->prepare("INSERT INTO services(name,direction,notes)VALUES(?,?,?)")->execute([S($d,'name'),S($d,'direction'),S($d,'notes')]);
-            elseif ($act === 'edit') $pdo->prepare("UPDATE services SET name=?,direction=?,notes=? WHERE id=?")->execute([S($d,'name'),S($d,'direction'),S($d,'notes'),$id]);
+            // chef/dga : valideurs par défaut du circuit des demandes de téléphone
+            if ($act === 'add') $pdo->prepare("INSERT INTO services(name,direction,notes,chef_name,chef_email,dga_name,dga_email)VALUES(?,?,?,?,?,?,?)")->execute([S($d,'name'),S($d,'direction'),S($d,'notes'),NV($d,'chef_name'),fmtEmail(NV($d,'chef_email')),NV($d,'dga_name'),fmtEmail(NV($d,'dga_email'))]);
+            elseif ($act === 'edit') $pdo->prepare("UPDATE services SET name=?,direction=?,notes=?,chef_name=?,chef_email=?,dga_name=?,dga_email=? WHERE id=?")->execute([S($d,'name'),S($d,'direction'),S($d,'notes'),NV($d,'chef_name'),fmtEmail(NV($d,'chef_email')),NV($d,'dga_name'),fmtEmail(NV($d,'dga_email')),$id]);
         } elseif ($ent === 'model') {
             if ($act === 'add') $pdo->prepare("INSERT INTO models(brand,name,category)VALUES(?,?,?)")->execute([S($d,'brand'),S($d,'name'),S($d,'category')]);
             elseif ($act === 'edit') $pdo->prepare("UPDATE models SET brand=?,name=?,category=? WHERE id=?")->execute([S($d,'brand'),S($d,'name'),S($d,'category'),$id]);
@@ -2115,6 +3243,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } else {
                 [$ok, $msg] = ldap_test_connection();
                 flash($ok ? 'success' : 'error', ($ok ? '🔌 ' : '') . $msg);
+            }
+        } elseif ($ent === 'smtp_test') {
+            // Envoi d'un e-mail de test avec la configuration SMTP enregistrée
+            $to = fmtEmail(trim($d['test_email'] ?? ''));
+            if ($to === '' || !filter_var($to, FILTER_VALIDATE_EMAIL)) {
+                flash('error', "Renseignez une adresse e-mail de destination valide pour le test.");
+            } else {
+                $inner = '<p>Ceci est un e-mail de test envoyé depuis <strong>SimCity</strong> pour vérifier la configuration SMTP.</p>'
+                       . '<p>Si vous recevez ce message, l\'envoi d\'e-mails fonctionne correctement.</p>';
+                $res = smtpSendMail($pdo, $to, 'Test SMTP — SimCity', requestMailShell('E-mail de test', $inner));
+                if ($res === true) {
+                    flash('success', "📧 E-mail de test envoyé à $to — vérifiez la boîte de réception (et les indésirables).");
+                } else {
+                    flash('error', "Échec de l'envoi : $res");
+                }
             }
         } elseif ($ent === 'admin') {
             $isSuper = !empty($_SESSION['is_admin']);
@@ -2201,10 +3344,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } elseif ($ent === 'agent') {
             if ($act === 'add') {
-                $pdo->prepare("INSERT INTO agents(first_name,last_name,email,service_id)VALUES(?,?,?,?)")->execute([fmtFirstName(S($d,'first_name')),fmtLastName(S($d,'last_name')),fmtEmail(NV($d,'email')),IV($d,'service_id')]);
+                $pdo->prepare("INSERT INTO agents(first_name,last_name,fonction,email,service_id)VALUES(?,?,?,?,?)")->execute([fmtFirstName(S($d,'first_name')),fmtLastName(S($d,'last_name')),NV($d,'fonction'),fmtEmail(NV($d,'email')),IV($d,'service_id')]);
                 logHistory($pdo, 'agent', $pdo->lastInsertId(), "Création de la fiche utilisateur");
             } elseif ($act === 'edit') {
-                $pdo->prepare("UPDATE agents SET first_name=?,last_name=?,email=?,service_id=? WHERE id=?")->execute([fmtFirstName(S($d,'first_name')),fmtLastName(S($d,'last_name')),fmtEmail(NV($d,'email')),IV($d,'service_id'),$id]);
+                $pdo->prepare("UPDATE agents SET first_name=?,last_name=?,fonction=?,email=?,service_id=? WHERE id=?")->execute([fmtFirstName(S($d,'first_name')),fmtLastName(S($d,'last_name')),NV($d,'fonction'),fmtEmail(NV($d,'email')),IV($d,'service_id'),$id]);
                 logHistory($pdo, 'agent', $id, "Mise à jour des coordonnées", $id);
             } elseif ($act === 'archive') {
                 $agtRow = $pdo->query("SELECT first_name, last_name FROM agents WHERE id=$id")->fetch();
@@ -2461,7 +3604,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'ldap_test'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'ldap_test', 'smtp_test'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -2476,7 +3619,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $page = preg_replace('/[^a-z_]/', '', $_GET['page'] ?? 'dashboard');
 $tab = preg_replace('/[^a-z_]/', '', $_GET['tab'] ?? 'active');
 
-$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise'];
+$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise', 'requests' => 'Demandes de téléphone'];
 ob_start();
 
 // ==================================================================
@@ -2513,6 +3656,22 @@ if ($page === 'dashboard') {
         if ($pb['expires_at'] && strtotime($pb['expires_at']) < time()) $bonsExpired++;
         elseif ($pb['expires_at'] && strtotime($pb['expires_at']) < time() + 7*86400) $bonsExpSoon++;
     }
+
+    // Demandes de téléphone en cours (à qualifier / en validation)
+    $reqDays = max(1, (int)getSetting($pdo, 'request_reminder_days', 5));
+    $pendingReqs = $pdo->query("SELECT r.*, DATE_FORMAT(r.created_at, '%d/%m/%Y') as created_fmt,
+            (SELECT label FROM request_steps s WHERE s.request_id=r.id AND s.ordre=r.current_step LIMIT 1) as current_label,
+            (SELECT COUNT(*) FROM request_steps s WHERE s.request_id=r.id) as nb_steps,
+            (SELECT COALESCE(s.reminded_at, s.notified_at) FROM request_steps s WHERE s.request_id=r.id AND s.ordre=r.current_step LIMIT 1) as last_contact
+        FROM requests r
+        WHERE r.status IN ('a_qualifier','en_validation','validee')
+        ORDER BY FIELD(r.status,'a_qualifier','validee','en_validation'), r.created_at ASC LIMIT 12")->fetchAll();
+    $reqToQualify = 0; $reqValidated = 0; $reqStalled = 0;
+    foreach ($pendingReqs as $pr) {
+        if ($pr['status'] === 'a_qualifier') $reqToQualify++;
+        elseif ($pr['status'] === 'validee') $reqValidated++;
+        elseif ($pr['last_contact'] && strtotime($pr['last_contact']) < time() - $reqDays * 86400) $reqStalled++;
+    }
     ?>
     <div class="dashboard-grid">
         
@@ -2531,7 +3690,7 @@ if ($page === 'dashboard') {
         <a href="?page=refs&tab=agents" class="shortcut-btn shortcut-resa"><span class="shortcut-icon"><i class="bi bi-person"></i></span><span class="shortcut-label">Nouvel Utilisateur</span><span class="shortcut-sub">Créer un agent pour attribution</span></a>
       </div>
 
-      <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $bonsExpired > 0 || $bonsExpSoon > 0): ?>
+      <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $bonsExpired > 0 || $bonsExpSoon > 0 || $reqToQualify > 0 || $reqValidated > 0 || $reqStalled > 0): ?>
       <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);padding:1.25rem;border-radius:var(--radius);margin-bottom:1.5rem;">
           <h4 style="color:var(--danger);margin-bottom:10px;display:flex;align-items:center;gap:8px;"><i class="bi bi-exclamation-triangle-fill"></i> Points d'attention immédiats</h4>
           <ul style="color:var(--text);margin:0;padding-left:1.5rem;font-size:0.9rem;line-height:1.8;">
@@ -2549,6 +3708,15 @@ if ($page === 'dashboard') {
               <?php endif; ?>
               <?php if($bonsExpSoon > 0): ?>
               <li><strong>Bons à relancer :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$bonsExpSoon?></span> bon(s) en attente expirent sous 7 jours — relancez les agents (bouton 📧).</li>
+              <?php endif; ?>
+              <?php if($reqToQualify > 0): ?>
+              <li><strong>Demandes à qualifier :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$reqToQualify?></span> demande(s) de téléphone attendent le lancement de leur circuit de validation. <a href="?page=requests" style="color:var(--primary);font-size:.82rem;">Ouvrir les demandes →</a></li>
+              <?php endif; ?>
+              <?php if($reqValidated > 0): ?>
+              <li><strong>Demandes validées à traiter :</strong> <span style="color:var(--success);font-weight:bold;"><?=$reqValidated?></span> demande(s) ont terminé leur circuit — attribuez le matériel et générez le bon de remise. <a href="?page=requests" style="color:var(--primary);font-size:.82rem;">Ouvrir les demandes →</a></li>
+              <?php endif; ?>
+              <?php if($reqStalled > 0): ?>
+              <li><strong>Circuits au ralenti :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$reqStalled?></span> demande(s) sans réponse du valideur depuis plus de <?=$reqDays?> jours (relances automatiques actives).</li>
               <?php endif; ?>
           </ul>
       </div>
@@ -2592,6 +3760,33 @@ if ($page === 'dashboard') {
               <?php endif; ?>
             </td>
             <td><a href="?page=pdf_bon&bon_id=<?=$pb['id']?>" target="_blank" class="btn-icon" title="Voir / imprimer / envoyer" style="text-decoration:none;">🖨️</a></td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <?php endif; ?>
+
+      <?php if($pendingReqs): ?>
+      <div class="card">
+        <div class="card-header"><span class="card-title">📱 Demandes de téléphone en cours (<?=count($pendingReqs)?>)</span>
+          <a href="?page=requests" style="font-size:.8rem;color:var(--primary);text-decoration:none;">Voir toutes les demandes →</a></div>
+        <table class="data-table">
+          <thead><tr><th>N°</th><th>Agent</th><th>Service</th><th>Statut</th><th>Étape en cours</th><th></th></tr></thead>
+          <tbody>
+          <?php foreach($pendingReqs as $pr): [$plbl, $pcls] = requestStatusInfo($pr['status']);
+              $stalled = ($pr['status'] === 'en_validation' && $pr['last_contact'] && strtotime($pr['last_contact']) < time() - $reqDays * 86400); ?>
+          <tr>
+            <td><a href="?page=requests&view=<?=$pr['id']?>" class="cell-link" style="font-family:var(--font-mono);font-weight:700;color:var(--primary);font-size:.85rem;"><?=h($pr['numero'])?></a></td>
+            <td><strong><?=h($pr['agent_name'])?></strong></td>
+            <td class="muted"><?=h($pr['service_name'] ?: '—')?></td>
+            <td><span class="badge <?=$pcls?>"><?=h($plbl)?></span></td>
+            <td class="muted" style="font-size:.8rem;">
+              <?php if($pr['status'] === 'en_validation'): ?><?=(int)$pr['current_step']?>/<?=(int)$pr['nb_steps']?><?=$pr['current_label'] ? ' — ' . h($pr['current_label']) : ''?><?=$stalled ? ' <span style="color:var(--warning);">⚠️ sans réponse</span>' : ''?>
+              <?php elseif($pr['status'] === 'a_qualifier'): ?>Déposée le <?=h($pr['created_fmt'])?>
+              <?php else: ?>À attribuer / livrer<?php endif; ?>
+            </td>
+            <td><a href="?page=requests&view=<?=$pr['id']?>" class="btn-icon" title="Ouvrir" style="text-decoration:none;color:var(--primary);"><i class="bi bi-eye"></i></a></td>
           </tr>
           <?php endforeach; ?>
           </tbody>
@@ -3222,11 +4417,16 @@ elseif ($page === 'refs') {
     $tabs = ['agents'=>'<i class="bi bi-people"></i> Utilisateurs', 'services'=>'<i class="bi bi-building"></i> Services', 'models'=>'<i class="bi bi-list-ul"></i> Modèles', 'plans'=>'<i class="bi bi-globe2"></i> Forfaits', 'operators'=>'<i class="bi bi-broadcast"></i> Opérateurs', 'billing'=>'<i class="bi bi-cash-coin"></i> Facturation', 'admins'=>'<i class="bi bi-shield-lock"></i> Comptes Admin', 'settings'=>'<i class="bi bi-gear"></i> Paramètres'];
     
     if ($tab === 'agents') {
-        $data = $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id ORDER BY a.archived ASC, a.last_name, a.first_name")->fetchAll();
-        $cols = ['Nom'=>'last_name', 'Prénom'=>'first_name', 'Email'=>'email', 'Service'=>'service_name']; $ent = 'agent';
+        // Sous-onglet : agents actifs (défaut) ou partis (archivés)
+        $agentArchived = ($_GET['arch'] ?? '') === '1' ? 1 : 0;
+        $agCounts = $pdo->query("SELECT SUM(archived=0) AS actifs, SUM(archived=1) AS partis FROM agents")->fetch();
+        $q = $pdo->prepare("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.archived=? ORDER BY a.last_name, a.first_name");
+        $q->execute([$agentArchived]);
+        $data = $q->fetchAll();
+        $cols = ['Nom'=>'last_name', 'Prénom'=>'first_name', 'Fonction'=>'fonction', 'Email'=>'email', 'Service'=>'service_name']; $ent = 'agent';
     } elseif ($tab === 'services') {
         $data = $pdo->query("SELECT * FROM services ORDER BY name")->fetchAll();
-        $cols = ['Nom'=>'name', 'Direction'=>'direction', 'Notes'=>'notes']; $ent = 'service';
+        $cols = ['Nom'=>'name', 'Direction'=>'direction', 'Visa Chef de service'=>'chef_name', 'Visa D.G.A.'=>'dga_name', 'Notes'=>'notes']; $ent = 'service';
     } elseif ($tab === 'models') {
         $data = $pdo->query("SELECT * FROM models ORDER BY brand, name")->fetchAll();
         $cols = ['Marque'=>'brand', 'Modèle'=>'name', 'Catégorie'=>'category']; $ent = 'model';
@@ -3295,8 +4495,26 @@ elseif ($page === 'refs') {
 
     <?php if($tab === 'settings'):
         $currentLogo = getSetting($pdo, 'pdf_logo_path', '');
+        // Sous-menu des paramètres (évite une page unique surchargée).
+        $subMenu = [
+            'general'  => '<i class="bi bi-sliders"></i> Général',
+            'email'    => '<i class="bi bi-envelope"></i> Envoi d\'e-mails',
+            'requests' => '<i class="bi bi-inbox"></i> Demandes de téléphone',
+            'security' => '<i class="bi bi-shield-lock"></i> Sécurité (AD/LDAP)',
+        ];
+        if(!empty($_SESSION['is_admin'])) $subMenu['maintenance'] = '<i class="bi bi-hdd"></i> Maintenance';
+        $settingsSub = $_GET['sub'] ?? 'general';
+        if(!isset($subMenu[$settingsSub])) $settingsSub = 'general';
     ?>
     <!-- ── ONGLET PARAMÈTRES ───────────────────────────────────── -->
+    <!-- Sous-menu : chaque section regroupe des réglages proches. -->
+    <div style="display:flex; gap:8px; margin-bottom:1.5rem; flex-wrap:wrap;">
+      <?php foreach($subMenu as $sk => $slabel): ?>
+      <a href="?page=refs&tab=settings&sub=<?=$sk?>" class="tab-btn <?=$settingsSub===$sk?'active':''?>" style="border-radius:8px;"><?=$slabel?></a>
+      <?php endforeach; ?>
+    </div>
+
+    <?php if($settingsSub === 'general'): ?>
     <!-- Colonnes CSS : les cartes se répartissent verticalement et remplissent
          l'espace sans laisser de « trous » (responsive : 1 colonne si étroit). -->
     <div style="column-width:460px;column-gap:1.5rem;">
@@ -3372,6 +4590,37 @@ elseif ($page === 'refs') {
         </form>
       </div>
 
+      <!-- Bloc seuils -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-bell"></i> Seuils d'alerte Stock</div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="settings">
+          <input type="hidden" name="_action" value="save">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.5rem;line-height:1.6;">
+            Quand le stock descend <strong>en-dessous ou à égalité</strong> du seuil configuré, une alerte s'affiche sur le tableau de bord.
+          </p>
+          <?php foreach($allSettings as $s):
+              if(!in_array($s['setting_key'], ['sim_stock_alert', 'device_stock_alert'])) continue; ?>
+          <div class="form-group form-full" style="margin-bottom:1.25rem;">
+            <label><?=h($s['label'])?></label>
+            <div style="display:flex;align-items:center;gap:1rem;">
+              <input type="number" name="<?=h($s['setting_key'])?>" value="<?=h($s['setting_value'])?>" min="0" max="999" style="max-width:120px;">
+              <span style="color:var(--text3);font-size:.82rem;">unité(s)</span>
+            </div>
+          </div>
+          <?php endforeach; ?>
+          <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:.5rem;">
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer les seuils</button>
+          </div>
+        </form>
+      </div>
+
+    </div><!-- fin section « Général » -->
+    <?php endif; ?>
+
+    <?php if($settingsSub === 'email'): ?>
+    <div style="column-width:460px;column-gap:1.5rem;">
+
       <!-- Bloc SMTP -->
       <div class="card">
         <div class="card-header"><i class="bi bi-envelope"></i> Envoi d'e-mails (liens de signature)</div>
@@ -3407,7 +4656,94 @@ elseif ($page === 'refs') {
             <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
           </div>
         </form>
+        <?php
+          // Adresse de test pré-remplie avec l'e-mail de l'administrateur connecté
+          $smtpTestTo = '';
+          if(!empty($_SESSION['user_id'])) {
+              $qte = $pdo->prepare("SELECT email FROM users WHERE id=?");
+              $qte->execute([(int)$_SESSION['user_id']]);
+              $smtpTestTo = (string)$qte->fetchColumn();
+          }
+        ?>
+        <form method="post" style="padding:0 1.5rem 1.5rem;">
+          <input type="hidden" name="_entity" value="smtp_test">
+          <input type="hidden" name="_action" value="test">
+          <label style="display:block;font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.4rem;">Tester l'envoi</label>
+          <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;">
+            <input type="email" name="test_email" placeholder="destinataire@exemple.fr" required value="<?=h($smtpTestTo)?>" style="flex:1;min-width:220px;">
+            <button type="submit" class="btn-secondary">📧 Envoyer un e-mail de test</button>
+          </div>
+          <small style="color:var(--text3);">Utilise la configuration <strong>enregistrée</strong> (enregistrez d'abord vos modifications).</small>
+        </form>
       </div>
+
+    </div><!-- fin section « Envoi d'e-mails » -->
+    <?php endif; ?>
+
+    <?php if($settingsSub === 'requests'): ?>
+    <div style="column-width:460px;column-gap:1.5rem;">
+
+      <!-- Bloc demandes de téléphone -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-inbox"></i> Demandes de téléphone (formulaire public & circuit)</div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="settings">
+          <input type="hidden" name="_action" value="save">
+          <input type="hidden" name="request_form" value="1">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
+            Les demandes d'attribution / renouvellement arrivent par un <strong>formulaire public</strong> (sans compte),
+            puis suivent un circuit de visas par <strong>liens e-mail personnels</strong>. Les valideurs variables
+            (chef de service, D.G.A. de secteur) se paramètrent sur chaque <a href="?page=refs&tab=services" style="color:var(--primary);">service</a>.
+          </p>
+          <div style="display:flex;align-items:center;gap:.6rem;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin-bottom:1.25rem;font-size:.8rem;">
+            🔗 <code style="font-family:var(--font-mono);font-size:.75rem;word-break:break-all;flex:1;"><?=h(baseUrl($pdo) . '?page=demande')?></code>
+            <button type="button" class="btn-secondary" style="font-size:.75rem;padding:.3rem .7rem;" onclick="copySignLink(this, '<?=h(baseUrl($pdo) . '?page=demande')?>')">📋 Copier</button>
+          </div>
+          <div class="form-grid">
+            <div class="form-group"><label>E-mail notifié à chaque nouvelle demande</label><input type="email" name="request_notify_email" value="<?=h(getSetting($pdo,'request_notify_email',''))?>" placeholder="dsi@collectivite.fr"></div>
+            <div class="form-group"><label>Relance des valideurs après (jours)</label><input type="number" name="request_reminder_days" value="<?=(int)getSetting($pdo,'request_reminder_days',5)?>" min="1" max="60" style="max-width:120px;"></div>
+            <div class="form-group"><label>Visa D.S.I. — nom par défaut</label><input type="text" name="request_dsi_name" value="<?=h(getSetting($pdo,'request_dsi_name',''))?>" placeholder="M. PARFAIT"></div>
+            <div class="form-group"><label>Visa D.S.I. — e-mail par défaut</label><input type="email" name="request_dsi_email" value="<?=h(getSetting($pdo,'request_dsi_email',''))?>" placeholder="dsi@collectivite.fr"></div>
+            <div class="form-group"><label>Visa D.G.S. — nom par défaut</label><input type="text" name="request_dgs_name" value="<?=h(getSetting($pdo,'request_dgs_name',''))?>" placeholder="M. ROL"></div>
+            <div class="form-group"><label>Visa D.G.S. — e-mail par défaut</label><input type="email" name="request_dgs_email" value="<?=h(getSetting($pdo,'request_dgs_email',''))?>" placeholder="dgs@collectivite.fr"></div>
+          </div>
+          <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Bloc personnalisation du formulaire public -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-pencil-square"></i> Personnalisation du formulaire de demande</div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="settings">
+          <input type="hidden" name="_action" value="save">
+          <input type="hidden" name="request_form_texts" value="1">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
+            Adaptez les textes affichés sur le <a href="<?=h(baseUrl($pdo) . '?page=demande')?>" target="_blank" style="color:var(--primary);">formulaire public</a>.
+            Le <strong>logo</strong> affiché en tête est celui configuré ci-dessus (bloc « Logo des bons de remise PDF ») ; à défaut, le logo de l'application est utilisé.
+          </p>
+          <div class="form-grid">
+            <div class="form-group form-full"><label>Titre du formulaire</label><input type="text" name="request_form_title" value="<?=h(getSetting($pdo,'request_form_title','Demande de téléphone portable'))?>" placeholder="Demande de téléphone portable"></div>
+            <div class="form-group form-full"><label>Texte d'introduction</label><textarea name="request_form_intro" rows="2" placeholder="Quelques mots sous le titre"><?=h(getSetting($pdo,'request_form_intro',''))?></textarea></div>
+            <div class="form-group form-full"><label>Libellé du champ « Motivation »</label><input type="text" name="request_form_motivation_label" value="<?=h(getSetting($pdo,'request_form_motivation_label',''))?>"></div>
+            <div class="form-group"><label>Motifs de remplacement <span style="font-weight:400;text-transform:none;">(un par ligne)</span></label><textarea name="request_form_motifs" rows="5" placeholder="Panne&#10;Casse&#10;Perte&#10;Vol&#10;Obsolescence"><?=h(getSetting($pdo,'request_form_motifs',"Panne\nCasse\nPerte\nVol\nObsolescence"))?></textarea></div>
+            <div class="form-group"><label>Nota (bas du formulaire) <span style="font-weight:400;text-transform:none;">(vide = masqué)</span></label><textarea name="request_form_nota" rows="5" placeholder="Mention légale affichée en bas du formulaire"><?=h(getSetting($pdo,'request_form_nota',''))?></textarea></div>
+            <div class="form-group form-full"><label>Message de confirmation <span style="font-weight:400;text-transform:none;">(après envoi)</span></label><textarea name="request_form_success" rows="2"><?=h(getSetting($pdo,'request_form_success',''))?></textarea></div>
+          </div>
+          <div style="display:flex;gap:.75rem;align-items:center;padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
+            <a href="<?=h(baseUrl($pdo) . '?page=demande')?>" target="_blank" class="btn-secondary" style="text-decoration:none;"><i class="bi bi-eye"></i> Prévisualiser</a>
+          </div>
+        </form>
+      </div>
+
+    </div><!-- fin section « Demandes de téléphone » -->
+    <?php endif; ?>
+
+    <?php if($settingsSub === 'security'): ?>
+    <div style="column-width:460px;column-gap:1.5rem;">
 
       <!-- Bloc LDAP / Active Directory -->
       <div class="card">
@@ -3479,34 +4815,10 @@ elseif ($page === 'refs') {
         <?php endif; ?>
       </div>
 
-      <!-- Bloc seuils -->
-      <div class="card">
-        <div class="card-header"><i class="bi bi-bell"></i> Seuils d'alerte Stock</div>
-        <form method="post" style="padding:1.5rem;">
-          <input type="hidden" name="_entity" value="settings">
-          <input type="hidden" name="_action" value="save">
-          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.5rem;line-height:1.6;">
-            Quand le stock descend <strong>en-dessous ou à égalité</strong> du seuil configuré, une alerte s'affiche sur le tableau de bord.
-          </p>
-          <?php foreach($allSettings as $s):
-              if(!in_array($s['setting_key'], ['sim_stock_alert', 'device_stock_alert'])) continue; ?>
-          <div class="form-group form-full" style="margin-bottom:1.25rem;">
-            <label><?=h($s['label'])?></label>
-            <div style="display:flex;align-items:center;gap:1rem;">
-              <input type="number" name="<?=h($s['setting_key'])?>" value="<?=h($s['setting_value'])?>" min="0" max="999" style="max-width:120px;">
-              <span style="color:var(--text3);font-size:.82rem;">unité(s)</span>
-            </div>
-          </div>
-          <?php endforeach; ?>
-          <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:.5rem;">
-            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer les seuils</button>
-          </div>
-        </form>
-      </div>
+    </div><!-- fin section « Sécurité » -->
+    <?php endif; ?>
 
-    </div><!-- fin conteneur en colonnes des paramètres -->
-
-    <?php if(!empty($_SESSION['is_admin'])):
+    <?php if($settingsSub === 'maintenance' && !empty($_SESSION['is_admin'])):
         $backups   = simcity_list_backups();
         $retention = defined('BACKUP_RETENTION') ? BACKUP_RETENTION : 7;
         $fmtSize = function($b) { return $b >= 1048576 ? round($b/1048576,1).' Mo' : round($b/1024).' Ko'; };
@@ -3659,6 +4971,12 @@ elseif ($page === 'refs') {
     <?php endif; ?>
 
     <?php else: ?>
+    <?php if($tab === 'agents'): ?>
+    <div style="display:flex;gap:10px;margin-bottom:1rem;border-bottom:2px solid var(--border);flex-wrap:wrap;">
+      <a href="?page=refs&tab=agents" class="tab-btn <?=!$agentArchived?'active':''?>"><i class="bi bi-people"></i> Actifs <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($agCounts['actifs'] ?? 0)?></span></a>
+      <a href="?page=refs&tab=agents&arch=1" class="tab-btn <?=$agentArchived?'active':''?>"><i class="bi bi-archive"></i> Partis <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($agCounts['partis'] ?? 0)?></span></a>
+    </div>
+    <?php endif; ?>
     <div class="search-bar-wrap">
       <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Filtrer..." oninput="tableSearch(this,'tbody-refs','count')"></div>
       <div class="search-count" id="count"></div>
@@ -3845,13 +5163,27 @@ elseif ($page === 'refs') {
       <form method="post"><input type="hidden" name="_entity" value="<?=$ent?>"><input type="hidden" name="_action" value="<?=$act?>"><?php if($act==='edit') echo '<input type="hidden" name="_id" id="edit-id-'.$ent.'">'; ?>
       <div class="form-grid">
         <?php if ($ent === 'agent'): $svcs=$pdo->query("SELECT id,name FROM services")->fetchAll(); ?>
+            <?php if (ldap_auth_enabled()): ?>
+            <div class="form-group form-full" style="position:relative;">
+              <label><i class="bi bi-search"></i> Rechercher dans l'annuaire (AD)</label>
+              <input type="text" id="<?=$act?>-ad-search" placeholder="Nom ou prénom…" autocomplete="off">
+              <div id="<?=$act?>-ad-suggest" class="adp-box"></div>
+              <small class="muted" style="font-size:.75rem;">Sélectionnez une personne pour pré-remplir la fiche (modifiable ensuite).</small>
+            </div>
+            <?php endif; ?>
             <div class="form-group"><label>Nom *</label><input type="text" name="last_name" id="<?=$act?>-last_name" required></div>
             <div class="form-group"><label>Prénom *</label><input type="text" name="first_name" id="<?=$act?>-first_name" required></div>
+            <div class="form-group form-full"><label>Fonction</label><input type="text" name="fonction" id="<?=$act?>-fonction" placeholder="ex : Responsable voirie"></div>
             <div class="form-group form-full"><label>Adresse e-mail</label><input type="email" name="email" id="<?=$act?>-email"></div>
             <div class="form-group form-full"><label>Service / Direction</label><div class="qa-row"><select name="service_id" id="<?=$act?>-service_id"><option value="">-- Aucun --</option><?php foreach($svcs as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select><button type="button" class="btn-quickadd" onclick="quickAddOpen('service','<?=$act?>-service_id')" title="Ajouter un service"><i class="bi bi-plus-lg"></i></button></div></div>
         <?php elseif ($ent === 'service'): ?>
             <div class="form-group"><label>Nom</label><input type="text" name="name" id="<?=$act?>-name" required></div>
             <div class="form-group"><label>Direction</label><input type="text" name="direction" id="<?=$act?>-direction"></div>
+            <div class="form-group form-full" style="margin-top:.25rem;padding-top:.75rem;border-top:1px dashed var(--border);"><span class="muted" style="font-size:.78rem;">Valideurs du circuit « Demandes de téléphone » — pré-remplis à chaque demande de ce service.</span></div>
+            <div class="form-group"><label>Chef de service (visa)</label><input type="text" name="chef_name" id="<?=$act?>-chef_name" placeholder="Prénom Nom"></div>
+            <div class="form-group"><label>E-mail du chef de service</label><input type="email" name="chef_email" id="<?=$act?>-chef_email" placeholder="chef@collectivite.fr"></div>
+            <div class="form-group"><label>D.G.A. de secteur (visa)</label><input type="text" name="dga_name" id="<?=$act?>-dga_name" placeholder="Prénom Nom"></div>
+            <div class="form-group"><label>E-mail du D.G.A.</label><input type="email" name="dga_email" id="<?=$act?>-dga_email" placeholder="dga@collectivite.fr"></div>
             <div class="form-group form-full"><label>Notes</label><textarea name="notes" id="<?=$act?>-notes" rows="2"></textarea></div>
         <?php elseif ($ent === 'model'): ?>
             <div class="form-group"><label>Marque</label><input type="text" name="brand" id="<?=$act?>-brand" required></div>
@@ -4085,6 +5417,294 @@ elseif ($page === 'history') {
     <?php
 }
 
+// ==================================================================
+// VUE : DEMANDES DE TÉLÉPHONE (liste + détail / qualification)
+// ==================================================================
+elseif ($page === 'requests') {
+    $viewId = (int)($_GET['view'] ?? 0);
+
+    if ($viewId) {
+        // ── DÉTAIL D'UNE DEMANDE ─────────────────────────────────
+        $rq = $pdo->prepare("SELECT * FROM requests WHERE id=?"); $rq->execute([$viewId]);
+        $req = $rq->fetch();
+        if (!$req) {
+            echo '<div class="card" style="padding:2rem;text-align:center;color:var(--text3);">Demande introuvable. <a href="?page=requests" style="color:var(--primary);">← Retour à la liste</a></div>';
+        } else {
+            $ss = $pdo->prepare("SELECT * FROM request_steps WHERE request_id=? ORDER BY ordre");
+            $ss->execute([$viewId]);
+            $steps = $ss->fetchAll();
+            [$stLbl, $stCls] = requestStatusInfo($req['status']);
+            $agents = $pdo->query("SELECT id, first_name, last_name FROM agents WHERE archived=0 ORDER BY last_name, first_name")->fetchAll();
+            $linkedAgent = $req['agent_id'] ? $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=" . (int)$req['agent_id'])->fetch() : null;
+            $bonRow = $req['bon_id'] ? $pdo->query("SELECT * FROM bons WHERE id=" . (int)$req['bon_id'])->fetch() : null;
+            $smtpConfigured = trim(smtpSetting($pdo, 'smtp_host', '')) !== '';
+            // Circuit proposé (statut « à qualifier ») : valideurs du service + paramètres
+            $draftSteps = ($req['status'] === 'a_qualifier') ? requestDefaultSteps($pdo, $req['service_id']) : [];
+    ?>
+    <div style="margin-bottom:1rem;"><a href="?page=requests" style="color:var(--primary);font-size:.85rem;">← Toutes les demandes</a></div>
+
+    <div class="card">
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+        <span class="card-title">📱 Demande <?=h($req['numero'])?> — <?=h($req['agent_name'])?></span>
+        <span style="display:flex;gap:.5rem;align-items:center;">
+          <span class="badge <?=$stCls?>"><?=h($stLbl)?></span>
+          <a href="?page=pdf_demande&id=<?=$viewId?>" target="_blank" class="btn-icon" title="Récapitulatif imprimable (pièce justificative)" style="text-decoration:none;">🖨️</a>
+        </span>
+      </div>
+      <div style="padding:1.5rem;display:flex;gap:2rem;flex-wrap:wrap;">
+        <div style="flex:1;min-width:300px;">
+          <h4 style="color:var(--primary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px;">📋 La demande</h4>
+          <table class="data-table" style="font-size:.85rem;">
+            <tr><td style="color:var(--text2);width:190px;">Type</td><td><?=h(requestTypeLabel($req['type']))?></td></tr>
+            <tr><td style="color:var(--text2);">Bénéficiaire</td><td><strong><?=h($req['agent_name'])?></strong><?=$req['agent_fonction'] ? ' — ' . h($req['agent_fonction']) : ''?></td></tr>
+            <tr><td style="color:var(--text2);">E-mail bénéficiaire</td><td><?=h($req['agent_email'] ?: '—')?></td></tr>
+            <tr><td style="color:var(--text2);">E-mail demandeur</td><td><?=h($req['requester_email'] ?: '—')?></td></tr>
+            <tr><td style="color:var(--text2);">Service</td><td><?=h($req['service_name'] ?: '—')?></td></tr>
+            <tr><td style="color:var(--text2);">Remplacement d'agent</td><td><?=$req['replace_agent'] ? 'Oui' . ($req['replaced_agent_name'] ? ' — ' . h($req['replaced_agent_name']) : '') : 'Non'?></td></tr>
+            <tr><td style="color:var(--text2);">Remplacement de téléphone</td><td><?=$req['replace_device'] ? 'Oui — <strong>' . h($req['replace_motif'] ?: 'motif non précisé') . '</strong>' : 'Non'?></td></tr>
+            <tr><td style="color:var(--text2);">Déposée le</td><td><?=date('d/m/Y à H:i', strtotime($req['created_at']))?></td></tr>
+            <?php if ($req['refusal_reason']): ?><tr><td style="color:var(--text2);">Motif de clôture</td><td style="color:var(--danger);"><?=h($req['refusal_reason'])?></td></tr><?php endif; ?>
+          </table>
+          <div style="margin-top:.75rem;background:var(--bg3);border-radius:var(--radius-sm);padding:.85rem 1rem;">
+            <div style="font-size:.72rem;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:.3rem;">Motivation du besoin</div>
+            <div style="font-size:.88rem;white-space:pre-line;"><?=h($req['motivation'])?></div>
+          </div>
+        </div>
+
+        <div style="flex:1;min-width:300px;">
+          <h4 style="color:var(--primary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px;">👤 Agent au référentiel & équipement actuel</h4>
+          <?php if ($linkedAgent): ?>
+          <div style="background:var(--bg3);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:.75rem;">
+            <strong class="cell-link" onclick="viewAgent(<?=(int)$linkedAgent['id']?>, '<?=h(addslashes(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name'])))?>')" title="Ouvrir la fiche"><?=h(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name']))?></strong>
+            <span class="muted">— <?=h($linkedAgent['service_name'] ?: 'Aucun service')?></span>
+            <div style="margin-top:.6rem;"><?=requestEquipmentHtml($pdo, (int)$linkedAgent['id'])?></div>
+          </div>
+          <?php else: ?>
+          <div style="background:rgba(245,158,11,.06);border:1px solid rgba(245,158,11,.25);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:.75rem;font-size:.85rem;color:var(--text2);">
+            ⚠️ Demande non rattachée au référentiel — l'équipement actuel n'est pas visible des valideurs. Liez l'agent (ou créez-le d'abord dans « Utilisateurs »).
+          </div>
+          <?php endif; ?>
+          <?php if (in_array($req['status'], ['a_qualifier', 'en_validation', 'validee'], true)): ?>
+          <form method="post" action="index.php" style="display:flex;gap:.5rem;align-items:center;">
+            <?=csrf_field()?>
+            <input type="hidden" name="_entity" value="request">
+            <input type="hidden" name="_action" value="link_agent">
+            <input type="hidden" name="request_id" value="<?=$viewId?>">
+            <select name="agent_id" style="flex:1;">
+              <option value="">— Aucun agent lié —</option>
+              <?php foreach ($agents as $a): ?>
+              <option value="<?=$a['id']?>" <?=(int)$req['agent_id'] === (int)$a['id'] ? 'selected' : ''?>><?=h(trim($a['last_name'] . ' ' . $a['first_name']))?></option>
+              <?php endforeach; ?>
+            </select>
+            <button type="submit" class="btn-secondary" style="white-space:nowrap;">🔗 Lier</button>
+          </form>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+
+    <!-- Circuit de validation -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">🖊️ Circuit de validation</span></div>
+      <div style="padding:1.5rem;">
+      <?php if ($req['status'] === 'a_qualifier'): ?>
+        <p class="muted" style="margin-bottom:1rem;">Circuit pré-rempli depuis le service (« <?=h($req['service_name'] ?: '—')?> ») et les paramètres. Ajustez librement (libellé, valideur, e-mail, ordre), puis lancez : chaque valideur recevra un lien personnel, l'un après l'autre. <a href="?page=refs&tab=services" style="color:var(--primary);">Compléter les valideurs des services →</a></p>
+        <form method="post" action="index.php">
+          <?=csrf_field()?>
+          <input type="hidden" name="_entity" value="request">
+          <input type="hidden" name="_action" value="launch">
+          <input type="hidden" name="request_id" value="<?=$viewId?>">
+          <table class="data-table" id="circuit-table" style="font-size:.85rem;">
+            <thead><tr><th style="width:30px;"></th><th>Visa (libellé)</th><th>Valideur</th><th>E-mail</th><th style="width:40px;"></th></tr></thead>
+            <tbody>
+            <?php foreach ($draftSteps as $i => $ds): ?>
+            <tr>
+              <td style="color:var(--text3);"><?=$i + 1?></td>
+              <td><input type="text" name="step_label[]" value="<?=h($ds['label'])?>" placeholder="ex : Direction du service"></td>
+              <td><input type="text" name="step_name[]" value="<?=h($ds['name'])?>" placeholder="Prénom Nom"></td>
+              <td><input type="email" name="step_email[]" value="<?=h($ds['email'])?>" placeholder="valideur@collectivite.fr" <?=$ds['email'] === '' ? 'style="border-color:rgba(245,158,11,.6);"' : ''?>></td>
+              <td><button type="button" class="btn-icon btn-del" title="Retirer cette étape" onclick="this.closest('tr').remove()"><i class="bi bi-x-lg"></i></button></td>
+            </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+          <div style="display:flex;gap:.75rem;margin-top:1rem;flex-wrap:wrap;align-items:center;">
+            <button type="button" class="btn-secondary" onclick="circuitAddRow()">➕ Ajouter une étape</button>
+            <button type="submit" class="btn-primary" <?=$smtpConfigured ? '' : 'title="SMTP non configuré : le lien devra être transmis manuellement"'?>
+              onclick="return confirm('Lancer le circuit de validation ? Le premier valideur recevra immédiatement le lien par e-mail.')">🚀 Lancer le circuit</button>
+            <?php if (!$smtpConfigured): ?><span style="color:var(--warning);font-size:.8rem;">⚠️ SMTP non configuré — <a href="?page=refs&tab=settings&sub=email" style="color:var(--primary);">Paramètres → Envoi d'e-mails</a></span><?php endif; ?>
+          </div>
+        </form>
+        <script>
+        function circuitAddRow() {
+          const tb = document.querySelector('#circuit-table tbody');
+          const tr = document.createElement('tr');
+          tr.innerHTML = '<td style="color:var(--text3);">＋</td>'
+            + '<td><input type="text" name="step_label[]" placeholder="Libellé du visa"></td>'
+            + '<td><input type="text" name="step_name[]" placeholder="Prénom Nom"></td>'
+            + '<td><input type="email" name="step_email[]" placeholder="valideur@collectivite.fr"></td>'
+            + '<td><button type="button" class="btn-icon btn-del" onclick="this.closest(\'tr\').remove()"><i class="bi bi-x-lg"></i></button></td>';
+          tb.appendChild(tr);
+        }
+        </script>
+      <?php else: ?>
+        <table class="data-table" style="font-size:.86rem;">
+          <thead><tr><th style="width:30px;">#</th><th>Visa</th><th>Valideur</th><th>Décision</th><th>Avis motivé</th><th>Notifié</th></tr></thead>
+          <tbody>
+          <?php foreach ($steps as $s):
+              $isCur = ($req['status'] === 'en_validation' && (int)$req['current_step'] === (int)$s['ordre']);
+              if ($s['decision'] === 'approuve')   $dec = '<span class="badge badge-success">✅ Favorable</span><br><span class="muted" style="font-size:.72rem;">' . date('d/m/Y H:i', strtotime($s['decided_at'])) . '</span>';
+              elseif ($s['decision'] === 'refuse') $dec = '<span class="badge badge-danger">⛔ Défavorable</span><br><span class="muted" style="font-size:.72rem;">' . date('d/m/Y H:i', strtotime($s['decided_at'])) . '</span>';
+              elseif ($isCur)                      $dec = '<span class="badge badge-info">⏳ En attente</span>';
+              elseif (in_array($req['status'], ['refusee', 'annulee'], true)) $dec = '<span class="badge badge-muted">Sans objet</span>';
+              else                                 $dec = '<span class="badge badge-muted">À venir</span>';
+          ?>
+          <tr style="<?=$isCur ? 'background:var(--primary-dim);' : ''?>">
+            <td class="muted"><?=(int)$s['ordre']?></td>
+            <td><strong><?=h($s['label'])?></strong></td>
+            <td><?=h($s['validator_name'] ?: '—')?><br><span class="muted" style="font-size:.75rem;"><?=h($s['validator_email'])?></span></td>
+            <td><?=$dec?></td>
+            <td style="max-width:280px;"><?=$s['avis'] ? '« ' . h($s['avis']) . ' »' : '<span class="muted">—</span>'?></td>
+            <td class="muted" style="font-size:.75rem;">
+              <?=$s['notified_at'] ? '📧 ' . date('d/m H:i', strtotime($s['notified_at'])) : '—'?>
+              <?=$s['reminded_at'] ? '<br>🔔 ' . date('d/m H:i', strtotime($s['reminded_at'])) : ''?>
+              <?php if ($isCur): ?><br><button type="button" class="btn-icon" style="font-size:.78rem;color:var(--primary);padding:0;" title="Copier le lien de visa" onclick="copySignLink(this, '<?=h(baseUrl($pdo) . '?page=valider&token=' . $s['token'])?>')">🔗 lien</button><?php endif; ?>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      <?php endif; ?>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">⚡ Actions</span></div>
+      <div style="padding:1.5rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:flex-start;">
+        <?php if ($req['status'] === 'en_validation'): ?>
+        <form method="post" action="index.php" style="display:inline;">
+          <?=csrf_field()?>
+          <input type="hidden" name="_entity" value="request"><input type="hidden" name="_action" value="resend"><input type="hidden" name="request_id" value="<?=$viewId?>">
+          <button type="submit" class="btn-secondary">📧 Relancer le valideur en cours</button>
+        </form>
+        <?php endif; ?>
+
+        <?php if ($req['status'] === 'validee'): ?>
+        <?php if ($linkedAgent): ?>
+        <button type="button" class="btn-primary" onclick="viewAgent(<?=(int)$linkedAgent['id']?>, '<?=h(addslashes(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name'])))?>')">👤 Attribuer matériel / ligne (fiche agent)</button>
+        <form method="post" action="index.php" style="display:inline;" target="_blank">
+          <?=csrf_field()?>
+          <input type="hidden" name="_entity" value="request"><input type="hidden" name="_action" value="generate_bon"><input type="hidden" name="request_id" value="<?=$viewId?>">
+          <button type="submit" class="btn-secondary">📄 Générer le bon de remise lié</button>
+        </form>
+        <?php else: ?>
+        <span style="color:var(--warning);font-size:.85rem;align-self:center;">⚠️ Liez d'abord la demande à un agent du référentiel pour attribuer et générer le bon.</span>
+        <?php endif; ?>
+        <form method="post" action="index.php" style="display:inline;" onsubmit="return confirm('Marquer la demande comme livrée ? (Utile si la remise s\'est faite sans bon électronique.)')">
+          <?=csrf_field()?>
+          <input type="hidden" name="_entity" value="request"><input type="hidden" name="_action" value="deliver"><input type="hidden" name="request_id" value="<?=$viewId?>">
+          <button type="submit" class="btn-secondary">📦 Marquer livrée</button>
+        </form>
+        <?php endif; ?>
+
+        <?php if ($bonRow): ?>
+        <a href="?page=pdf_bon&bon_id=<?=(int)$bonRow['id']?>" target="_blank" class="btn-secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:5px;">🖨️ Bon <?=h($bonRow['numero'])?> — <?=$bonRow['status'] === 'signed' ? '✅ signé' : ($bonRow['status'] === 'pending' ? '⏳ en attente de signature' : '🚫 annulé')?></a>
+        <?php endif; ?>
+
+        <?php if (in_array($req['status'], ['a_qualifier', 'en_validation'], true)): ?>
+        <details style="flex-basis:100%;background:rgba(220,38,38,.04);border:1px solid rgba(220,38,38,.2);border-radius:8px;padding:.6rem .9rem;">
+          <summary style="cursor:pointer;font-size:.85rem;color:var(--danger);font-weight:600;">⛔ Refuser ou annuler la demande</summary>
+          <div style="display:flex;gap:.75rem;flex-wrap:wrap;margin-top:.75rem;align-items:center;">
+            <form method="post" action="index.php" style="display:flex;gap:.5rem;flex:1;min-width:280px;" onsubmit="return confirm('Refuser définitivement cette demande ? Le demandeur sera informé par e-mail.')">
+              <?=csrf_field()?>
+              <input type="hidden" name="_entity" value="request"><input type="hidden" name="_action" value="refuse"><input type="hidden" name="request_id" value="<?=$viewId?>">
+              <input type="text" name="reason" required placeholder="Motif du refus (transmis au demandeur)" style="flex:1;">
+              <button type="submit" class="btn-secondary" style="color:var(--danger);border-color:rgba(220,38,38,.3);">⛔ Refuser</button>
+            </form>
+            <form method="post" action="index.php" style="display:inline;" onsubmit="return confirm('Annuler cette demande (sans notification au demandeur) ?')">
+              <?=csrf_field()?>
+              <input type="hidden" name="_entity" value="request"><input type="hidden" name="_action" value="cancel"><input type="hidden" name="request_id" value="<?=$viewId?>">
+              <button type="submit" class="btn-secondary">🚫 Annuler sans notifier</button>
+            </form>
+          </div>
+        </details>
+        <?php endif; ?>
+      </div>
+    </div>
+
+    <!-- Historique de la demande -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">🕐 Historique</span></div>
+      <div style="padding:1rem 1.5rem;">
+        <?php $hist = fetchEntityHistory($pdo, 'request', $viewId); if (!$hist): ?>
+        <div class="muted">Aucun événement.</div>
+        <?php else: foreach ($hist as $hrow): ?>
+        <div style="display:flex;gap:1rem;padding:.4rem 0;border-bottom:1px solid var(--border);font-size:.83rem;">
+          <span class="muted" style="white-space:nowrap;"><?=h($hrow['dt'])?></span>
+          <span style="flex:1;"><?=h($hrow['action_desc'])?></span>
+          <span class="muted"><?=h($hrow['author'])?></span>
+        </div>
+        <?php endforeach; endif; ?>
+      </div>
+    </div>
+    <?php
+        }
+    } else {
+        // ── LISTE DES DEMANDES ───────────────────────────────────
+        $reqs = $pdo->query("SELECT r.*,
+                DATE_FORMAT(r.created_at, '%d/%m/%Y') as created_fmt,
+                (SELECT label FROM request_steps s WHERE s.request_id=r.id AND s.ordre=r.current_step LIMIT 1) as current_label,
+                (SELECT COUNT(*) FROM request_steps s WHERE s.request_id=r.id) as nb_steps,
+                (SELECT COUNT(*) FROM request_steps s WHERE s.request_id=r.id AND s.decision='approuve') as nb_ok
+            FROM requests r
+            ORDER BY FIELD(r.status, 'a_qualifier', 'en_validation', 'validee', 'livree', 'refusee', 'annulee'), r.created_at DESC")->fetchAll();
+        $publicUrl = baseUrl($pdo) . '?page=demande';
+    ?>
+    <div class="page-header" style="justify-content:space-between;flex-wrap:wrap;gap:.75rem;">
+      <div style="display:flex;align-items:center;gap:.6rem;font-size:.85rem;color:var(--text2);">
+        <span>🔗 Formulaire public :</span>
+        <code style="font-family:var(--font-mono);font-size:.78rem;background:var(--bg3);padding:.3rem .6rem;border-radius:6px;word-break:break-all;"><?=h($publicUrl)?></code>
+        <button type="button" class="btn-secondary" style="font-size:.78rem;padding:.35rem .8rem;" onclick="copySignLink(this, '<?=h($publicUrl)?>')">📋 Copier</button>
+      </div>
+      <a href="<?=h($publicUrl)?>" target="_blank" class="btn-primary" style="text-decoration:none;">➕ Nouvelle demande (formulaire)</a>
+    </div>
+
+    <div class="search-bar-wrap">
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span>
+        <input type="text" placeholder="Filtrer par numéro, agent, service, statut..." oninput="tableSearch(this,'tbody-requests','count-req')">
+      </div>
+      <div class="search-count" id="count-req"></div>
+    </div>
+
+    <div class="card" style="overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>N°</th><th>Déposée le</th><th>Agent</th><th>Service</th><th>Type</th><th>Statut</th><th>Avancement</th><th>Actions</th></tr></thead>
+        <tbody id="tbody-requests">
+        <?php if (!$reqs): ?><tr><td colspan="8" class="empty-cell">Aucune demande pour l'instant. Diffusez le lien du formulaire public ci-dessus.</td></tr><?php endif; ?>
+        <?php foreach ($reqs as $r): [$lbl, $cls] = requestStatusInfo($r['status']); ?>
+        <tr style="<?=in_array($r['status'], ['refusee', 'annulee'], true) ? 'opacity:.6;' : ''?>">
+          <td><a href="?page=requests&view=<?=$r['id']?>" class="cell-link" style="font-family:var(--font-mono);font-weight:700;color:var(--primary);"><?=h($r['numero'])?></a></td>
+          <td class="muted"><?=h($r['created_fmt'])?></td>
+          <td><strong><?=h($r['agent_name'])?></strong><?=$r['agent_id'] ? '' : ' <span class="muted" style="font-size:.72rem;" title="Non rattachée au référentiel">⚠️</span>'?></td>
+          <td class="muted"><?=h($r['service_name'] ?: '—')?></td>
+          <td><span class="badge badge-muted"><?=$r['type'] === 'renouvellement' ? '♻️ Renouvellement' : '🆕 Attribution'?></span></td>
+          <td><span class="badge <?=$cls?>"><?=h($lbl)?></span></td>
+          <td class="muted" style="font-size:.8rem;">
+            <?php if ($r['status'] === 'en_validation'): ?>Étape <?=(int)$r['current_step']?>/<?=(int)$r['nb_steps']?><?=$r['current_label'] ? ' — ' . h($r['current_label']) : ''?>
+            <?php elseif ((int)$r['nb_steps'] > 0): ?><?=(int)$r['nb_ok']?>/<?=(int)$r['nb_steps']?> visas favorables
+            <?php else: ?>—<?php endif; ?>
+          </td>
+          <td><a href="?page=requests&view=<?=$r['id']?>" class="btn-icon" title="Ouvrir la demande" style="text-decoration:none;color:var(--primary);"><i class="bi bi-eye"></i></a></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <?php
+    }
+}
+
 $content = ob_get_clean();
 ?>
 
@@ -4186,6 +5806,11 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 .qa-row select{flex:1;min-width:0}
 .btn-quickadd{flex-shrink:0;width:42px;display:inline-flex;align-items:center;justify-content:center;background:var(--primary-dim);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:1rem;transition:background-color .15s,color .15s}
 .btn-quickadd:hover{background:var(--primary);color:#fff}
+/* Autocomplétion annuaire (AD) — recherche de personne dans la fiche utilisateur */
+.adp-box{position:absolute;left:0;right:0;top:100%;z-index:40;background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);box-shadow:var(--shadow-lg);margin-top:.25rem;max-height:240px;overflow-y:auto;display:none;}
+.adp-item{padding:.5rem .75rem;cursor:pointer;border-bottom:1px solid var(--border);font-size:.85rem;}
+.adp-item:last-child{border-bottom:none;}
+.adp-item:hover{background:var(--bg3);}
 /* Cellules cliquables (numéro de ligne, nom d'utilisateur) → fiche concernée */
 .cell-link{cursor:pointer;text-decoration:none;border-bottom:1px dashed transparent;transition:border-color .15s,color .15s}
 .cell-link:hover{border-bottom-color:currentColor;color:var(--primary)}
@@ -4215,6 +5840,8 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
     <a href="?page=devices" class="nav-item <?=$page==='devices'?'active':''?>"><i class="bi bi-phone nav-icon"></i><span class="nav-label">Matériels</span></a>
 
     <div class="sidebar-section">Outils</div>
+    <?php $navReqPending = (int)$pdo->query("SELECT COUNT(*) FROM requests WHERE status IN ('a_qualifier','en_validation')")->fetchColumn(); ?>
+    <a href="?page=requests" class="nav-item <?=$page==='requests'?'active':''?>"><i class="bi bi-inbox nav-icon"></i><span class="nav-label">Demandes de téléphone</span><?php if($navReqPending): ?><span style="margin-left:auto;background:var(--primary);color:#fff;font-size:.68rem;font-weight:700;border-radius:999px;padding:.1rem .5rem;"><?=$navReqPending?></span><?php endif; ?></a>
     <a href="?page=history" class="nav-item <?=$page==='history'?'active':''?>"><i class="bi bi-file-earmark-text nav-icon"></i><span class="nav-label">Historique des bons</span></a>
     <a href="?page=refs&tab=services" class="nav-item <?=($navRefsTab!=='' && $navRefsTab!=='agents')?'active':''?>"><i class="bi bi-gear nav-icon"></i><span class="nav-label">Référentiels & Comptes</span></a>
     <?php
@@ -4411,7 +6038,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const tbody = table.querySelector('tbody');
 
     headers.forEach((th, index) => {
-      if(th.textContent.trim() === 'Actions') { th.style.cursor = 'default'; return; }
+      // Ne pas rendre triable la colonne « Actions » ni la colonne de sélection
+      // groupée (case « tout sélectionner ») : trier cette dernière recréerait
+      // son innerHTML et détruirait la case à cocher en plein clic.
+      if(th.textContent.trim() === 'Actions' || th.querySelector('input')) { th.style.cursor = 'default'; return; }
       th.title = 'Cliquez pour trier'; let sortOrder = 1;
 
       th.addEventListener('click', () => {
@@ -4419,7 +6049,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (rows.length === 0 || rows[0].querySelector('.empty-cell')) return;
 
         sortOrder = sortOrder === 1 ? -1 : 1;
-        headers.forEach(h => { h.innerHTML = h.innerHTML.replace(' ↑', '').replace(' ↓', ''); h.classList.remove('sorted'); });
+        // On ne réécrit pas le HTML des en-têtes contenant un champ (case de
+        // sélection) : cela réinitialiserait la case.
+        headers.forEach(h => { if(h.querySelector('input')) return; h.innerHTML = h.innerHTML.replace(' ↑', '').replace(' ↓', ''); h.classList.remove('sorted'); });
         th.innerHTML += sortOrder === 1 ? ' ↑' : ' ↓'; th.classList.add('sorted');
 
         rows.sort((a, b) => {
@@ -4608,16 +6240,58 @@ function quickAddSave(){
     .catch(()=>{ btn.disabled = false; qaError('Erreur réseau.'); });
 }
 
+// ── Autocomplétion annuaire (AD) dans la fiche utilisateur ──
+// Réutilise l'endpoint public ajax_request_lookup (recherche AD + référentiel).
+// Une sélection pré-remplit nom, prénom, e-mail et fonction (tout reste éditable).
+function bindAgentAd(prefix){
+  const search = document.getElementById(prefix+'-ad-search');
+  if(!search) return;
+  const box = document.getElementById(prefix+'-ad-suggest');
+  const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+  const hide = () => { box.style.display='none'; box.innerHTML=''; };
+  let timer=null;
+  search.addEventListener('input', ()=>{
+    const q = search.value.trim(); clearTimeout(timer);
+    if(q.length < 2){ hide(); return; }
+    timer = setTimeout(async ()=>{
+      try {
+        const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
+        const items = await r.json();
+        if(!Array.isArray(items) || !items.length){ hide(); return; }
+        box.innerHTML = items.map((p,i) =>
+          '<div class="adp-item" data-i="'+i+'"><strong>'+esc(p.name)+'</strong>'
+          + (p.in_tool ? ' <span style="color:var(--warning);font-size:.7rem;">déjà en base</span>' : '')
+          + (p.source==='ad' ? ' <span style="color:var(--info);font-size:.7rem;">AD</span>' : '')
+          + '<br><span class="muted" style="font-size:.75rem;">'+esc([p.fonction,p.email].filter(Boolean).join(' · '))+'</span></div>').join('');
+        box.style.display='block';
+        [...box.querySelectorAll('.adp-item')].forEach(el=>el.addEventListener('mousedown', e=>{
+          e.preventDefault(); const p = items[+el.dataset.i];
+          const set = (id,v)=>{ const f=document.getElementById(prefix+'-'+id); if(f && v!=null && v!=='') f.value=v; };
+          document.getElementById(prefix+'-last_name').value = p.last_name || '';
+          document.getElementById(prefix+'-first_name').value = p.first_name || '';
+          document.getElementById(prefix+'-email').value = p.email || '';
+          set('fonction', p.fonction);
+          search.value = p.name || ''; hide();
+        }));
+      } catch(e){ hide(); }
+    }, 250);
+  });
+  search.addEventListener('blur', ()=>setTimeout(hide,150));
+}
+document.addEventListener('DOMContentLoaded', ()=>{ bindAgentAd('add'); bindAgentAd('edit'); });
+
 function openEditModal(data, ent){
   if(document.getElementById('edit-id-'+ent)) document.getElementById('edit-id-'+ent).value=data.id;
-  Object.keys(data).forEach(k=>{ 
-    const e = document.getElementById('edit-'+k); 
+  Object.keys(data).forEach(k=>{
+    const e = document.getElementById('edit-'+k);
     if(e) {
       if(e.type === 'checkbox') return; // les cases à cocher sont gérées séparément
-      if(ent === 'admin' && k === 'password') e.value = ''; 
-      else e.value = data[k] || ''; 
+      if(ent === 'admin' && k === 'password') e.value = '';
+      else e.value = data[k] || '';
     }
   });
+  // Réinitialise le champ de recherche annuaire (aide de saisie, non persistée)
+  if(ent === 'agent'){ const s=document.getElementById('edit-ad-search'); if(s) s.value=''; const b=document.getElementById('edit-ad-suggest'); if(b){ b.style.display='none'; b.innerHTML=''; } }
   // Restaure la case is_admin pour les comptes admin
   if(ent === 'admin') {
     const chkAdmin = document.getElementById('edit-is_admin');
