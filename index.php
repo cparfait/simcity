@@ -892,7 +892,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title><?=h($fTitle)?> – SimCity</title>
 <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="vendor/plex.css" rel="stylesheet">
 <style><?=requestPublicCss()?></style>
 </head><body>
 <div class="wrap">
@@ -1169,7 +1169,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande_suivi') {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Suivi de demande – SimCity</title>
 <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="vendor/plex.css" rel="stylesheet">
 <style><?=requestPublicCss()?></style>
 </head><body>
 <div class="wrap">
@@ -1296,7 +1296,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'valider') {
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Visa d'une demande – SimCity</title>
 <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="vendor/plex.css" rel="stylesheet">
 <style><?=requestPublicCss()?>
 .btn-approve{background:#059669;border-color:#059669;} .btn-approve:hover{background:#047857;border-color:#047857;}
 .btn-refuse{background:#fff;color:#dc2626;border:1px solid #fecaca;} .btn-refuse:hover{background:#fef2f2;}
@@ -2143,7 +2143,7 @@ if (!isset($_SESSION['user_id'])) {
     ?>
     <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connexion – SimCity</title>
     <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
-    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="vendor/plex.css" rel="stylesheet">
     <style>
         :root{--primary:#4f46e5;--primary-dark:#4338ca;--card:#ffffff;--text:#334155;--text-strong:#0f172a;--text-light:#94a3b8;--border:#e2e8f0;--border-strong:#cbd5e1;--danger:#dc2626;--radius:7px;}
         .login-logo{height:56px;width:56px;object-fit:contain;display:block;margin:0 auto 8px;}
@@ -6407,7 +6407,7 @@ $content = ob_get_clean();
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title><?=h($pageTitles[$page]??'SimCity')?> – SimCity</title>
 <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="vendor/plex.css" rel="stylesheet">
 <link href="vendor/bootstrap-icons.css" rel="stylesheet">
 <script>(function(){ if (localStorage.getItem('pm_theme') === 'dark') document.documentElement.setAttribute('data-theme','dark'); })();</script>
 <style>

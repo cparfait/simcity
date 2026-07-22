@@ -263,7 +263,8 @@ simcity/
 │   └── logo.svg      # Logo (sidebar, login, favicon) — style Sentinelle
 ├── vendor/
 │   ├── bootstrap-icons.css   # Icônes Bootstrap Icons hors-ligne (thème…)
-│   └── fonts/                # Polices woff/woff2 des icônes
+│   ├── plex.css              # Polices IBM Plex Sans/Mono auto-hébergées (RGPD : aucune requête vers Google Fonts)
+│   └── fonts/                # Fichiers woff/woff2 (icônes + polices Plex)
 ├── js/
 │   └── qrcode.min.js # Génération QR codes (client-side)
 ├── uploads/          # Pièces jointes — créé automatiquement
