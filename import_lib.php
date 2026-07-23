@@ -53,8 +53,64 @@ function simcity_import_purge(PDO $pdo): void {
     simcity_apply_schema($pdo);
 }
 
+// Devine la catégorie d'un matériel depuis son libellé : sans colonne « type »
+// dans les exports, tout partait en Smartphone. Heuristique sur des mots-clés
+// (mêmes valeurs que la modale Modèles : Smartphone / Tablette / Borne 4G…).
+function simcity_import_guess_category(string $brand, string $model): string {
+    $t = mb_strtoupper($brand . ' ' . $model);
+    if (preg_match('/TABLET|TABLETTE|\bTAB\b|IPAD|GALAXY TAB|MEDIAPAD/u', $t)) return 'Tablette';
+    if (preg_match('/AIRBOX|\bBOX\b|BORNE|MODEM|ROUTEUR|ROUTER|MIFI|HOTSPOT|TP-LINK|SIERRA|\bM7\d{3}\b/u', $t)) return 'Borne 4G';
+    if (preg_match('/CLE 4G|CLÉ 4G|DONGLE|\bE3\d{3}\b|\bE8\d{3}\b/u', $t)) return 'Clé 4G';
+    return 'Smartphone';
+}
+
+// Analyse le CSV sans rien écrire : liste les utilisateurs distincts du
+// fichier et les rapproche du référentiel (nom + prénom, insensible à la
+// casse). Sert à l'étape de contrôle avant importation : l'opérateur peut
+// associer manuellement les non-correspondances à un agent existant.
+function simcity_import_scan_users(PDO $pdo, string $csvPath): array {
+    $file = fopen($csvPath, 'r');
+    if (!$file) throw new RuntimeException("Fichier CSV illisible.");
+    $startReading = false;
+    $users = [];
+    while (($row = fgetcsv($file, 4000, ";")) !== false) {
+        $row = array_map(fn($v) => mb_convert_encoding((string)$v, 'UTF-8', 'Windows-1252'), $row);
+        if (!$startReading) {
+            if (isset($row[0]) && stripos($row[0], 'LIGNE') !== false) $startReading = true;
+            continue;
+        }
+        $phone = preg_replace('/\s+/', '', $row[0] ?? '');
+        $imei  = preg_replace('/[^0-9]/', '', $row[10] ?? '');
+        if ($phone === '' && $imei === '') continue;
+        $nom    = (string) fmtLastName($row[2] ?? '');
+        $prenom = (string) fmtFirstName($row[3] ?? '');
+        if ($nom === '' && $prenom === '') continue;
+        $key = mb_strtolower($nom . '|' . $prenom);
+        if (!isset($users[$key])) $users[$key] = ['key'=>$key, 'nom'=>$nom, 'prenom'=>$prenom, 'service'=>trim($row[6] ?? ''), 'nb'=>0];
+        $users[$key]['nb']++;
+    }
+    fclose($file);
+
+    $agents = [];
+    foreach ($pdo->query("SELECT a.id, a.last_name, a.first_name, IFNULL(a.email,'') AS email, IFNULL(s.name,'') AS service_name
+                          FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.archived=0") as $a) {
+        $agents[mb_strtolower($a['last_name'] . '|' . $a['first_name'])] = $a;
+    }
+    $matched = $unmatched = [];
+    foreach ($users as $u) {
+        if (isset($agents[$u['key']])) { $u['agent'] = $agents[$u['key']]; $matched[] = $u; }
+        else { $unmatched[] = $u; }
+    }
+    $byName = fn($a, $b) => strcmp($a['key'], $b['key']);
+    usort($matched, $byName); usort($unmatched, $byName);
+    return ['matched' => $matched, 'unmatched' => $unmatched];
+}
+
 // Importe le CSV et retourne le décompte des objets créés, par catégorie.
-function simcity_import_csv(PDO $pdo, string $csvPath): array {
+// $agentMap : associations décidées à l'étape de contrôle — clé
+// mb_strtolower("NOM|Prénom") => id d'un agent existant. Les utilisateurs
+// absents de la carte suivent le comportement historique (créés au besoin).
+function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): array {
     $stats  = ['services'=>0,'models'=>0,'devices'=>0,'lines'=>0,'agents'=>0,'plans'=>0,'billings'=>0,'operators'=>0];
     $caches = ['models'=>[], 'services'=>[], 'plan_types'=>[], 'billing_accounts'=>[], 'agents'=>[], 'operators'=>[]];
 
@@ -132,8 +188,26 @@ function simcity_import_csv(PDO $pdo, string $csvPath): array {
         }
 
         $svcId  = $getOrCreate('services', 'name', $service);
-        $modId  = $getOrCreate('models', 'name', $modelName, 'brand', $brand);
         $billId = $getOrCreate('billing_accounts', 'account_number', $cf);
+
+        // Modèle : créé avec sa catégorie devinée depuis le libellé (tablette,
+        // borne 4G…) — sans quoi tout le parc arrivait en « Smartphone ».
+        $modId = null;
+        if ($modelName !== '') {
+            $modKey = strtolower($modelName . '_' . $brand);
+            if (!isset($caches['models'][$modKey])) {
+                $stM = $pdo->prepare("SELECT id FROM models WHERE name=? AND brand=?");
+                $stM->execute([$modelName, $brand]);
+                $mid = $stM->fetchColumn();
+                if (!$mid) {
+                    $pdo->prepare("INSERT INTO models (name, brand, category) VALUES (?,?,?)")
+                        ->execute([$modelName, $brand, simcity_import_guess_category($brand, $rawMod)]);
+                    $mid = $pdo->lastInsertId(); $stats['models']++;
+                }
+                $caches['models'][$modKey] = $mid;
+            }
+            $modId = $caches['models'][$modKey];
+        }
         $opId   = $operateur ? $getOrCreate('operators', 'name', $operateur) : null;
 
         // Un forfait est identifié par son nom ET son opérateur : deux
@@ -157,7 +231,13 @@ function simcity_import_csv(PDO $pdo, string $csvPath): array {
 
         $agtId = null;
         if ($nom !== '' || $prenom !== '') {
-            $agtId = $getOrCreate('agents', 'last_name', $nom, 'first_name', $prenom);
+            // Association décidée à l'étape de contrôle : prime sur la création.
+            $mapKey = mb_strtolower($nom . '|' . $prenom);
+            if (!empty($agentMap[$mapKey])) {
+                $agtId = (int)$agentMap[$mapKey];
+            } else {
+                $agtId = $getOrCreate('agents', 'last_name', $nom, 'first_name', $prenom);
+            }
             if ($svcId) $pdo->prepare("UPDATE agents SET service_id=? WHERE id=? AND (service_id IS NULL OR service_id=0)")->execute([$svcId, $agtId]);
         }
 

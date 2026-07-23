@@ -3745,11 +3745,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } elseif ($ent === 'import') {
             // Importation CSV — super-admin uniquement (l'outil peut purger la base)
+            // Déroulé en deux temps : « preview » analyse le fichier et propose
+            // un contrôle des utilisateurs (correspondances / créations), puis
+            // « run » écrit en base avec les associations décidées.
             if (empty($_SESSION['is_admin'])) {
                 flash('error', 'Accès refusé — réservé aux super-administrateurs.');
-            } elseif ($act !== 'run') {
-                flash('error', 'Action inconnue.');
-            } else {
+            } elseif ($act === 'cancel') {
+                if (!empty($_SESSION['import_pending']['file'])) @unlink($_SESSION['import_pending']['file']);
+                unset($_SESSION['import_pending']);
+                flash('success', 'Importation annulée — aucune donnée modifiée.');
+                header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
+            } elseif ($act === 'preview') {
                 $purge = !empty($d['truncate']);
                 $err   = simcity_import_validate($_FILES['file_data'] ?? []);
                 if ($purge && ($d['confirm_purge'] ?? '') !== 'PURGER') {
@@ -3757,6 +3763,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } elseif ($err !== '') {
                     flash('error', $err);
                 } else {
+                    // Le fichier téléversé est mis de côté le temps du contrôle.
+                    if (!empty($_SESSION['import_pending']['file'])) @unlink($_SESSION['import_pending']['file']);
+                    $tmp = tempnam(sys_get_temp_dir(), 'simcity_import_');
+                    move_uploaded_file($_FILES['file_data']['tmp_name'], $tmp);
+                    $_SESSION['import_pending'] = ['file' => $tmp, 'name' => (string)($_FILES['file_data']['name'] ?? 'import.csv'), 'purge' => $purge];
+                    header('Location: index.php?page=refs&tab=settings&sub=maintenance#import-review'); exit;
+                }
+            } elseif ($act !== 'run') {
+                flash('error', 'Action inconnue.');
+            } else {
+                $pend = $_SESSION['import_pending'] ?? null;
+                if (!$pend || !is_file($pend['file'])) {
+                    flash('error', "Fichier d'import introuvable — relancez l'analyse du CSV.");
+                } else {
+                    $purge = !empty($pend['purge']);
+                    // Associations décidées à l'étape de contrôle (clé « nom|prénom »
+                    // en minuscules => id d'agent existant). Sans objet après purge.
+                    $agentMap = [];
+                    if (!$purge) {
+                        foreach ((array)($d['agent_map'] ?? []) as $k => $v) {
+                            $v = (int)$v;
+                            if ($v > 0) $agentMap[mb_strtolower((string)$k)] = $v;
+                        }
+                    }
                     // L'import écrit beaucoup et la purge fait du DDL (auto-commit
                     // MySQL) : on sort de la transaction globale, comme la restauration.
                     if ($pdo->inTransaction()) $pdo->commit();
@@ -3767,10 +3797,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             try { $safety = simcity_backup_to_disk($pdo); } catch (Throwable $e) { $safety = ''; }
                             simcity_import_purge($pdo);
                         }
-                        $st = simcity_import_csv($pdo, $_FILES['file_data']['tmp_name']);
+                        $st = simcity_import_csv($pdo, $pend['file'], $agentMap);
                         $resume = "{$st['lines']} ligne(s), {$st['devices']} matériel(s), {$st['agents']} utilisateur(s), "
                                 . "{$st['services']} service(s), {$st['models']} modèle(s), {$st['plans']} forfait(s), "
                                 . "{$st['operators']} opérateur(s), {$st['billings']} compte(s) de facturation";
+                        if (count($agentMap)) $resume .= ", " . count($agentMap) . " rapprochement(s) d'utilisateur";
                         $prefix = $purge
                             ? 'Base purgée' . ($safety !== '' ? " (sauvegarde de sécurité : $safety)" : '') . ', puis import terminé — '
                             : 'Import terminé — ';
@@ -3779,6 +3810,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $detail = (defined('APP_DEBUG') && APP_DEBUG) ? ' — ' . $e->getMessage() : '';
                         flash('error', "L'importation a échoué$detail. Les lignes déjà traitées ont été conservées.");
                     }
+                    @unlink($pend['file']); unset($_SESSION['import_pending']);
                     header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
                 }
             }
@@ -4383,7 +4415,7 @@ if ($page === 'dashboard') {
               <?php else: ?><span class="muted"><?=$expTs ? date('d/m/Y', $expTs) : '—'?></span>
               <?php endif; ?>
             </td>
-            <td><a href="?page=pdf_bon&bon_id=<?=$pb['id']?>" target="_blank" class="btn-icon" title="Voir / imprimer / envoyer" style="text-decoration:none;">🖨️</a></td>
+            <td><a href="?page=pdf_bon&bon_id=<?=$pb['id']?>" target="_blank" class="btn-icon" title="Voir / imprimer / envoyer" style="text-decoration:none;"><i class="bi bi-printer"></i></a></td>
           </tr>
           <?php endforeach; ?>
           </tbody>
@@ -4640,10 +4672,10 @@ elseif ($page === 'lines') {
                 <button class="btn-icon btn-edit" data-line-id="<?=$l['id']?>" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'><i class="bi bi-pencil"></i></button>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
                 <?php if($l['agent_id']): ?>
-                <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Voir / générer le bon de remise" style="text-decoration:none;">🖨️</a>
+                <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Voir / générer le bon de remise" style="text-decoration:none;"><i class="bi bi-printer"></i></a>
                 <?php endif; ?>
                 <button class="btn-icon" title="Changer la SIM (garder le numéro)" style="color:var(--warning)"
-                    onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')">🔄</button>
+                    onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')"><i class="bi bi-arrow-repeat"></i></button>
                 <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>, <?=(int)$l['device_id']?>, <?=json_encode($l['device_id'] ? ($l['brand'].' '.$l['model_name'].' — S/N: '.($l['serial_number']?:($l['imei']?:'—'))) : '')?>)"><i class="bi bi-archive"></i></button>
             <?php else: ?>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
@@ -5973,6 +6005,134 @@ elseif ($page === 'refs') {
       </div>
     </div>
 
+    <?php
+    // ── Étape de contrôle avant importation ──────────────────────
+    // Un CSV analysé attend confirmation : on liste les utilisateurs du
+    // fichier, rapprochés du référentiel ou à créer, avec possibilité
+    // d'associer manuellement chaque non-correspondance à un agent existant.
+    $pendImp = $_SESSION['import_pending'] ?? null;
+    if ($pendImp && !is_file($pendImp['file'])) { unset($_SESSION['import_pending']); $pendImp = null; }
+    $impScan = null;
+    if ($pendImp) {
+        try { $impScan = simcity_import_scan_users($pdo, $pendImp['file']); }
+        catch (Throwable $e) { $impScan = ['matched'=>[], 'unmatched'=>[]]; }
+    }
+    ?>
+    <?php if($pendImp): ?>
+    <div class="card" style="margin-top:1.5rem;border:1px solid var(--primary);" id="import-review">
+      <div class="card-header"><i class="bi bi-person-check"></i> Contrôle avant importation — <?=h($pendImp['name'])?></div>
+      <form method="post" style="padding:1.5rem;">
+        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+        <input type="hidden" name="_entity" value="import">
+        <input type="hidden" name="_action" value="run">
+
+        <?php if(!empty($pendImp['purge'])): ?>
+        <p style="background:var(--danger-dim);border:1px solid var(--danger);border-radius:var(--radius-sm);padding:.75rem 1rem;font-size:.85rem;margin-bottom:1.25rem;">
+          <strong style="color:var(--danger);"><i class="bi bi-exclamation-triangle-fill"></i> Purge activée :</strong>
+          la base sera vidée avant l'import — les <?=count($impScan['matched'])+count($impScan['unmatched'])?> utilisateur(s)
+          du fichier seront tous créés (aucun rapprochement possible).
+        </p>
+        <?php else: ?>
+
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+          <strong><?=count($impScan['matched'])?></strong> utilisateur(s) du fichier correspondent déjà au référentiel,
+          <strong><?=count($impScan['unmatched'])?></strong> sans correspondance.
+          Pour un import propre, associez les non-correspondances à un utilisateur existant (recherche ci-dessous)
+          ou laissez vide pour les créer.
+        </p>
+
+        <?php if($impScan['unmatched']): ?>
+        <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--warning);margin-bottom:.5rem;"><i class="bi bi-person-plus"></i> Sans correspondance (<?=count($impScan['unmatched'])?>)</h4>
+        <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.25rem;">
+          <table class="data-table" style="font-size:.85rem;">
+            <thead><tr><th>Utilisateur du fichier</th><th>Service (CSV)</th><th>Lignes CSV</th><th>Associer à un utilisateur existant</th><th>Résultat</th></tr></thead>
+            <tbody>
+            <?php foreach($impScan['unmatched'] as $u): ?>
+              <tr class="imp-map">
+                <td><strong><?=h($u['nom'].' '.$u['prenom'])?></strong></td>
+                <td class="muted"><?=h($u['service'] ?: '—')?></td>
+                <td><?=(int)$u['nb']?></td>
+                <td style="min-width:240px;">
+                  <div style="position:relative;">
+                    <input type="text" class="imp-map-search" placeholder="🔎 Rechercher (vide = créer)" autocomplete="off" style="font-size:.83rem;padding:.4rem .6rem;">
+                    <input type="hidden" name="agent_map[<?=h($u['key'])?>]" value="">
+                    <div class="adp-box"></div>
+                  </div>
+                </td>
+                <td><span class="imp-map-state badge badge-warning">sera créé</span></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php endif; ?>
+
+        <?php if($impScan['matched']): ?>
+        <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--success);margin-bottom:.5rem;"><i class="bi bi-check-circle"></i> Correspondances trouvées (<?=count($impScan['matched'])?>)</h4>
+        <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.25rem;">
+          <table class="data-table" style="font-size:.85rem;">
+            <thead><tr><th>Utilisateur du fichier</th><th>Service (CSV)</th><th>Lignes CSV</th><th>Utilisateur du référentiel</th></tr></thead>
+            <tbody>
+            <?php foreach($impScan['matched'] as $u): ?>
+              <tr>
+                <td><strong><?=h($u['nom'].' '.$u['prenom'])?></strong></td>
+                <td class="muted"><?=h($u['service'] ?: '—')?></td>
+                <td><?=(int)$u['nb']?></td>
+                <td><span class="badge badge-success"><i class="bi bi-link-45deg"></i> <?=h($u['agent']['last_name'].' '.$u['agent']['first_name'])?></span>
+                    <span class="muted" style="font-size:.75rem;"><?=h(implode(' · ', array_filter([$u['agent']['service_name'], $u['agent']['email']])))?></span></td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php endif; ?>
+        <?php endif; ?>
+
+        <div style="padding-top:1rem;border-top:1px solid var(--border);display:flex;gap:.75rem;align-items:center;">
+          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-check-lg"></i> Confirmer l'importation</button>
+          <button type="submit" class="btn-secondary" formnovalidate
+            onclick="this.form.querySelector('[name=_action]').value='cancel'">Annuler</button>
+        </div>
+      </form>
+      <script>
+      // Autocomplétion des rapprochements : recherche dans le référentiel
+      // (même endpoint que les sélecteurs de lignes / matériels).
+      document.querySelectorAll('#import-review .imp-map').forEach(tr => {
+        const inp = tr.querySelector('.imp-map-search'), hid = tr.querySelector('input[type=hidden]'),
+              box = tr.querySelector('.adp-box'), badge = tr.querySelector('.imp-map-state');
+        const esc = s => { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; };
+        const hide = () => { box.style.display='none'; box.innerHTML=''; };
+        const mark = () => {
+          if(hid.value){ badge.textContent='→ rapproché'; badge.className='imp-map-state badge badge-success'; }
+          else { badge.textContent='sera créé'; badge.className='imp-map-state badge badge-warning'; }
+        };
+        let timer=null;
+        inp.addEventListener('input', () => {
+          hid.value=''; mark();
+          const q = inp.value.trim(); clearTimeout(timer);
+          if(q.length < 2){ hide(); return; }
+          timer = setTimeout(async () => {
+            try {
+              const r = await fetch('index.php?ajax_agent_search=1&q='+encodeURIComponent(q));
+              const items = await r.json();
+              box.innerHTML = (Array.isArray(items) && items.length ? items.map((a,i) =>
+                '<div class="adp-item" data-i="'+i+'"><strong>'+esc(a.name)+'</strong>'
+                + '<br><span class="muted" style="font-size:.75rem;">'+esc([a.service_name, a.email].filter(Boolean).join(' · ') || 'Aucun service')+'</span></div>').join('')
+                : '<div class="adp-item" style="color:var(--text3);">Aucun résultat — sera créé</div>');
+              box.style.display='block';
+              [...box.querySelectorAll('.adp-item[data-i]')].forEach(el => el.addEventListener('mousedown', e => {
+                e.preventDefault(); const a = items[+el.dataset.i];
+                inp.value = a.name; hid.value = a.id; hide(); mark();
+              }));
+            } catch(e){ hide(); }
+          }, 250);
+        });
+        inp.addEventListener('blur', () => setTimeout(hide, 150));
+      });
+      </script>
+    </div>
+    <?php endif; ?>
+
     <!-- Bloc import CSV — reprise d'inventaire depuis un export -->
     <div class="card" style="margin-top:1.5rem;">
       <div class="card-header"><i class="bi bi-filetype-csv"></i> Importation CSV</div>
@@ -5980,12 +6140,14 @@ elseif ($page === 'refs') {
             onsubmit="return !document.getElementById('imp-trunc').checked || confirm('Vider TOUTE la base avant l\'import ? Cette opération est irréversible.')">
         <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
         <input type="hidden" name="_entity" value="import">
-        <input type="hidden" name="_action" value="run">
+        <input type="hidden" name="_action" value="preview">
 
         <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
           Reprise d'inventaire depuis un export CSV : lignes, cartes SIM, matériels, utilisateurs,
           services, modèles, forfaits et opérateurs sont créés en une passe.
-          Les doublons (numéro de ligne, IMEI) sont ignorés, l'import est donc rejouable sans risque de duplicatas.
+          Les doublons (numéro de ligne, IMEI) sont ignorés, l'import est donc rejouable sans risque de duplicatas.<br>
+          Après analyse, une <strong>étape de contrôle des utilisateurs</strong> vous est proposée :
+          correspondances avec le référentiel, rapprochements manuels, créations — rien n'est écrit avant votre confirmation.
         </p>
 
         <div class="form-group form-full">
@@ -6030,7 +6192,7 @@ elseif ($page === 'refs') {
         </div>
 
         <div style="padding-top:1rem;border-top:1px solid var(--border);">
-          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Lancer l'importation</button>
+          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-search"></i> Analyser le fichier</button>
         </div>
       </form>
     </div>
@@ -6501,7 +6663,7 @@ elseif ($page === 'history') {
           📞 <?=h(implode(' / ', array_map('formatPhone', explode(' / ', $pair['phone_numbers']))))?></div>
         <?php endif; ?>
         <?php $printBon = $pair['remise'] ?: $pair['restitution']; if($printBon): ?>
-        <a href="index.php?page=pdf_bon&bon_id=<?=$printBon['id']?>" target="_blank" class="btn-icon" title="Voir / imprimer ce bon" style="text-decoration:none;font-size:.8rem;">🖨️</a>
+        <a href="index.php?page=pdf_bon&bon_id=<?=$printBon['id']?>" target="_blank" class="btn-icon" title="Voir / imprimer ce bon" style="text-decoration:none;font-size:.8rem;"><i class="bi bi-printer"></i></a>
         <?php endif; ?>
       </div>
       <!-- Bons : deux colonnes côte à côte -->
@@ -6591,7 +6753,7 @@ elseif ($page === 'requests') {
         <span class="card-title">📱 Demande <?=h($req['numero'])?> — <?=h($req['agent_name'])?></span>
         <span style="display:flex;gap:.5rem;align-items:center;">
           <span class="badge <?=$stCls?>"><?=h($stLbl)?></span>
-          <a href="?page=pdf_demande&id=<?=$viewId?>" target="_blank" class="btn-icon" title="Récapitulatif imprimable (pièce justificative)" style="text-decoration:none;">🖨️</a>
+          <a href="?page=pdf_demande&id=<?=$viewId?>" target="_blank" class="btn-icon" title="Récapitulatif imprimable (pièce justificative)" style="text-decoration:none;"><i class="bi bi-printer"></i></a>
         </span>
       </div>
       <div style="padding:.7rem 1.5rem;background:var(--bg3);border-bottom:1px solid var(--border);font-size:.88rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;">
@@ -7911,7 +8073,7 @@ function openEditModal(data, ent){
     if(devSel && data.device_id) {
       const exists = Array.from(devSel.options).some(o => o.value == data.device_id);
       if(!exists) {
-        const label = '📱 (Actuellement assigné) ' + (data.brand||'') + ' ' + (data.model_name||'') + ' — S/N: ' + (data.serial_number || data.imei || data.device_id);
+        const label = '(Actuellement assigné) ' + (data.brand||'') + ' ' + (data.model_name||'') + ' — S/N: ' + (data.serial_number || data.imei || data.device_id);
         devSel.add(new Option(label, data.device_id));
       }
       devSel.value = data.device_id;
