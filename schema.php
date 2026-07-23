@@ -308,6 +308,73 @@ function simcity_apply_schema(PDO $pdo): void
         label         VARCHAR(150)
     ) ENGINE=InnoDB;");
 
+    // ── Factures opérateur (module Facturation / Contrôle) ───
+    // Une ligne par PDF importé. month_key = mois de CONSOMMATION (AAAA-MM,
+    // début de la période facturée) : c'est la clé des agrégations et alertes.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS invoices (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        invoice_number  VARCHAR(20) UNIQUE,
+        invoice_type    VARCHAR(10) NOT NULL DEFAULT 'other',
+        billing_account VARCHAR(30) NULL,
+        invoice_date    DATE NULL,
+        period_start    DATE NULL,
+        period_end      DATE NULL,
+        month_key       CHAR(7) NULL,
+        total_ht        DECIMAL(12,2) NULL,
+        total_ttc       DECIMAL(12,2) NULL,
+        nb_lines        INT NOT NULL DEFAULT 0,
+        pdf_path        VARCHAR(255) NULL,
+        file_name       VARCHAR(255) NULL,
+        imported_by     VARCHAR(100) NULL,
+        imported_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_invoices_month (month_key)
+    ) ENGINE=InnoDB;");
+
+    // Détail mensuel par numéro de ligne (extrait du « détail par compte
+    // client » des factures 9A). Durées en secondes, data en Ko : les unités
+    // brutes de la facture, converties à l'affichage.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS invoice_lines (
+        id              INT AUTO_INCREMENT PRIMARY KEY,
+        invoice_id      INT NOT NULL,
+        month_key       CHAR(7) NOT NULL,
+        phone_number    VARCHAR(20) NOT NULL,
+        sfr_user        VARCHAR(190) NULL,
+        plan_name       VARCHAR(120) NULL,
+        abo_ht          DECIMAL(10,2) NOT NULL DEFAULT 0,
+        conso_ht        DECIMAL(10,2) NOT NULL DEFAULT 0,
+        total_ht        DECIMAL(10,2) NOT NULL DEFAULT 0,
+        calls_count     INT NOT NULL DEFAULT 0,
+        calls_seconds   INT NOT NULL DEFAULT 0,
+        sms_count       INT NOT NULL DEFAULT 0,
+        mms_count       INT NOT NULL DEFAULT 0,
+        data_ko         BIGINT NOT NULL DEFAULT 0,
+        surtaxe_count   INT NOT NULL DEFAULT 0,
+        surtaxe_seconds INT NOT NULL DEFAULT 0,
+        surtaxe_ht      DECIMAL(10,2) NOT NULL DEFAULT 0,
+        intl_count      INT NOT NULL DEFAULT 0,
+        intl_seconds    INT NOT NULL DEFAULT 0,
+        intl_ht         DECIMAL(10,2) NOT NULL DEFAULT 0,
+        hf_ht           DECIMAL(10,2) NOT NULL DEFAULT 0,
+        UNIQUE KEY uq_invline (invoice_id, phone_number),
+        INDEX idx_invline_phone (phone_number, month_key),
+        INDEX idx_invline_month (month_key),
+        FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;");
+
+    // Terminaux et accessoires facturés (factures 9T) — l'IMEI permet le
+    // rapprochement avec le parc (devices.imei).
+    $pdo->exec("CREATE TABLE IF NOT EXISTS invoice_devices (
+        id         INT AUTO_INCREMENT PRIMARY KEY,
+        invoice_id INT NOT NULL,
+        label      VARCHAR(190),
+        imei       VARCHAR(50) NULL,
+        qty        INT NOT NULL DEFAULT 1,
+        unit_ht    DECIMAL(10,2) NULL,
+        total_ht   DECIMAL(10,2) NULL,
+        INDEX idx_invdev_imei (imei),
+        FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB;");
+
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
 
     // ─────────────────────────────────────────────────────────
@@ -527,6 +594,13 @@ function simcity_apply_schema(PDO $pdo): void
         ['ldap_required_group',   '',  "Groupe AD requis (DN ou nom) — fortement conseillé"],
         ['ldap_bind_user',        '',  "Compte de service (bouton Tester la connexion)"],
         ['ldap_bind_password',    '',  "Mot de passe du compte de service"],
+        // Facturation / Contrôle — seuils d'alerte (réglables dans le module)
+        ['inv_alert_var_pct',     '50', "Facturation — variation de consommation signalée au-delà de N % vs moyenne 3 mois"],
+        ['inv_alert_var_min_eur', '1',  "Facturation — impact minimal en € HT pour signaler une variation"],
+        ['inv_alert_zero_months', '2',  "Facturation — mois consécutifs sans consommation avant alerte"],
+        ['inv_alert_hf_eur',      '5',  "Facturation — hors-forfait signalé au-delà de N € HT par mois"],
+        ['inv_alert_intl_eur',    '1',  "Facturation — international signalé au-delà de N € HT par mois"],
+        ['inv_alert_surtaxe_eur', '1',  "Facturation — numéros surtaxés signalés au-delà de N € HT par mois"],
     ] as [$k, $v, $l]) {
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);

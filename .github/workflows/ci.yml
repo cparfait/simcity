@@ -37,6 +37,9 @@ jobs:
             php -l "$f"
           done
 
+      - name: Test unitaire du parseur de factures
+        run: php tests/invoice_parse_test.php
+
       - name: Test de démarrage (smoke test)
         env:
           DB_HOST: 127.0.0.1

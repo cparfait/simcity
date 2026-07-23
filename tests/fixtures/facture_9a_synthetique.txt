@@ -1,0 +1,90 @@
+                                                                                        Date facture : 01/06/2026
+                                                                                        N° de facture : 9A0000000001
+                                                                                        N° de compte de facturation : 1234567 H01
+                                                                                        N° de marché : 2025000
+
+
+
+Votre Facture
+VILLE TEST
+Service Comptable
+
+    Vos abonnements, options et services du 01/06/26 au 30/06/26                        120,00        -20,00       100,00
+    Vos consommations facturées du 01/05/26 au 31/05/26                                   2,12                       2,12
+
+    Montant total HT                                                                                               123,45
+    Montant total TVA (20,0%)                                                                                       24,69
+    Montant total TTC                                                                                              148,14
+
+
+
+                                          Votre détail par compte client
+    VILLE TEST / TESTVILLE                                        1234567H01                                123,45 €HT.
+    1 RUE DE L'ESSAI
+    99999 TESTVILLE
+
+
+
+
+Référence : 06.11.22.33.44                                                              Nombre              Prix        TVA           Total
+Utilisateur : M. DURAND                                                                                 unitaire                    EUR HT
+Paul                          Vos abonnements, options et services du 01/06/2026 au 30/06/2026
+AE/FE/01062026/P/75.00.00
+                               Forfait Mobile 5G Eco 1Go                                       1             20,00    20,00%           20,00
+                               SAV Echange Entreprises                                         1              2,00    20,00%            2,00
+                               Remise sur abonnement (96,00% de 20,00€ HT)                     1             -19,20   20,00%          -19,20
+                               Remise sur option (100,00% de 2,00€ HT)                         1              -2,00   20,00%           -2,00
+
+                              Total de vos abonnements, options et services                                                             0,80
+
+
+                                                                                        Nombre         Quantité         TVA           Total
+                                                                                        d'appels       facturée                     EUR HT
+                              Vos consommations facturées du 01/05/2026 au 31/05/2026
+                               Compris dans vos forfaits
+                                Forfait Mobile Eco 1Go
+                                 Appels France                                                22         00:21:32
+                                 Data France                                                  18         2486 Ko
+                                 SMS France                                                    8       08 A l acte
+                                 MMS France                                                    1       01 A l acte
+
+                              Total de vos consommations                                                                                0,00
+
+
+
+                              MONTANT TOTAL HT                                                                                          0,80
+
+
+
+Référence : 06.55.66.77.88                                                              Nombre              Prix        TVA           Total
+Utilisateur : Autr ASTREINTE                                                                            unitaire                    EUR HT
+                                                                                        U
+TECHNIQUE                     Vos abonnements, options et services du 01/06/2026 au 30/06/2026
+                               Forfait Mobile 5G Eco 5Go                                       1             25,00    20,00%           25,00
+                               Remise sur abonnement (95,00% de 25,00€ HT)                     1             -23,75   20,00%          -23,75
+
+                              Total de vos abonnements, options et services                                                             1,25
+
+
+                                                                                        Nombre         Quantité         TVA           Total
+                                                                                        d'appels       facturée                     EUR HT
+                              Vos consommations facturées du 01/05/2026 au 31/05/2026
+                               Compris dans vos forfaits
+                                Forfait Mobile Eco 5Go
+                                 Appels France                                                 5         00:02:00
+                                 Data France                                                  31         575601 Ko
+                               Au-delà ou hors forfait
+                                 Appels vers numéros spéciaux (surtaxe)                        4         00:07:08     20,00%            0,62
+                                 Appels depuis France vers l'international                     2         00:03:00     20,00%            1,50
+
+                              Total de vos consommations                                                                                2,12
+
+
+
+                              MONTANT TOTAL HT
+
+
+
+                                                 SFR, 16 Rue du général Alain de Boissieu 75015 PARIS SA AU CAPITAL DE 1,00 EUR
+                                                                                                                                        1/2
+2/2

@@ -6,3 +6,7 @@
 
 # Configuration locale éventuelle
 config.local.php
+
+# Factures opérateur déposées localement pour analyse (données personnelles)
+/Factures SFR/
+/.claude/

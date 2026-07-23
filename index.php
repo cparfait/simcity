@@ -86,6 +86,9 @@ require_once __DIR__ . '/backup_lib.php';
 // ─── Bibliothèque d'importation CSV ───────────────────────────
 require_once __DIR__ . '/import_lib.php';
 
+// ─── Bibliothèque des factures opérateur (Facturation / Contrôle) ───
+require_once __DIR__ . '/invoice_lib.php';
+
 // ─── Sauvegarde automatique « sans cron » ─────────────────────
 // Déclenchée par le trafic web (idéal en conteneur, sans crontab). Un verrou
 // atomique en base garantit qu'un seul visiteur lance la sauvegarde par
@@ -3818,6 +3821,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
                 }
             }
+        } elseif ($ent === 'invoice') {
+            // Module Facturation / Contrôle — factures opérateur (PDF)
+            if ($act === 'upload') {
+                $files = $_FILES['file_data'] ?? null;
+                if (!$files || !isset($files['name'])) {
+                    flash('error', 'Aucun fichier reçu.');
+                } else {
+                    // Normalise mono / multi-fichiers en tableau uniforme.
+                    $list = is_array($files['name'])
+                        ? array_map(fn($i) => ['name'=>$files['name'][$i], 'type'=>$files['type'][$i], 'tmp_name'=>$files['tmp_name'][$i], 'error'=>$files['error'][$i], 'size'=>$files['size'][$i]], array_keys($files['name']))
+                        : [$files];
+                    $ok = $dup = $err = 0; $msgs = []; $author = $_SESSION['username'] ?? 'admin';
+                    foreach ($list as $one) {
+                        $v = simcity_invoice_validate($one);
+                        if ($v !== '') { $err++; $msgs[] = h($one['name']) . ' : ' . $v; continue; }
+                        try {
+                            $res = simcity_invoice_import($pdo, $one['tmp_name'], (string)$one['name'], $author);
+                            if ($res['status'] === 'ok') $ok++;
+                            elseif ($res['status'] === 'duplicate') $dup++;
+                            else { $err++; $msgs[] = h($one['name']) . ' : ' . h($res['message'] ?? 'erreur'); }
+                        } catch (Throwable $e) {
+                            $err++; $msgs[] = h($one['name']) . ' : ' . h($e->getMessage());
+                        }
+                    }
+                    $sum = "$ok facture(s) importée(s)";
+                    if ($dup) $sum .= ", $dup déjà présente(s) — ignorée(s)";
+                    if ($err) $sum .= ", $err en erreur";
+                    flash($ok || !$err ? 'success' : 'error', $sum . ($msgs ? ' — ' . implode(' · ', array_slice($msgs, 0, 4)) : '') . '.');
+                }
+            } elseif ($act === 'delete') {
+                if (empty($_SESSION['is_admin'])) { flash('error', 'Réservé aux super-administrateurs.'); }
+                else {
+                    $st = $pdo->prepare("SELECT * FROM invoices WHERE id=?"); $st->execute([$id]); $inv = $st->fetch();
+                    if ($inv) {
+                        if (!empty($inv['pdf_path']) && is_file(__DIR__ . '/' . $inv['pdf_path'])) @unlink(__DIR__ . '/' . $inv['pdf_path']);
+                        $pdo->prepare("DELETE FROM invoices WHERE id=?")->execute([$id]); // cascade sur le détail
+                        flash('success', "Facture {$inv['invoice_number']} supprimée (avec son détail).");
+                    }
+                }
+            } elseif ($act === 'thresholds') {
+                if (empty($_SESSION['is_admin'])) { flash('error', 'Réservé aux super-administrateurs.'); }
+                else {
+                    foreach (['inv_alert_var_pct','inv_alert_var_min_eur','inv_alert_zero_months','inv_alert_hf_eur','inv_alert_intl_eur','inv_alert_surtaxe_eur'] as $k) {
+                        if (isset($d[$k])) {
+                            $v = (string)max(0, (float)str_replace(',', '.', (string)$d[$k]));
+                            $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?")->execute([$v, $k]);
+                        }
+                    }
+                    flash('success', "Seuils d'alerte enregistrés.");
+                }
+            }
         } elseif ($ent === 'db_reset') {
             // Réinitialisation complète — super-admin uniquement
             if (empty($_SESSION['is_admin'])) { flash('error', 'Accès refusé.'); }
@@ -4259,7 +4313,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'invoice', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -4274,7 +4328,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $page = preg_replace('/[^a-z_]/', '', $_GET['page'] ?? 'dashboard');
 $tab = preg_replace('/[^a-z_]/', '', $_GET['tab'] ?? 'active');
 
-$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise', 'requests' => 'Demandes de téléphone', 'stats' => 'Statistiques'];
+$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'invoices' => 'Facturation / Contrôle', 'refs' => 'Référentiels & Utilisateurs', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise', 'requests' => 'Demandes de téléphone', 'stats' => 'Statistiques'];
 ob_start();
 
 // ==================================================================
@@ -5086,6 +5140,538 @@ elseif ($page === 'devices') {
       </form></div>
     </div>
     <?php endforeach;
+}
+
+// ==================================================================
+// VUE : FACTURATION / CONTRÔLE (factures opérateur)
+// ==================================================================
+elseif ($page === 'invoices') {
+    $tab = in_array($tab, ['dash','import','reconcile','conso','alerts']) ? $tab : 'dash';
+
+    // Formatteurs locaux : durées « 1h23 », volumes data « 2,4 Go ».
+    $fmtDur = function(int $sec): string {
+        if ($sec <= 0) return '—';
+        $h = intdiv($sec, 3600); $m = intdiv($sec % 3600, 60);
+        return $h > 0 ? sprintf('%dh%02d', $h, $m) : sprintf('%dmin', max(1, $m));
+    };
+    $fmtData = function(int $ko): string {
+        if ($ko <= 0) return '—';
+        if ($ko >= 1048576) return number_format($ko / 1048576, 1, ',', ' ') . ' Go';
+        return number_format($ko / 1024, 0, ',', ' ') . ' Mo';
+    };
+    $fmtEur = fn($v) => number_format((float)$v, 2, ',', ' ') . ' €';
+    $fmtMois = function(?string $mk): string {
+        if (!$mk) return '—';
+        $noms = [1=>'janv.',2=>'févr.',3=>'mars',4=>'avr.',5=>'mai',6=>'juin',7=>'juil.',8=>'août',9=>'sept.',10=>'oct.',11=>'nov.',12=>'déc.'];
+        [$y, $m] = array_pad(explode('-', $mk), 2, 0);
+        return ($noms[(int)$m] ?? '?') . ' ' . $y;
+    };
+
+    // Mois disponibles (détail par ligne) + mois sélectionné.
+    $months = $pdo->query("SELECT DISTINCT month_key FROM invoice_lines ORDER BY month_key DESC")->fetchAll(PDO::FETCH_COLUMN);
+    $selMonth = $_GET['month'] ?? ($months[0] ?? null);
+    if ($selMonth && !in_array($selMonth, $months, true)) $selMonth = $months[0] ?? null;
+
+    // Lignes du référentiel indexées par numéro (rapprochement / affichage).
+    $appLines = [];
+    foreach ($pdo->query("SELECT l.phone_number, l.archived, l.status, l.agent_id,
+            IFNULL(a.first_name,'') fn, IFNULL(a.last_name,'') ln, IFNULL(s.name,'') service_name
+        FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id
+        WHERE l.phone_number IS NOT NULL AND l.phone_number != ''") as $al) {
+        $appLines[preg_replace('/\D/', '', $al['phone_number'])] = $al;
+    }
+
+    // Seuils d'alerte.
+    $thr = [
+        'var_pct'     => (float)getSetting($pdo, 'inv_alert_var_pct', 50),
+        'var_min_eur' => (float)getSetting($pdo, 'inv_alert_var_min_eur', 1),
+        'zero_months' => max(1, (int)getSetting($pdo, 'inv_alert_zero_months', 2)),
+        'hf_eur'      => (float)getSetting($pdo, 'inv_alert_hf_eur', 5),
+        'intl_eur'    => (float)getSetting($pdo, 'inv_alert_intl_eur', 1),
+        'surtaxe_eur' => (float)getSetting($pdo, 'inv_alert_surtaxe_eur', 1),
+    ];
+
+    // ── Calcul des alertes (à la volée, sur le dernier mois importé) ──
+    // Retourne des groupes ['zero'=>[], 'var'=>[], 'hf'=>[], 'surtaxe'=>[], 'intl'=>[], 'global'=>[], 'remise'=>[]]
+    $alertGroups = ['global'=>[], 'remise'=>[], 'zero'=>[], 'var'=>[], 'hf'=>[], 'surtaxe'=>[], 'intl'=>[]];
+    $latestMonth = $months[0] ?? null;
+    if ($latestMonth) {
+        // Séries par numéro (tous mois, ordonnées).
+        $series = [];
+        foreach ($pdo->query("SELECT * FROM invoice_lines ORDER BY month_key") as $il) {
+            $series[$il['phone_number']][$il['month_key']] = $il;
+        }
+        foreach ($series as $phone => $byMonth) {
+            $cur = $byMonth[$latestMonth] ?? null;
+            if (!$cur) continue;
+            $app  = $appLines[$phone] ?? null;
+            $who  = $cur['sfr_user'] ?: ($app ? trim($app['ln'] . ' ' . $app['fn']) : '');
+            $base = ['phone' => $phone, 'who' => $who, 'plan' => $cur['plan_name']];
+
+            // Hors-forfait / surtaxés / international du dernier mois.
+            if ((float)$cur['hf_ht'] >= $thr['hf_eur'])           $alertGroups['hf'][]      = $base + ['detail' => 'Hors-forfait : ' . $fmtEur($cur['hf_ht'])];
+            if ((float)$cur['surtaxe_ht'] >= $thr['surtaxe_eur']) $alertGroups['surtaxe'][] = $base + ['detail' => $cur['surtaxe_count'] . ' appel(s) surtaxé(s), ' . $fmtDur((int)$cur['surtaxe_seconds']) . ' : ' . $fmtEur($cur['surtaxe_ht'])];
+            if ((float)$cur['intl_ht'] >= $thr['intl_eur'])       $alertGroups['intl'][]    = $base + ['detail' => $cur['intl_count'] . ' appel(s) international(aux) : ' . $fmtEur($cur['intl_ht'])];
+
+            // Remise marché absente ? Un abonnement mensuel à prix catalogue
+            // (≥ 15 € HT) trahit une remise non appliquée (normale : ~96 %).
+            if ((float)$cur['abo_ht'] >= 15) $alertGroups['remise'][] = $base + ['detail' => 'Abonnement facturé ' . $fmtEur($cur['abo_ht']) . ' HT — remise marché absente ?'];
+
+            // Zéro consommation depuis N mois consécutifs.
+            $zero = 0;
+            foreach (array_reverse(array_keys($byMonth)) as $mk) {
+                $x = $byMonth[$mk];
+                if ((int)$x['calls_count'] + (int)$x['sms_count'] + (int)$x['mms_count'] + (int)$x['data_ko'] === 0) $zero++;
+                else break;
+            }
+            if ($zero >= $thr['zero_months']) {
+                $alertGroups['zero'][] = $base + ['detail' => "Aucune consommation depuis $zero mois — candidate à suspension / résiliation", 'months' => $zero];
+            }
+
+            // Variations vs moyenne des 3 mois précédents.
+            $prev = array_values(array_filter(array_keys($byMonth), fn($mk) => $mk < $latestMonth));
+            $prev = array_slice($prev, -3);
+            if ($prev) {
+                $avg = fn($col) => array_sum(array_map(fn($mk) => (float)$byMonth[$mk][$col], $prev)) / count($prev);
+                $checks = [
+                    ['col'=>'hf_ht',         'floor'=>$thr['var_min_eur'], 'fmt'=>fn($v)=>$fmtEur($v),           'lbl'=>'hors-forfait'],
+                    ['col'=>'data_ko',       'floor'=>1048576,             'fmt'=>fn($v)=>$fmtData((int)$v),      'lbl'=>'data'],
+                    ['col'=>'calls_seconds', 'floor'=>3600,                'fmt'=>fn($v)=>$fmtDur((int)$v),       'lbl'=>'appels'],
+                ];
+                foreach ($checks as $c) {
+                    $a = $avg($c['col']); $v = (float)$cur[$c['col']]; $diff = $v - $a;
+                    if (abs($diff) < $c['floor']) continue;
+                    if ($a > 0 && abs($diff) / $a * 100 < $thr['var_pct']) continue;
+                    $f = $c['fmt'];
+                    $dir = $diff > 0 ? '▲ hausse' : '▼ baisse';
+                    $alertGroups['var'][] = $base + ['detail' => ucfirst($c['lbl']) . ' : ' . $f($v) . ' ce mois vs ' . $f(round($a)) . ' en moyenne sur 3 mois (' . $dir . ')'];
+                }
+            }
+        }
+        // Alerte globale : montant du mois vs mois précédent (+20 %).
+        $tot = $pdo->query("SELECT month_key, SUM(total_ht) t FROM invoice_lines GROUP BY month_key ORDER BY month_key")->fetchAll(PDO::FETCH_KEY_PAIR);
+        $keys = array_keys($tot);
+        $n = count($keys);
+        if ($n >= 2) {
+            $a = (float)$tot[$keys[$n-2]]; $b = (float)$tot[$keys[$n-1]];
+            if ($a > 0 && ($b - $a) / $a * 100 >= 20) {
+                $alertGroups['global'][] = ['phone'=>'', 'who'=>'', 'plan'=>'',
+                    'detail' => 'Total lignes mobiles de ' . $fmtMois($keys[$n-1]) . ' : ' . $fmtEur($b) . ' HT, en hausse de ' . round(($b-$a)/$a*100) . ' % vs ' . $fmtMois($keys[$n-2]) . ' (' . $fmtEur($a) . ')'];
+            }
+        }
+    }
+    $nbAlerts = array_sum(array_map('count', $alertGroups));
+    ?>
+
+    <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
+        <a href="?page=invoices&tab=dash" class="tab-btn <?=$tab==='dash'?'active':''?>"><i class="bi bi-graph-up"></i> Tableau de bord</a>
+        <a href="?page=invoices&tab=import" class="tab-btn <?=$tab==='import'?'active':''?>"><i class="bi bi-cloud-upload"></i> Import des factures</a>
+        <a href="?page=invoices&tab=reconcile" class="tab-btn <?=$tab==='reconcile'?'active':''?>"><i class="bi bi-person-check"></i> Rapprochement des noms</a>
+        <a href="?page=invoices&tab=conso" class="tab-btn <?=$tab==='conso'?'active':''?>"><i class="bi bi-bar-chart-line"></i> Consommations</a>
+        <a href="?page=invoices&tab=alerts" class="tab-btn <?=$tab==='alerts'?'active':''?>"><i class="bi bi-bell"></i> Alertes
+          <?php if($nbAlerts): ?><span class="badge badge-danger" style="font-size:.68rem;"><?=$nbAlerts?></span><?php endif; ?></a>
+    </div>
+
+    <?php if(!$months && $tab !== 'import'): ?>
+    <div class="card" style="padding:2.5rem;text-align:center;">
+      <div style="font-size:2.2rem;margin-bottom:.5rem;"><i class="bi bi-filetype-pdf" style="color:var(--primary);"></i></div>
+      <p style="color:var(--text2);max-width:520px;margin:0 auto 1.25rem;">Aucune facture avec détail par ligne n'est encore importée.
+      Déposez vos factures mensuelles PDF de l'opérateur (type <code>9A…</code>) — y compris les mois passés pour construire l'historique.</p>
+      <a href="?page=invoices&tab=import" class="btn-primary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-cloud-upload"></i> Importer des factures</a>
+    </div>
+    <?php endif; ?>
+
+    <?php if($tab === 'dash' && $months):
+        $monthly = $pdo->query("SELECT month_key, SUM(total_ht) t, SUM(hf_ht) hf, SUM(surtaxe_ht) s, SUM(intl_ht) i, COUNT(*) n
+                                FROM invoice_lines GROUP BY month_key ORDER BY month_key")->fetchAll();
+        $cur = end($monthly);
+        $devTotal = $pdo->query("SELECT IFNULL(SUM(total_ht),0) FROM invoices WHERE invoice_type='devices'")->fetchColumn();
+        $top = $pdo->prepare("SELECT * FROM invoice_lines WHERE month_key=? ORDER BY total_ht DESC LIMIT 10");
+        $top->execute([$latestMonth]); $top = $top->fetchAll();
+    ?>
+    <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.5rem;">
+      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Mois de consommation</div><div style="font-size:1.5rem;font-weight:700;color:var(--primary);"><?=h($fmtMois($latestMonth))?></div><div class="muted"><?=$cur['n']?> lignes facturées</div></div>
+      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Total lignes mobiles</div><div style="font-size:1.5rem;font-weight:700;"><?=$fmtEur($cur['t'])?> <span style="font-size:.8rem;color:var(--text2);">HT</span></div><div class="muted">factures avec détail par ligne</div></div>
+      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Hors-forfait du mois</div><div style="font-size:1.5rem;font-weight:700;color:<?=(float)$cur['hf']>0?'var(--warning)':'var(--success)'?>;"><?=$fmtEur($cur['hf'])?></div><div class="muted">dont surtaxés <?=$fmtEur($cur['s'])?> · international <?=$fmtEur($cur['i'])?></div></div>
+      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Alertes en cours</div><div style="font-size:1.5rem;font-weight:700;color:<?=$nbAlerts?'var(--danger)':'var(--success)'?>;"><?=$nbAlerts?></div><div class="muted"><a href="?page=invoices&tab=alerts">voir le détail <i class="bi bi-arrow-right"></i></a></div></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:1.5rem;align-items:start;">
+      <div class="card">
+        <div class="card-header"><i class="bi bi-graph-up"></i> Évolution du coût mensuel des lignes (€ HT)</div>
+        <div style="padding:1rem;height:290px;"><canvas id="invMonthly"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><i class="bi bi-trophy"></i> Top 10 des lignes les plus chères — <?=h($fmtMois($latestMonth))?></div>
+        <table class="data-table" style="font-size:.85rem;">
+          <thead><tr><th>Ligne</th><th>Utilisateur (SFR)</th><th>Total HT</th></tr></thead>
+          <tbody>
+          <?php foreach($top as $t): ?>
+            <tr><td><a href="?page=invoices&tab=conso&line=<?=h($t['phone_number'])?>" style="font-family:var(--font-mono);"><?=h(formatPhone($t['phone_number']))?></a></td>
+                <td><?=h($t['sfr_user'] ?: '—')?></td>
+                <td style="font-weight:600;"><?=$fmtEur($t['total_ht'])?></td></tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <?php if((float)$devTotal > 0): ?>
+    <p class="muted" style="margin-top:1rem;"><i class="bi bi-phone"></i> Achats de terminaux importés (factures 9T) : <strong><?=$fmtEur($devTotal)?> HT</strong> au total — détail dans l'onglet Import.</p>
+    <?php endif; ?>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    (function(){
+      const el = document.getElementById('invMonthly'); if(!el) return;
+      new Chart(el, {type:'bar',
+        data:{labels:<?=json_encode(array_map($fmtMois, array_column($monthly,'month_key')))?>,
+              datasets:[
+                {label:'Total lignes € HT', data:<?=json_encode(array_map(fn($r)=>round((float)$r['t'],2), $monthly))?>, backgroundColor:'<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>', borderRadius:4},
+                {label:'Hors-forfait € HT', data:<?=json_encode(array_map(fn($r)=>round((float)$r['hf'],2), $monthly))?>, backgroundColor:'#f59e0b', borderRadius:4}
+              ]},
+        options:{responsive:true,maintainAspectRatio:false,
+          scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},y:{beginAtZero:true,ticks:{color:'#94a3b8'},grid:{color:'rgba(148,163,184,.15)'}}},
+          plugins:{legend:{labels:{color:'#94a3b8'}}}}});
+    })();
+    </script>
+    <?php endif; ?>
+
+    <?php if($tab === 'import'):
+        $invoices = $pdo->query("SELECT * FROM invoices ORDER BY invoice_date DESC, invoice_number DESC")->fetchAll();
+        $typeBadge = ['lines'=>['Mensuelle — détail lignes','badge-success'], 'devices'=>['Terminaux','badge-info'],
+                      'manual'=>['Régularisation','badge-warning'], 'credit'=>['Avoir','badge-danger'], 'other'=>['Autre','badge-muted']];
+    ?>
+    <div class="card" style="margin-bottom:1.5rem;">
+      <div class="card-header"><i class="bi bi-cloud-upload"></i> Importer des factures PDF</div>
+      <form method="post" enctype="multipart/form-data" style="padding:1.5rem;">
+        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+        <input type="hidden" name="_entity" value="invoice">
+        <input type="hidden" name="_action" value="upload">
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
+          Déposez une ou plusieurs factures PDF de l'opérateur (multi-sélection possible). Types reconnus automatiquement :
+          <span class="badge badge-success">9A… mensuelle</span> <span class="badge badge-info">9T… terminaux</span>
+          <span class="badge badge-warning">9AF… régularisation</span> <span class="badge badge-danger">9AA… avoir</span>.
+          Les factures déjà importées (même n°) sont ignorées — l'import est rejouable sans doublons.
+        </p>
+        <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap;">
+          <input type="file" name="file_data[]" accept=".pdf,application/pdf" multiple required
+            style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;color:var(--text);flex:1;min-width:280px;">
+          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Importer</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="search-bar-wrap">
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Filtrer par n°, compte, mois..." oninput="tableSearch(this,'tbody-inv','count-inv')"></div>
+      <div class="search-count" id="count-inv"></div>
+    </div>
+    <div class="card" style="overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>N° de facture</th><th>Type</th><th>Compte</th><th>Date</th><th>Mois conso</th><th>Total HT</th><th>Total TTC</th><th>Lignes</th><th>Importée</th><th>Actions</th></tr></thead>
+        <tbody id="tbody-inv">
+        <?php if(!$invoices): ?><tr><td colspan="10" class="empty-cell">Aucune facture importée</td></tr><?php endif; ?>
+        <?php foreach($invoices as $inv): [$tl,$tc] = $typeBadge[$inv['invoice_type']] ?? $typeBadge['other']; ?>
+        <tr>
+          <td style="font-family:var(--font-mono);font-size:.85rem;"><?=h($inv['invoice_number'])?></td>
+          <td><span class="badge <?=$tc?>"><?=$tl?></span></td>
+          <td class="muted"><?=h($inv['billing_account'] ?: '—')?></td>
+          <td><?=$inv['invoice_date'] ? date('d/m/Y', strtotime($inv['invoice_date'])) : '—'?></td>
+          <td><?=$inv['invoice_type']==='lines' ? h($fmtMois($inv['month_key'])) : '—'?></td>
+          <td style="font-weight:600;"><?=$inv['total_ht'] !== null ? $fmtEur($inv['total_ht']) : '—'?></td>
+          <td><?=$inv['total_ttc'] !== null ? $fmtEur($inv['total_ttc']) : '—'?></td>
+          <td><?=$inv['invoice_type']==='lines' ? (int)$inv['nb_lines'] : '—'?></td>
+          <td class="muted" style="font-size:.78rem;"><?=date('d/m/Y', strtotime($inv['imported_at']))?><br><?=h($inv['imported_by'] ?: '')?></td>
+          <td class="actions">
+            <?php if($inv['pdf_path']): ?><a class="btn-icon" title="Ouvrir le PDF archivé" href="<?=h($inv['pdf_path'])?>" target="_blank" style="text-decoration:none;"><i class="bi bi-filetype-pdf"></i></a><?php endif; ?>
+            <?php if(!empty($_SESSION['is_admin'])): ?>
+            <form method="post" style="display:inline" onsubmit="return confirm('Supprimer cette facture et tout son détail par ligne ?')">
+              <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+              <input type="hidden" name="_entity" value="invoice"><input type="hidden" name="_action" value="delete">
+              <input type="hidden" name="_id" value="<?=$inv['id']?>">
+              <button type="submit" class="btn-icon btn-del" title="Supprimer"><i class="bi bi-trash3"></i></button>
+            </form>
+            <?php endif; ?>
+          </td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <?php endif; ?>
+
+    <?php if($tab === 'reconcile' && $months):
+        // Rapprochement du mois sélectionné : facture ↔ référentiel.
+        $st = $pdo->prepare("SELECT * FROM invoice_lines WHERE month_key=? ORDER BY phone_number");
+        $st->execute([$selMonth]);
+        $factLines = $st->fetchAll();
+        $factPhones = [];
+        $rows = [];
+        // Similarité de noms : jeux de mots-clés (l'un inclus dans l'autre = OK).
+        $nameMatch = function(string $sfr, string $app): bool {
+            $a = array_filter(explode(' ', simcity_inv_normalize_name($sfr)));
+            $b = array_filter(explode(' ', simcity_inv_normalize_name($app)));
+            if (!$a || !$b) return false;
+            $inter = array_intersect($a, $b);
+            if (count($inter) >= min(count($a), count($b))) return true;      // l'un contient l'autre
+            if (count($inter) >= 2) return true;                              // au moins nom + prénom communs
+            return levenshtein(implode(' ', $a), implode(' ', $b)) <= 3;      // tolérance typo
+        };
+        foreach ($factLines as $fl) {
+            $phone = $fl['phone_number'];
+            $factPhones[$phone] = true;
+            $app = $appLines[$phone] ?? null;
+            $isGeneric = (bool)preg_match('/^(Autr|AUTRE)/i', trim((string)$fl['sfr_user']));
+            if (!$app) {
+                $status = 'unknown_app';
+            } elseif ($app['archived']) {
+                $status = 'archived_app';
+            } elseif ($isGeneric || trim($app['ln'] . $app['fn']) === '') {
+                // Ligne de service côté SFR ou sans agent côté SimCity : on ne
+                // peut comparer aucun nom nominal — signalé neutre.
+                $status = ($isGeneric && trim($app['ln'] . $app['fn']) === '') ? 'ok' : 'neutral';
+            } else {
+                $status = $nameMatch((string)$fl['sfr_user'], $app['ln'] . ' ' . $app['fn']) ? 'ok' : 'diff';
+            }
+            $rows[] = ['phone'=>$phone, 'sfr'=>$fl['sfr_user'], 'plan'=>$fl['plan_name'], 'ht'=>$fl['total_ht'],
+                       'app'=>$app, 'status'=>$status];
+        }
+        // Lignes SimCity actives absentes de la facture du mois.
+        foreach ($appLines as $phone => $app) {
+            if (isset($factPhones[$phone]) || $app['archived']) continue;
+            if (in_array($app['status'], ['Resiliated'], true)) continue;
+            $rows[] = ['phone'=>$phone, 'sfr'=>null, 'plan'=>null, 'ht'=>null, 'app'=>$app, 'status'=>'missing_inv'];
+        }
+        $statusMeta = [
+            'ok'          => ['OK — noms concordants',              'badge-success', 'bi-check-circle'],
+            'neutral'     => ['Ligne de service / sans agent',      'badge-muted',   'bi-dash-circle'],
+            'diff'        => ['Nom différent SFR ↔ SimCity',        'badge-warning', 'bi-exclamation-triangle'],
+            'unknown_app' => ['Facturée mais inconnue de SimCity',  'badge-danger',  'bi-question-circle'],
+            'archived_app'=> ['Facturée mais archivée dans SimCity','badge-danger',  'bi-archive'],
+            'missing_inv' => ['Dans SimCity mais absente de la facture', 'badge-info', 'bi-eye-slash'],
+        ];
+        $counts = array_fill_keys(array_keys($statusMeta), 0);
+        foreach ($rows as $r) $counts[$r['status']]++;
+        $filter = $_GET['status'] ?? '';
+    ?>
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+      <form method="get" style="display:flex;align-items:center;gap:.5rem;">
+        <input type="hidden" name="page" value="invoices"><input type="hidden" name="tab" value="reconcile">
+        <label style="margin:0;">Mois</label>
+        <select name="month" onchange="this.form.submit()" style="width:auto;">
+          <?php foreach($months as $mk): ?><option value="<?=h($mk)?>" <?=$mk===$selMonth?'selected':''?>><?=h($fmtMois($mk))?></option><?php endforeach; ?>
+        </select>
+      </form>
+      <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+        <a href="?page=invoices&tab=reconcile&month=<?=h($selMonth)?>" class="badge <?=$filter===''?'badge-info':'badge-muted'?>" style="text-decoration:none;">Tout (<?=count($rows)?>)</a>
+        <?php foreach($statusMeta as $k => [$lbl, $cls]): if(!$counts[$k]) continue; ?>
+        <a href="?page=invoices&tab=reconcile&month=<?=h($selMonth)?>&status=<?=$k?>" class="badge <?=$filter===$k?$cls:'badge-muted'?>" style="text-decoration:none;"><?=$lbl?> (<?=$counts[$k]?>)</a>
+        <?php endforeach; ?>
+      </div>
+    </div>
+    <div class="search-bar-wrap">
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Filtrer par numéro, nom..." oninput="tableSearch(this,'tbody-rec','count-rec')"></div>
+      <div class="search-count" id="count-rec"></div>
+    </div>
+    <div class="card" style="overflow-x:auto;">
+      <table class="data-table">
+        <thead><tr><th>Ligne</th><th>Nom sur la facture (SFR)</th><th>Utilisateur SimCity</th><th>Service</th><th>Forfait facturé</th><th>HT mois</th><th>Statut</th><th>Actions</th></tr></thead>
+        <tbody id="tbody-rec">
+        <?php $shown = 0; foreach($rows as $r): if($filter !== '' && $r['status'] !== $filter) continue; $shown++;
+            [$lbl, $cls, $ico] = $statusMeta[$r['status']]; $app = $r['app']; ?>
+        <tr>
+          <td style="font-family:var(--font-mono);"><a href="?page=invoices&tab=conso&line=<?=h($r['phone'])?>"><?=h(formatPhone($r['phone']))?></a></td>
+          <td><?=h($r['sfr'] ?: '—')?></td>
+          <td><?=$app ? h(trim($app['ln'].' '.$app['fn']) ?: '—') : '—'?></td>
+          <td class="muted"><?=$app ? h($app['service_name'] ?: '—') : '—'?></td>
+          <td class="muted"><?=h($r['plan'] ?: '—')?></td>
+          <td><?=$r['ht'] !== null ? $fmtEur($r['ht']) : '—'?></td>
+          <td><span class="badge <?=$cls?>"><i class="bi <?=$ico?>"></i> <?=$lbl?></span></td>
+          <td class="actions">
+            <?php if($app): ?><a class="btn-icon" title="Voir la ligne dans SimCity" href="?page=lines&tab=active&q=<?=urlencode(formatPhone($r['phone']))?>" style="text-decoration:none;"><i class="bi bi-telephone"></i></a><?php endif; ?>
+            <?php if($app && $app['agent_id']): ?><button class="btn-icon" title="Fiche utilisateur" onclick="viewAgent(<?=$app['agent_id']?>, '<?=h(addslashes($app['fn'].' '.$app['ln']))?>')"><i class="bi bi-person"></i></button><?php endif; ?>
+          </td>
+        </tr>
+        <?php endforeach; if(!$shown): ?><tr><td colspan="8" class="empty-cell">Aucune ligne pour ce filtre</td></tr><?php endif; ?>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="margin-top:.75rem;font-size:.8rem;"><i class="bi bi-info-circle"></i>
+      « Nom différent » : mettez à jour la fiche SimCity, ou faites corriger le nom chez SFR (espace client / commercial) pour retrouver un rapprochement propre.
+      « Facturée mais inconnue » : ligne payée qui n'est pas dans votre parc — à vérifier en priorité (résiliation oubliée ?).</p>
+    <?php endif; ?>
+
+    <?php if($tab === 'conso' && $months):
+        $detailPhone = preg_replace('/\D/', '', (string)($_GET['line'] ?? ''));
+        if ($detailPhone !== ''):
+            $st = $pdo->prepare("SELECT * FROM invoice_lines WHERE phone_number=? ORDER BY month_key");
+            $st->execute([$detailPhone]);
+            $hist = $st->fetchAll();
+            $app = $appLines[$detailPhone] ?? null;
+    ?>
+      <p style="margin-bottom:1rem;"><a href="?page=invoices&tab=conso" class="btn-secondary" style="text-decoration:none;font-size:.82rem;padding:.4rem .9rem;"><i class="bi bi-arrow-left"></i> Toutes les lignes</a></p>
+      <?php if(!$hist): ?>
+        <div class="card" style="padding:2rem;text-align:center;color:var(--text2);">Aucune donnée de facturation pour <?=h(formatPhone($detailPhone))?>.</div>
+      <?php else: $last = end($hist); ?>
+      <div class="card" style="margin-bottom:1.5rem;padding:1.25rem 1.5rem;display:flex;gap:2rem;flex-wrap:wrap;align-items:center;">
+        <div><div style="font-family:var(--font-mono);font-size:1.35rem;font-weight:700;color:var(--primary);"><?=h(formatPhone($detailPhone))?></div>
+             <div class="muted"><?=h($last['sfr_user'] ?: '—')?> <span style="opacity:.6;">(nom SFR)</span></div></div>
+        <?php if($app): ?>
+        <div><div style="font-weight:600;"><?=h(trim($app['ln'].' '.$app['fn']) ?: 'Sans agent')?></div>
+             <div class="muted"><i class="bi bi-building"></i> <?=h($app['service_name'] ?: 'Aucun service')?> · statut <?=h($app['status'])?></div></div>
+        <?php else: ?>
+        <div><span class="badge badge-danger"><i class="bi bi-question-circle"></i> Inconnue de SimCity</span></div>
+        <?php endif; ?>
+        <div style="margin-left:auto;"><div class="muted">Forfait (dernier mois)</div><div style="font-weight:600;"><?=h($last['plan_name'] ?: '—')?></div></div>
+      </div>
+      <div class="card" style="margin-bottom:1.5rem;">
+        <div class="card-header"><i class="bi bi-bar-chart-line"></i> Évolution mensuelle</div>
+        <div style="padding:1rem;height:280px;"><canvas id="invLine"></canvas></div>
+      </div>
+      <div class="card" style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Mois</th><th>Forfait</th><th>Appels</th><th>Durée</th><th>SMS</th><th>MMS</th><th>Data</th><th>Surtaxés</th><th>International</th><th>Hors-forfait</th><th>Abo HT</th><th>Total HT</th></tr></thead>
+          <tbody>
+          <?php foreach(array_reverse($hist) as $hrow): ?>
+            <tr>
+              <td style="font-weight:600;"><?=h($fmtMois($hrow['month_key']))?></td>
+              <td class="muted" style="font-size:.8rem;"><?=h($hrow['plan_name'] ?: '—')?></td>
+              <td><?=(int)$hrow['calls_count']?></td>
+              <td><?=$fmtDur((int)$hrow['calls_seconds'])?></td>
+              <td><?=(int)$hrow['sms_count'] ?: '—'?></td>
+              <td><?=(int)$hrow['mms_count'] ?: '—'?></td>
+              <td><?=$fmtData((int)$hrow['data_ko'])?></td>
+              <td style="color:<?=(float)$hrow['surtaxe_ht']>0?'var(--danger)':'inherit'?>;"><?=(float)$hrow['surtaxe_ht']>0 ? $fmtEur($hrow['surtaxe_ht']).' ('.$hrow['surtaxe_count'].')' : '—'?></td>
+              <td style="color:<?=(float)$hrow['intl_ht']>0?'var(--danger)':'inherit'?>;"><?=(float)$hrow['intl_ht']>0 ? $fmtEur($hrow['intl_ht']).' ('.$hrow['intl_count'].')' : ((int)$hrow['intl_count'] ? $hrow['intl_count'].' app.' : '—')?></td>
+              <td style="color:<?=(float)$hrow['hf_ht']>0?'var(--warning)':'inherit'?>;font-weight:600;"><?=(float)$hrow['hf_ht']>0 ? $fmtEur($hrow['hf_ht']) : '—'?></td>
+              <td><?=$fmtEur($hrow['abo_ht'])?></td>
+              <td style="font-weight:700;"><?=$fmtEur($hrow['total_ht'])?></td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+      <script>
+      (function(){
+        const el = document.getElementById('invLine'); if(!el) return;
+        new Chart(el, {
+          data:{labels:<?=json_encode(array_map($fmtMois, array_column($hist,'month_key')))?>,
+            datasets:[
+              {type:'bar', label:'Data (Go)', yAxisID:'y', data:<?=json_encode(array_map(fn($r)=>round($r['data_ko']/1048576,2), $hist))?>, backgroundColor:'rgba(79,70,229,.55)', borderRadius:4},
+              {type:'bar', label:'Appels (h)', yAxisID:'y', data:<?=json_encode(array_map(fn($r)=>round($r['calls_seconds']/3600,2), $hist))?>, backgroundColor:'rgba(8,145,178,.55)', borderRadius:4},
+              {type:'line', label:'Coût total € HT', yAxisID:'y2', data:<?=json_encode(array_map(fn($r)=>round((float)$r['total_ht'],2), $hist))?>, borderColor:'#f59e0b', backgroundColor:'#f59e0b', tension:.25}
+            ]},
+          options:{responsive:true,maintainAspectRatio:false,
+            scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},
+                    y:{beginAtZero:true,position:'left',ticks:{color:'#94a3b8'},grid:{color:'rgba(148,163,184,.15)'}},
+                    y2:{beginAtZero:true,position:'right',ticks:{color:'#f59e0b'},grid:{display:false}}},
+            plugins:{legend:{labels:{color:'#94a3b8'}}}}});
+      })();
+      </script>
+      <?php endif; ?>
+    <?php else:
+        $st = $pdo->prepare("SELECT * FROM invoice_lines WHERE month_key=? ORDER BY total_ht DESC, phone_number");
+        $st->execute([$selMonth]);
+        $consoRows = $st->fetchAll();
+    ?>
+      <form method="get" style="display:flex;align-items:center;gap:.5rem;margin-bottom:1rem;">
+        <input type="hidden" name="page" value="invoices"><input type="hidden" name="tab" value="conso">
+        <label style="margin:0;">Mois</label>
+        <select name="month" onchange="this.form.submit()" style="width:auto;">
+          <?php foreach($months as $mk): ?><option value="<?=h($mk)?>" <?=$mk===$selMonth?'selected':''?>><?=h($fmtMois($mk))?></option><?php endforeach; ?>
+        </select>
+        <span class="muted" style="margin-left:.5rem;">Cliquez sur un numéro pour l'historique détaillé de la ligne.</span>
+      </form>
+      <div class="search-bar-wrap">
+        <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Filtrer par numéro, nom, forfait..." oninput="tableSearch(this,'tbody-conso','count-conso')"></div>
+        <div class="search-count" id="count-conso"></div>
+      </div>
+      <div class="card" style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Ligne</th><th>Utilisateur (SFR)</th><th>Service (SimCity)</th><th>Forfait</th><th>Appels</th><th>SMS</th><th>Data</th><th>Surtaxés</th><th>International</th><th>Hors-forfait</th><th>Total HT</th></tr></thead>
+          <tbody id="tbody-conso">
+          <?php if(!$consoRows): ?><tr><td colspan="11" class="empty-cell">Aucune donnée pour ce mois</td></tr><?php endif; ?>
+          <?php foreach($consoRows as $c): $app = $appLines[$c['phone_number']] ?? null; ?>
+          <tr>
+            <td style="font-family:var(--font-mono);"><a href="?page=invoices&tab=conso&line=<?=h($c['phone_number'])?>" title="Historique de la ligne"><?=h(formatPhone($c['phone_number']))?></a></td>
+            <td><?=h($c['sfr_user'] ?: '—')?></td>
+            <td class="muted"><?=$app ? h($app['service_name'] ?: '—') : '<span class="badge badge-danger" style="font-size:.65rem;">hors SimCity</span>'?></td>
+            <td class="muted" style="font-size:.8rem;"><?=h($c['plan_name'] ?: '—')?></td>
+            <td><?=(int)$c['calls_count']?> <span class="muted">(<?=$fmtDur((int)$c['calls_seconds'])?>)</span></td>
+            <td><?=(int)$c['sms_count'] ?: '—'?></td>
+            <td><?=$fmtData((int)$c['data_ko'])?></td>
+            <td style="color:<?=(float)$c['surtaxe_ht']>0?'var(--danger)':'inherit'?>;"><?=(float)$c['surtaxe_ht']>0 ? $fmtEur($c['surtaxe_ht']) : '—'?></td>
+            <td style="color:<?=(float)$c['intl_ht']>0?'var(--danger)':'inherit'?>;"><?=(float)$c['intl_ht']>0 ? $fmtEur($c['intl_ht']) : ((int)$c['intl_count'] ? $c['intl_count'].' app.' : '—')?></td>
+            <td style="color:<?=(float)$c['hf_ht']>0?'var(--warning)':'inherit'?>;font-weight:600;"><?=(float)$c['hf_ht']>0 ? $fmtEur($c['hf_ht']) : '—'?></td>
+            <td style="font-weight:700;"><?=$fmtEur($c['total_ht'])?></td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    <?php endif; endif; ?>
+
+    <?php if($tab === 'alerts' && $months):
+        $groupMeta = [
+            'global'  => ['Montant global en forte hausse', 'bi-graph-up-arrow', 'var(--danger)'],
+            'remise'  => ['Remise marché possiblement absente', 'bi-percent', 'var(--danger)'],
+            'zero'    => ['Lignes sans consommation (économies possibles)', 'bi-moon-stars', 'var(--info)'],
+            'var'     => ['Grosses variations de consommation', 'bi-activity', 'var(--warning)'],
+            'hf'      => ['Hors-forfait au-dessus du seuil', 'bi-cash-coin', 'var(--warning)'],
+            'surtaxe' => ['Numéros surtaxés', 'bi-telephone-plus', 'var(--danger)'],
+            'intl'    => ['International', 'bi-globe-americas', 'var(--danger)'],
+        ];
+    ?>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+      <p class="muted" style="margin:0;">Alertes calculées sur <strong><?=h($fmtMois($latestMonth))?></strong> (dernier mois importé), comparé aux 3 mois précédents.</p>
+      <?php if(!empty($_SESSION['is_admin'])): ?>
+      <button class="btn-secondary" style="font-size:.82rem;" onclick="document.getElementById('inv-thresholds').style.display = document.getElementById('inv-thresholds').style.display==='none'?'block':'none'"><i class="bi bi-sliders"></i> Seuils d'alerte</button>
+      <?php endif; ?>
+    </div>
+
+    <?php if(!empty($_SESSION['is_admin'])): ?>
+    <div class="card" id="inv-thresholds" style="display:none;margin-bottom:1.5rem;">
+      <div class="card-header"><i class="bi bi-sliders"></i> Seuils d'alerte</div>
+      <form method="post" style="padding:1.25rem 1.5rem;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;align-items:end;">
+        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+        <input type="hidden" name="_entity" value="invoice"><input type="hidden" name="_action" value="thresholds">
+        <div class="form-group"><label>Variation (%) vs moyenne 3 mois</label><input type="number" step="1" min="0" name="inv_alert_var_pct" value="<?=h($thr['var_pct'])?>"></div>
+        <div class="form-group"><label>Impact minimal variation (€ HT)</label><input type="number" step="0.5" min="0" name="inv_alert_var_min_eur" value="<?=h($thr['var_min_eur'])?>"></div>
+        <div class="form-group"><label>Mois sans consommation</label><input type="number" step="1" min="1" name="inv_alert_zero_months" value="<?=h($thr['zero_months'])?>"></div>
+        <div class="form-group"><label>Hors-forfait (€ HT / mois)</label><input type="number" step="0.5" min="0" name="inv_alert_hf_eur" value="<?=h($thr['hf_eur'])?>"></div>
+        <div class="form-group"><label>International (€ HT / mois)</label><input type="number" step="0.5" min="0" name="inv_alert_intl_eur" value="<?=h($thr['intl_eur'])?>"></div>
+        <div class="form-group"><label>Surtaxés (€ HT / mois)</label><input type="number" step="0.5" min="0" name="inv_alert_surtaxe_eur" value="<?=h($thr['surtaxe_eur'])?>"></div>
+        <div><button type="submit" class="btn-primary"><i class="bi bi-check-lg"></i> Enregistrer</button></div>
+      </form>
+    </div>
+    <?php endif; ?>
+
+    <?php if(!$nbAlerts): ?>
+    <div class="card" style="padding:2.5rem;text-align:center;">
+      <div style="font-size:2.2rem;color:var(--success);margin-bottom:.5rem;"><i class="bi bi-check-circle"></i></div>
+      <p style="color:var(--text2);margin:0;">Aucune alerte sur <?=h($fmtMois($latestMonth))?> avec les seuils actuels. Tout est sous contrôle.</p>
+    </div>
+    <?php endif; ?>
+
+    <?php foreach($groupMeta as $gk => [$glbl, $gico, $gcol]): $ga = $alertGroups[$gk]; if(!$ga) continue;
+        if ($gk === 'zero') usort($ga, fn($x, $y) => ($y['months'] ?? 0) <=> ($x['months'] ?? 0));
+    ?>
+    <div class="card" style="margin-bottom:1.25rem;">
+      <div class="card-header" style="color:<?=$gcol?>;"><i class="bi <?=$gico?>"></i> <?=$glbl?> <span class="badge badge-muted" style="font-size:.7rem;"><?=count($ga)?></span></div>
+      <table class="data-table" style="font-size:.86rem;">
+        <tbody>
+        <?php foreach($ga as $a): ?>
+          <tr>
+            <td style="width:140px;font-family:var(--font-mono);"><?php if($a['phone']): ?><a href="?page=invoices&tab=conso&line=<?=h($a['phone'])?>"><?=h(formatPhone($a['phone']))?></a><?php endif; ?></td>
+            <td style="width:230px;"><?=h($a['who'] ?: '')?><?php if($a['plan']): ?><br><span class="muted" style="font-size:.75rem;"><?=h($a['plan'])?></span><?php endif; ?></td>
+            <td><?=h($a['detail'])?></td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+    <?php endforeach; ?>
+    <?php endif; ?>
+    <?php
 }
 
 // ==================================================================
@@ -7455,6 +8041,7 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
     <div class="sidebar-section">Outils</div>
     <?php $navReqPending = (int)$pdo->query("SELECT COUNT(*) FROM requests WHERE status IN ('a_qualifier','en_validation')")->fetchColumn(); ?>
     <a href="?page=requests" class="nav-item <?=$page==='requests'?'active':''?>"><i class="bi bi-inbox nav-icon"></i><span class="nav-label">Demandes de téléphone</span><?php if($navReqPending): ?><span style="margin-left:auto;background:var(--primary);color:#fff;font-size:.68rem;font-weight:700;border-radius:999px;padding:.1rem .5rem;"><?=$navReqPending?></span><?php endif; ?></a>
+    <a href="?page=invoices" class="nav-item <?=$page==='invoices'?'active':''?>"><i class="bi bi-receipt nav-icon"></i><span class="nav-label">Facturation / Contrôle</span></a>
     <a href="?page=history" class="nav-item <?=$page==='history'?'active':''?>"><i class="bi bi-file-earmark-text nav-icon"></i><span class="nav-label">Historique des bons</span></a>
     <a href="?page=stats" class="nav-item <?=$page==='stats'?'active':''?>"><i class="bi bi-bar-chart-line nav-icon"></i><span class="nav-label">Statistiques</span></a>
     <a href="?page=refs&tab=services" class="nav-item <?=($navRefsTab!=='' && $navRefsTab!=='agents')?'active':''?>"><i class="bi bi-gear nav-icon"></i><span class="nav-label">Référentiels & Comptes</span></a>

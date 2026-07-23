@@ -80,6 +80,16 @@ echo "$FICHE2" | grep -q "Aucune ligne active" && ok "ligne retournée en stock"
 step "6. Historique"
 curl -s -b "$CJ" "$BASE_URL?page=history" | grep -qi "Smoke$STAMP" && ok "cycle visible dans l'historique" || ko "cycle absent de l'historique"
 
+step "7. Facturation / Contrôle"
+for T in dash import reconcile conso alerts; do
+  OUT=$(curl -s -b "$CJ" "$BASE_URL?page=invoices&tab=$T")
+  if echo "$OUT" | grep -q "Facturation / Contrôle" && ! echo "$OUT" | grep -qi "Fatal error"; then
+    ok "onglet $T répond"
+  else
+    ko "onglet $T en erreur"
+  fi
+done
+
 echo
 echo "════════════════════════════════════"
 echo " Résultat : $PASS réussi(s), $FAIL échec(s)"
