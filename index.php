@@ -7183,7 +7183,7 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 /* Bascule de thème : icône Bootstrap Icons (bi-sun / bi-moon), comme Sentinelle */
 .theme-toggle{cursor:pointer;color:var(--text2);font-size:1rem;padding:6px 8px;border-radius:var(--radius-sm);line-height:1;transition:background-color .18s ease,color .18s ease}
 .theme-toggle:hover{color:var(--text-strong);background:var(--bg3)}
-.content{padding:2rem;flex:1;max-width:1400px;margin:0 auto;width:100%;}
+.content{padding:2rem;flex:1;max-width:1720px;margin:0 auto;width:100%;}
 .page-header{display:flex;align-items:center;justify-content:flex-end;margin-bottom:1.5rem;}
 .page-title-txt{font-family:var(--font-display);font-weight:700;font-size:1.4rem;color:var(--text-strong);}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:1.5rem;break-inside:avoid;box-shadow:var(--shadow);}
@@ -7207,7 +7207,10 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .btn-primary{background:var(--primary);border:1px solid var(--primary);border-radius:var(--radius-sm);padding:.6rem 1.4rem;color:#fff;font-weight:500;font-size:.85rem;cursor:pointer;transition:all .18s ease;} .btn-primary:hover{background:var(--primary-dark);border-color:var(--primary-dark);box-shadow:var(--shadow);} .btn-primary:active{transform:translateY(1px);}
 .btn-secondary{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.6rem 1.25rem;color:var(--text2);font-size:.85rem;cursor:pointer;transition:all .18s ease;} .btn-secondary:hover{border-color:var(--primary);color:var(--text-strong)}
 .btn-icon{background:none;border:none;cursor:pointer;font-size:1rem;padding:.3rem .5rem;border-radius:var(--radius-sm);color:var(--text2);transition:all .15s;}
-td.actions{white-space:nowrap;} /* Les icônes d'actions restent sur une seule ligne, même quand le tableau est chargé (après un import). */ .btn-edit:hover{background:var(--primary-dim);color:var(--primary)} .btn-del:hover{background:var(--danger-dim);color:var(--danger)}
+/* Colonne Actions : réduite à la largeur de son contenu (width:1% + nowrap),
+   les icônes restent toujours sur une seule ligne ; les formulaires inline
+   (archiver/restaurer) ne provoquent plus de retour à la ligne. */
+td.actions{white-space:nowrap;width:1%;} td.actions form{display:inline;white-space:nowrap;} .btn-edit:hover{background:var(--primary-dim);color:var(--primary)} .btn-del:hover{background:var(--danger-dim);color:var(--danger)}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;} .form-group{display:flex;flex-direction:column;gap:.4rem;} .form-full{grid-column:1/-1;}
 label{font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;} input,select,textarea{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.6rem .9rem;color:var(--text);width:100%;font-family:inherit;font-size:.85rem;transition:border-color .18s ease,box-shadow .18s ease;}
 [data-theme="dark"] input,[data-theme="dark"] select,[data-theme="dark"] textarea{background:var(--bg3)}
