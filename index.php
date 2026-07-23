@@ -3703,6 +3703,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
+        } elseif ($ent === 'wipe_data') {
+            // Vider les données (tests) — super-admin uniquement. Conserve TOUJOURS
+            // les paramètres (settings), les circuits de validation et les comptes
+            // admin ; les référentiels (services, modèles…) sont conservés en option.
+            if (empty($_SESSION['is_admin'])) {
+                flash('error', 'Accès refusé — réservé aux super-administrateurs.');
+            } elseif ($act !== 'run') {
+                flash('error', 'Action inconnue.');
+            } elseif (($d['confirm_wipe'] ?? '') !== 'VIDER') {
+                flash('error', 'Tapez VIDER dans le champ de confirmation pour lancer l\'opération.');
+            } else {
+                // TRUNCATE = DDL auto-commit MySQL : on sort de la transaction globale
+                if ($pdo->inTransaction()) $pdo->commit();
+                try {
+                    // Filet de sécurité : l'opération est irréversible
+                    $safety = '';
+                    try { $safety = simcity_backup_to_disk($pdo); } catch (Throwable $e) { $safety = ''; }
+                    // Pièces jointes : supprimer aussi les fichiers du disque
+                    foreach ($pdo->query("SELECT file_path FROM attachments")->fetchAll() as $af) {
+                        if (!empty($af['file_path']) && is_file($af['file_path'])) @unlink($af['file_path']);
+                    }
+                    $tables = ['request_steps', 'requests', 'bons', 'signatures', 'sign_tokens', 'sim_history',
+                               'attachments', 'history_logs', 'login_attempts', 'mobile_lines', 'devices', 'agents'];
+                    $keepRefs = !empty($d['keep_refs']);
+                    if (!$keepRefs) {
+                        $tables = array_merge($tables, ['billing_accounts', 'plan_types', 'operators', 'models', 'services']);
+                    }
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+                    foreach ($tables as $t) $pdo->exec("TRUNCATE TABLE `$t`");
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                    // Journalisé APRÈS la purge : la trace de l'opération survit
+                    logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "🧹 Données vidées (tests) — référentiels " . ($keepRefs ? 'conservés' : 'compris'));
+                    flash('success', 'Données vidées' . ($keepRefs ? ' — référentiels conservés' : ' (référentiels compris)')
+                        . '. Paramètres, circuits de validation et comptes admin intacts.'
+                        . ($safety !== '' ? " Sauvegarde de sécurité : $safety." : ''));
+                } catch (Throwable $e) {
+                    flash('error', 'Échec du vidage : ' . $e->getMessage());
+                }
+                header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
+            }
         } elseif ($ent === 'import') {
             // Importation CSV — super-admin uniquement (l'outil peut purger la base)
             if (empty($_SESSION['is_admin'])) {
@@ -5887,6 +5927,34 @@ elseif ($page === 'refs') {
 
         <div style="padding-top:1rem;border-top:1px solid var(--border);">
           <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Lancer l'importation</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Bloc vidage des données de test — conserve paramètres, circuits et comptes -->
+    <div class="card" style="margin-top:1.5rem;">
+      <div class="card-header"><i class="bi bi-trash3"></i> Vider les données (tests)</div>
+      <form method="post" style="padding:1.5rem;"
+            onsubmit="return confirm('Vider toutes les données (utilisateurs, lignes, matériels, bons, demandes, historiques) ? Une sauvegarde de sécurité sera créée avant. Les paramètres, circuits de validation et comptes admin sont conservés.')">
+        <?=csrf_field()?>
+        <input type="hidden" name="_entity" value="wipe_data">
+        <input type="hidden" name="_action" value="run">
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
+          Repartez d'une base propre après une phase de tests : supprime les <strong>utilisateurs (agents), lignes & SIM,
+          matériels, bons et signatures, demandes de téléphone, pièces jointes et historiques</strong> — les numéros
+          (bons, demandes) repartent de zéro.<br>
+          <strong>Sont toujours conservés :</strong> les paramètres (SMTP, LDAP, textes du formulaire, valideurs par
+          défaut…), les circuits de validation et les comptes admin. Une <strong>sauvegarde de sécurité</strong> est
+          créée automatiquement avant l'opération.
+        </p>
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.88rem;margin-bottom:1rem;">
+          <input type="checkbox" name="keep_refs" value="1" checked style="width:15px;height:15px;accent-color:var(--primary);flex-shrink:0;">
+          Conserver aussi les référentiels (services, modèles, forfaits, opérateurs, comptes de facturation)
+        </label>
+        <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;padding-top:1rem;border-top:1px solid var(--border);">
+          <input type="text" name="confirm_wipe" placeholder="Tapez VIDER pour confirmer" autocomplete="off" required
+            style="max-width:240px;font-family:var(--font-mono);">
+          <button type="submit" class="btn-secondary" style="color:var(--danger);border-color:rgba(220,38,38,.35);display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-trash3"></i> Vider les données</button>
         </div>
       </form>
     </div>
