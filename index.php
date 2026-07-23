@@ -6137,6 +6137,9 @@ elseif ($page === 'refs') {
                 <?php elseif($row['id'] === (int)$_SESSION['user_id']): ?>
                   <span class="badge badge-info" style="font-size:.65rem;margin-left:4px;"><i class="bi bi-person"></i> Vous</span>
                 <?php endif; ?>
+              <?php elseif($tab==='services' && ($k==='nb_lines' || $k==='nb_devices') && (int)$row[$k] > 0): ?>
+                <?php // Compteur cliquable : ouvre la liste pré-filtrée sur le nom du service (via le paramètre q). ?>
+                <a href="?page=<?=$k==='nb_lines'?'lines':'devices'?>&tab=active&q=<?=urlencode($row['name'])?>" title="Voir les <?=$k==='nb_lines'?'lignes':'matériels'?> de ce service" style="font-weight:600;"><?=h($row[$k])?></a>
               <?php else: ?>
                 <?=h($row[$k])?>
               <?php endif; ?>
@@ -7203,7 +7206,8 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 [data-theme="dark"] .badge-success{color:#6ee7b7} [data-theme="dark"] .badge-danger{color:#fca5a5} [data-theme="dark"] .badge-warning{color:#fcd34d} [data-theme="dark"] .badge-info{color:#93c5fd}
 .btn-primary{background:var(--primary);border:1px solid var(--primary);border-radius:var(--radius-sm);padding:.6rem 1.4rem;color:#fff;font-weight:500;font-size:.85rem;cursor:pointer;transition:all .18s ease;} .btn-primary:hover{background:var(--primary-dark);border-color:var(--primary-dark);box-shadow:var(--shadow);} .btn-primary:active{transform:translateY(1px);}
 .btn-secondary{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.6rem 1.25rem;color:var(--text2);font-size:.85rem;cursor:pointer;transition:all .18s ease;} .btn-secondary:hover{border-color:var(--primary);color:var(--text-strong)}
-.btn-icon{background:none;border:none;cursor:pointer;font-size:1rem;padding:.3rem .5rem;border-radius:var(--radius-sm);color:var(--text2);transition:all .15s;} .btn-edit:hover{background:var(--primary-dim);color:var(--primary)} .btn-del:hover{background:var(--danger-dim);color:var(--danger)}
+.btn-icon{background:none;border:none;cursor:pointer;font-size:1rem;padding:.3rem .5rem;border-radius:var(--radius-sm);color:var(--text2);transition:all .15s;}
+td.actions{white-space:nowrap;} /* Les icônes d'actions restent sur une seule ligne, même quand le tableau est chargé (après un import). */ .btn-edit:hover{background:var(--primary-dim);color:var(--primary)} .btn-del:hover{background:var(--danger-dim);color:var(--danger)}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;} .form-group{display:flex;flex-direction:column;gap:.4rem;} .form-full{grid-column:1/-1;}
 label{font-size:.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.03em;} input,select,textarea{background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.6rem .9rem;color:var(--text);width:100%;font-family:inherit;font-size:.85rem;transition:border-color .18s ease,box-shadow .18s ease;}
 [data-theme="dark"] input,[data-theme="dark"] select,[data-theme="dark"] textarea{background:var(--bg3)}
