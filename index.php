@@ -5649,7 +5649,7 @@ elseif ($page === 'refs') {
           function presetAddRow(step) {
             const tb = document.querySelector('#preset-table tbody');
             const tr = document.createElement('tr');
-            tr.innerHTML = '<td style="color:var(--text3);">＋</td>'
+            tr.innerHTML = '<td class="drag-cell" title="Glisser pour réordonner"><i class="bi bi-grip-vertical"></i></td>'
               + '<td><input type="text" name="step_label[]" placeholder="ex : Direction du service"></td>'
               + '<td style="position:relative;"><input type="text" class="circuit-name" name="step_name[]" placeholder="Prénom Nom" autocomplete="off"><div class="adp-box circuit-suggest"></div></td>'
               + '<td><input type="email" class="circuit-email" name="step_email[]" placeholder="valideur@collectivite.fr"></td>'
@@ -6622,7 +6622,7 @@ elseif ($page === 'requests') {
             <tbody>
             <?php foreach ($draftSteps as $i => $ds): ?>
             <tr>
-              <td style="color:var(--text3);"><?=$i + 1?></td>
+              <td class="drag-cell" title="Glisser pour réordonner"><i class="bi bi-grip-vertical"></i></td>
               <td><input type="text" name="step_label[]" value="<?=h($ds['label'])?>" placeholder="ex : Direction du service"></td>
               <td style="position:relative;"><input type="text" class="circuit-name" name="step_name[]" value="<?=h($ds['name'])?>" placeholder="Prénom Nom" autocomplete="off"><div class="adp-box circuit-suggest"></div></td>
               <td><input type="email" class="circuit-email" name="step_email[]" value="<?=h($ds['email'])?>" placeholder="valideur@collectivite.fr" <?=$ds['email'] === '' ? 'style="border-color:rgba(245,158,11,.6);"' : ''?>></td>
@@ -6642,7 +6642,7 @@ elseif ($page === 'requests') {
         function circuitAddRow(step) {
           const tb = document.querySelector('#circuit-table tbody');
           const tr = document.createElement('tr');
-          tr.innerHTML = '<td style="color:var(--text3);">＋</td>'
+          tr.innerHTML = '<td class="drag-cell" title="Glisser pour réordonner"><i class="bi bi-grip-vertical"></i></td>'
             + '<td><input type="text" name="step_label[]" placeholder="Libellé du visa"></td>'
             + '<td style="position:relative;"><input type="text" class="circuit-name" name="step_name[]" placeholder="Prénom Nom" autocomplete="off"><div class="adp-box circuit-suggest"></div></td>'
             + '<td><input type="email" class="circuit-email" name="step_email[]" placeholder="valideur@collectivite.fr"></td>'
@@ -7156,6 +7156,7 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
 .qa-row select{flex:1;min-width:0}
 .btn-quickadd{flex-shrink:0;width:42px;display:inline-flex;align-items:center;justify-content:center;background:var(--primary-dim);color:var(--primary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;font-size:1rem;transition:background-color .15s,color .15s}
 .btn-quickadd:hover{background:var(--primary);color:#fff}
+.drag-cell{cursor:grab;color:var(--text3);text-align:center;user-select:none;} .drag-cell:active{cursor:grabbing;} .drag-cell:hover{color:var(--primary);}
 /* Autocomplétion annuaire (AD) — recherche de personne dans la fiche utilisateur */
 .adp-box{position:absolute;left:0;right:0;top:100%;z-index:40;background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);box-shadow:var(--shadow-lg);margin-top:.25rem;max-height:240px;overflow-y:auto;display:none;}
 .adp-item{padding:.5rem .75rem;cursor:pointer;border-bottom:1px solid var(--border);font-size:.85rem;}
@@ -7733,7 +7734,39 @@ function bindAgentAd(prefix){
   });
   search.addEventListener('blur', ()=>setTimeout(hide,150));
 }
+// ── Réordonnancement des étapes de circuit par glisser-déposer ──
+// L'ordre des <tr> fait foi à la soumission (champs step_*[]) : déplacer
+// une ligne suffit. La poignée seule est saisissable, pour ne pas gêner
+// la sélection de texte dans les champs.
+function circuitSortable(table){
+  const tb = table.tBodies[0];
+  let dragging = null;
+  tb.addEventListener('mousedown', e => {
+    const h = e.target.closest('.drag-cell');
+    if(h) h.closest('tr').draggable = true;
+  });
+  tb.addEventListener('dragstart', e => {
+    const tr = e.target.closest('tr');
+    if(!tr || !tr.draggable) return;
+    dragging = tr; tr.style.opacity = '.45';
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', ''); } catch(_){}
+  });
+  tb.addEventListener('dragover', e => {
+    if(!dragging) return;
+    e.preventDefault();
+    const tr = e.target.closest('tr');
+    if(!tr || tr === dragging || tr.parentNode !== tb) return;
+    const r = tr.getBoundingClientRect();
+    tb.insertBefore(dragging, (e.clientY - r.top) > r.height / 2 ? tr.nextSibling : tr);
+  });
+  tb.addEventListener('dragend', () => {
+    if(dragging){ dragging.style.opacity = ''; dragging.draggable = false; dragging = null; }
+  });
+}
+
 document.addEventListener('DOMContentLoaded', ()=>{
+  ['circuit-table','preset-table'].forEach(id => { const t = document.getElementById(id); if(t) circuitSortable(t); });
   bindAgentAd('add'); bindAgentAd('edit');
   // Recherche annuaire sur les valideurs (chef / DGA) des fiches service :
   // la sélection remplit le nom et l'e-mail associé.
