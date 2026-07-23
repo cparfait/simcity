@@ -5869,98 +5869,8 @@ elseif ($page === 'refs') {
         $autoLast  = getSetting($pdo, 'last_auto_backup', '');
         $autoHours = defined('BACKUP_AUTO_INTERVAL') ? round(((int)BACKUP_AUTO_INTERVAL)/3600) : 24;
     ?>
-    <!-- Bloc import CSV — reprise d'inventaire depuis un export -->
-    <div class="card">
-      <div class="card-header"><i class="bi bi-filetype-csv"></i> Importation CSV</div>
-      <form method="post" enctype="multipart/form-data" style="padding:1.5rem;"
-            onsubmit="return !document.getElementById('imp-trunc').checked || confirm('Vider TOUTE la base avant l\'import ? Cette opération est irréversible.')">
-        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
-        <input type="hidden" name="_entity" value="import">
-        <input type="hidden" name="_action" value="run">
-
-        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
-          Reprise d'inventaire depuis un export CSV : lignes, cartes SIM, matériels, utilisateurs,
-          services, modèles, forfaits et opérateurs sont créés en une passe.
-          Les doublons (numéro de ligne, IMEI) sont ignorés, l'import est donc rejouable sans risque de duplicatas.
-        </p>
-
-        <div class="form-group form-full">
-          <label>Fichier d'inventaire (.csv)</label>
-          <input type="file" name="file_data" accept=".csv,text/csv" required
-            style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;color:var(--text);width:100%;">
-        </div>
-        <p style="color:var(--text3);font-size:.82rem;line-height:1.6;margin:.5rem 0 1.25rem;">
-          Séparateur <code style="font-family:var(--font-mono);">;</code>, encodage Windows-1252, 10 Mo maximum.
-          Les lignes situées avant l'en-tête <code style="font-family:var(--font-mono);">LIGNE</code> sont ignorées.<br>
-          <strong>Colonnes attendues :</strong> [0] Ligne, [2] Nom, [3] Prénom, [4] Notes, [5] CF Facturation,
-          [6] Service, [7] Options, [9] Date activation, [10] IMEI, [11] Modèle, [12] Forfait, [13] ICCID,
-          [14] PIN, [15] PUK, [16] Opérateur (optionnel).
-        </p>
-        <p style="margin:0 0 1.25rem;">
-          <a href="?page=import_template" class="btn btn-secondary btn-sm">
-            <i class="bi bi-download"></i> Télécharger le modèle CSV
-          </a>
-          <span style="color:var(--text3);font-size:.82rem;margin-left:.5rem;">En-tête au bon format + deux lignes d'exemple (à remplacer par vos données).</span>
-        </p>
-
-        <!-- Purge préalable : destructif, double confirmation exigée -->
-        <div style="background:var(--danger-dim);border:1px solid var(--danger);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;font-size:.85rem;">
-          <label style="display:flex;align-items:flex-start;gap:.6rem;cursor:pointer;">
-            <input type="checkbox" name="truncate" value="1" id="imp-trunc"
-              style="width:15px;height:15px;accent-color:var(--danger);flex-shrink:0;margin-top:3px;"
-              onchange="document.getElementById('imp-purge-confirm').style.display=this.checked?'block':'none'">
-            <span>
-              <strong style="color:var(--danger);"><i class="bi bi-exclamation-triangle-fill"></i> Vider toute la base avant l'import</strong>
-              <span style="color:var(--text2);display:block;margin-top:.3rem;">
-                Lignes, matériels, utilisateurs, bons signés, historique, demandes de téléphone et paramètres
-                (SMTP, logo, URL) sont supprimés définitivement. Les comptes d'administration sont conservés.
-                Une sauvegarde de sécurité est créée automatiquement avant la purge.
-              </span>
-            </span>
-          </label>
-          <div id="imp-purge-confirm" style="display:none;margin-top:.75rem;">
-            <label style="font-size:.82rem;font-weight:600;color:var(--danger);">Tapez <strong>PURGER</strong> pour confirmer :</label>
-            <input type="text" name="confirm_purge" placeholder="PURGER" autocomplete="off"
-              style="margin-top:.35rem;font-family:var(--font-mono);">
-          </div>
-        </div>
-
-        <div style="padding-top:1rem;border-top:1px solid var(--border);">
-          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Lancer l'importation</button>
-        </div>
-      </form>
-    </div>
-
-    <!-- Bloc vidage des données de test — conserve paramètres, circuits et comptes -->
-    <div class="card" style="margin-top:1.5rem;">
-      <div class="card-header"><i class="bi bi-trash3"></i> Vider les données (tests)</div>
-      <form method="post" style="padding:1.5rem;"
-            onsubmit="return confirm('Vider toutes les données (utilisateurs, lignes, matériels, bons, demandes, historiques) ? Une sauvegarde de sécurité sera créée avant. Les paramètres, circuits de validation et comptes admin sont conservés.')">
-        <?=csrf_field()?>
-        <input type="hidden" name="_entity" value="wipe_data">
-        <input type="hidden" name="_action" value="run">
-        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
-          Repartez d'une base propre après une phase de tests : supprime les <strong>utilisateurs (agents), lignes & SIM,
-          matériels, bons et signatures, demandes de téléphone, pièces jointes et historiques</strong> — les numéros
-          (bons, demandes) repartent de zéro.<br>
-          <strong>Sont toujours conservés :</strong> les paramètres (SMTP, LDAP, textes du formulaire, valideurs par
-          défaut…), les circuits de validation et les comptes admin. Une <strong>sauvegarde de sécurité</strong> est
-          créée automatiquement avant l'opération.
-        </p>
-        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.88rem;margin-bottom:1rem;">
-          <input type="checkbox" name="keep_refs" value="1" checked style="width:15px;height:15px;accent-color:var(--primary);flex-shrink:0;">
-          Conserver aussi les référentiels (services, modèles, forfaits, opérateurs, comptes de facturation)
-        </label>
-        <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;padding-top:1rem;border-top:1px solid var(--border);">
-          <input type="text" name="confirm_wipe" placeholder="Tapez VIDER pour confirmer" autocomplete="off" required
-            style="max-width:240px;font-family:var(--font-mono);">
-          <button type="submit" class="btn-secondary" style="color:var(--danger);border-color:rgba(220,38,38,.35);display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-trash3"></i> Vider les données</button>
-        </div>
-      </form>
-    </div>
-
     <!-- Bloc sauvegarde / restauration — super-admin uniquement -->
-    <div class="card" style="margin-top:1.5rem;">
+    <div class="card">
       <div class="card-header"><i class="bi bi-hdd"></i> Sauvegardes de la base de données</div>
       <div style="padding:1.5rem;">
         <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
@@ -6061,6 +5971,96 @@ elseif ($page === 'refs') {
           </div>
         </details>
       </div>
+    </div>
+
+    <!-- Bloc import CSV — reprise d'inventaire depuis un export -->
+    <div class="card" style="margin-top:1.5rem;">
+      <div class="card-header"><i class="bi bi-filetype-csv"></i> Importation CSV</div>
+      <form method="post" enctype="multipart/form-data" style="padding:1.5rem;"
+            onsubmit="return !document.getElementById('imp-trunc').checked || confirm('Vider TOUTE la base avant l\'import ? Cette opération est irréversible.')">
+        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+        <input type="hidden" name="_entity" value="import">
+        <input type="hidden" name="_action" value="run">
+
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+          Reprise d'inventaire depuis un export CSV : lignes, cartes SIM, matériels, utilisateurs,
+          services, modèles, forfaits et opérateurs sont créés en une passe.
+          Les doublons (numéro de ligne, IMEI) sont ignorés, l'import est donc rejouable sans risque de duplicatas.
+        </p>
+
+        <div class="form-group form-full">
+          <label>Fichier d'inventaire (.csv)</label>
+          <input type="file" name="file_data" accept=".csv,text/csv" required
+            style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;color:var(--text);width:100%;">
+        </div>
+        <p style="color:var(--text3);font-size:.82rem;line-height:1.6;margin:.5rem 0 1.25rem;">
+          Séparateur <code style="font-family:var(--font-mono);">;</code>, encodage Windows-1252, 10 Mo maximum.
+          Les lignes situées avant l'en-tête <code style="font-family:var(--font-mono);">LIGNE</code> sont ignorées.<br>
+          <strong>Colonnes attendues :</strong> [0] Ligne, [2] Nom, [3] Prénom, [4] Notes, [5] CF Facturation,
+          [6] Service, [7] Options, [9] Date activation, [10] IMEI, [11] Modèle, [12] Forfait, [13] ICCID,
+          [14] PIN, [15] PUK, [16] Opérateur (optionnel).
+        </p>
+        <p style="margin:0 0 1.25rem;">
+          <a href="?page=import_template" class="btn btn-secondary btn-sm">
+            <i class="bi bi-download"></i> Télécharger le modèle CSV
+          </a>
+          <span style="color:var(--text3);font-size:.82rem;margin-left:.5rem;">En-tête au bon format + deux lignes d'exemple (à remplacer par vos données).</span>
+        </p>
+
+        <!-- Purge préalable : destructif, double confirmation exigée -->
+        <div style="background:var(--danger-dim);border:1px solid var(--danger);border-radius:var(--radius-sm);padding:1rem;margin-bottom:1.25rem;font-size:.85rem;">
+          <label style="display:flex;align-items:flex-start;gap:.6rem;cursor:pointer;">
+            <input type="checkbox" name="truncate" value="1" id="imp-trunc"
+              style="width:15px;height:15px;accent-color:var(--danger);flex-shrink:0;margin-top:3px;"
+              onchange="document.getElementById('imp-purge-confirm').style.display=this.checked?'block':'none'">
+            <span>
+              <strong style="color:var(--danger);"><i class="bi bi-exclamation-triangle-fill"></i> Vider toute la base avant l'import</strong>
+              <span style="color:var(--text2);display:block;margin-top:.3rem;">
+                Lignes, matériels, utilisateurs, bons signés, historique, demandes de téléphone et paramètres
+                (SMTP, logo, URL) sont supprimés définitivement. Les comptes d'administration sont conservés.
+                Une sauvegarde de sécurité est créée automatiquement avant la purge.
+              </span>
+            </span>
+          </label>
+          <div id="imp-purge-confirm" style="display:none;margin-top:.75rem;">
+            <label style="font-size:.82rem;font-weight:600;color:var(--danger);">Tapez <strong>PURGER</strong> pour confirmer :</label>
+            <input type="text" name="confirm_purge" placeholder="PURGER" autocomplete="off"
+              style="margin-top:.35rem;font-family:var(--font-mono);">
+          </div>
+        </div>
+
+        <div style="padding-top:1rem;border-top:1px solid var(--border);">
+          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Lancer l'importation</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Bloc vidage des données de test — conserve paramètres, circuits et comptes -->
+    <div class="card" style="margin-top:1.5rem;">
+      <div class="card-header"><i class="bi bi-trash3"></i> Vider les données (tests)</div>
+      <form method="post" style="padding:1.5rem;"
+            onsubmit="return confirm('Vider toutes les données (utilisateurs, lignes, matériels, bons, demandes, historiques) ? Une sauvegarde de sécurité sera créée avant. Les paramètres, circuits de validation et comptes admin sont conservés.')">
+        <?=csrf_field()?>
+        <input type="hidden" name="_entity" value="wipe_data">
+        <input type="hidden" name="_action" value="run">
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
+          Repartez d'une base propre après une phase de tests : supprime les <strong>utilisateurs (agents), lignes & SIM,
+          matériels, bons et signatures, demandes de téléphone, pièces jointes et historiques</strong> — les numéros
+          (bons, demandes) repartent de zéro.<br>
+          <strong>Sont toujours conservés :</strong> les paramètres (SMTP, LDAP, textes du formulaire, valideurs par
+          défaut…), les circuits de validation et les comptes admin. Une <strong>sauvegarde de sécurité</strong> est
+          créée automatiquement avant l'opération.
+        </p>
+        <label style="display:flex;align-items:center;gap:.5rem;cursor:pointer;font-size:.88rem;margin-bottom:1rem;">
+          <input type="checkbox" name="keep_refs" value="1" checked style="width:15px;height:15px;accent-color:var(--primary);flex-shrink:0;">
+          Conserver aussi les référentiels (services, modèles, forfaits, opérateurs, comptes de facturation)
+        </label>
+        <div style="display:flex;gap:.75rem;flex-wrap:wrap;align-items:center;padding-top:1rem;border-top:1px solid var(--border);">
+          <input type="text" name="confirm_wipe" placeholder="Tapez VIDER pour confirmer" autocomplete="off" required
+            style="max-width:240px;font-family:var(--font-mono);">
+          <button type="submit" class="btn-secondary" style="color:var(--danger);border-color:rgba(220,38,38,.35);display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-trash3"></i> Vider les données</button>
+        </div>
+      </form>
     </div>
 
     <!-- Bloc reset — super-admin uniquement -->
