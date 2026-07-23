@@ -2649,7 +2649,11 @@ if (isset($_GET['ajax_global_search'])) {
     $results = []; $seenLines = []; $seenDevices = [];
 
     // ── 1. LIGNES actives — par numéro, ICCID, agent courant ────
-    $stL = $pdo->prepare("SELECT l.id, l.phone_number, l.iccid, l.archived,
+    // Onglet cible d'une ligne dans la vue Lignes (le découpage par statut
+    // doit suivre les onglets : Actives / Stock / Suspendues / Archives).
+    $lineTab = fn($r) => $r['archived'] ? 'archive' : ($r['status'] === 'Stock' ? 'stock' : ($r['status'] === 'Suspended' ? 'suspended' : 'active'));
+
+    $stL = $pdo->prepare("SELECT l.id, l.phone_number, l.iccid, l.archived, l.status,
         CONCAT(IFNULL(a.first_name,''), ' ', IFNULL(a.last_name,'')) as agent_name,
         IFNULL(a.first_name,'') as fn, IFNULL(a.last_name,'') as ln
         FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id
@@ -2664,7 +2668,7 @@ if (isset($_GET['ajax_global_search'])) {
         $num = $r['phone_number'] ? formatPhone($r['phone_number']) : 'SIM Vierge';
         $results[] = ['type'=>'Ligne','title'=>$num.($r['archived']?' 🗄️':''),
             'subtitle'=>'Agent : '.trim($r['agent_name']).' | ICCID : '.($r['iccid']?:'-'),
-            'link'=>'?page=lines&tab='.($r['archived']?'archive':'active').'&q='.urlencode($r['phone_number']?:$r['iccid'])];
+            'link'=>'?page=lines&tab='.$lineTab($r).'&q='.urlencode($r['phone_number']?:$r['iccid'])];
     }
 
     // ── 2. LIGNES — via historique (ex-agent, ligne archivée) ─────
@@ -2689,14 +2693,14 @@ if (isset($_GET['ajax_global_search'])) {
     foreach ($histLineQ->fetchAll(PDO::FETCH_COLUMN) as $lineId) {
         if (isset($seenLines[$lineId])) continue;
         $seenLines[$lineId] = true;
-        $lr = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.archived,
+        $lr = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.archived, l.status,
             IFNULL(a.first_name,'') as fn, IFNULL(a.last_name,'') as ln
             FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id WHERE l.id=$lineId")->fetch();
         if (!$lr) continue;
         $num = $lr['phone_number'] ? formatPhone($lr['phone_number']) : 'SIM Vierge';
         $results[] = ['type'=>'Ligne','title'=>$num.($lr['archived']?' 🗄️':''),
             'subtitle'=>'📋 Trouvé via historique — Agent actuel : '.trim($lr['fn'].' '.$lr['ln']?:'Aucun'),
-            'link'=>'?page=lines&tab='.($lr['archived']?'archive':'active').'&q='.urlencode($lr['phone_number']?:$lr['iccid'])];
+            'link'=>'?page=lines&tab='.$lineTab($lr).'&q='.urlencode($lr['phone_number']?:$lr['iccid'])];
     }
 
     // ── 3. MATÉRIELS — par IMEI, S/N, modèle, agent courant ────
@@ -4371,7 +4375,7 @@ if ($page === 'dashboard') {
               <li><strong>Stock Smartphones bas :</strong> Il ne reste que <strong style="color:var(--danger)"><?=$cDevStk?></strong> terminal(aux) disponible(s) (seuil : <?=$threshDevice?>). <a href="?page=refs&tab=settings" style="color:var(--primary);font-size:.82rem;">Modifier le seuil →</a></li>
               <?php endif; ?>
               <?php if($alertSuspended > 0): ?>
-              <li><strong>Lignes Suspendues :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$alertSuspended?></span> ligne(s) hors service (pensez à les résilier si inactives).</li>
+              <li><strong><a href="?page=lines&tab=suspended" style="color:inherit;">Lignes Suspendues</a> :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$alertSuspended?></span> ligne(s) hors service (pensez à les résilier si inactives).</li>
               <?php endif; ?>
               <?php if($bonsExpired > 0): ?>
               <li><strong>Bons expirés :</strong> <span style="color:var(--danger);font-weight:bold;"><?=$bonsExpired?></span> bon(s) en attente dont le lien de signature a expiré — regénérez-les depuis la fiche agent.</li>
@@ -4572,9 +4576,11 @@ if ($page === 'dashboard') {
 // VUE : LIGNES (Actives / Stock / Archives)
 // ==================================================================
 elseif ($page === 'lines') {
-    $isArchive = ($tab === 'archive'); $isStock = ($tab === 'stock');
+    $isArchive = ($tab === 'archive'); $isStock = ($tab === 'stock'); $isSuspended = ($tab === 'suspended');
     $where = "l.archived=" . ($isArchive ? "1" : "0");
-    if ($isStock) $where .= " AND l.status='Stock'"; elseif (!$isArchive) $where .= " AND l.status!='Stock'";
+    if ($isStock) $where .= " AND l.status='Stock'";
+    elseif ($isSuspended) $where .= " AND l.status='Suspended'";
+    elseif (!$isArchive) $where .= " AND l.status NOT IN ('Stock','Suspended')";
 
     $lines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.pin, l.puk, l.agent_id, l.billing_id, l.plan_id, l.service_id, l.device_id, l.activation_date, l.options_details, l.status, l.notes, l.archived, l.created_at, IFNULL(l.personal_device,0) as personal_device, IFNULL(l.sim_vierge,0) as sim_vierge, IFNULL(l.esim,0) as esim, l.eid, l.activation_code, a.first_name, a.last_name, s.name as service_name, b.account_number, p.name as plan_name, IFNULL(o.name,'') as operator_name, d.imei, d.serial_number, m.brand, m.name as model_name FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id LEFT JOIN billing_accounts b ON l.billing_id=b.id LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id LEFT JOIN devices d ON l.device_id=d.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY l.created_at DESC")->fetchAll();
     
@@ -4592,8 +4598,9 @@ elseif ($page === 'lines') {
     <?php endif; ?>
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
-        <a href="?page=lines&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-telephone"></i> Lignes Actives & Suspendues</a>
+        <a href="?page=lines&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-telephone"></i> Lignes Actives</a>
         <a href="?page=lines&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>"><i class="bi bi-box-seam"></i> Stock et SIM vierges</a>
+        <a href="?page=lines&tab=suspended" class="tab-btn <?=$tab==='suspended'?'active':''?>"><i class="bi bi-pause-circle"></i> Lignes suspendues</a>
         <a href="?page=lines&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>"><i class="bi bi-archive"></i> Lignes Résiliées (Archives)</a>
     </div>
 
