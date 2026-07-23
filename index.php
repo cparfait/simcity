@@ -6633,13 +6633,14 @@ elseif ($page === 'requests') {
           </table>
           <div style="display:flex;gap:.75rem;margin-top:1rem;flex-wrap:wrap;align-items:center;">
             <button type="button" class="btn-secondary" onclick="circuitAddRow()">➕ Ajouter une étape</button>
+            <button type="button" class="btn-secondary" onclick="circuitPrependDirection()" title="Insère un visa « Direction du service » en première position — utile quand la demande n'émane pas de la direction du service">⬆️ Direction du service en tête</button>
             <button type="submit" class="btn-primary" <?=$smtpConfigured ? '' : 'title="SMTP non configuré : le lien devra être transmis manuellement"'?>
               onclick="return confirm('Lancer le circuit de validation ? Le premier valideur recevra immédiatement le lien par e-mail.')">🚀 Lancer le circuit</button>
             <?php if (!$smtpConfigured): ?><span style="color:var(--warning);font-size:.8rem;">⚠️ SMTP non configuré — <a href="?page=refs&tab=settings&sub=email" style="color:var(--primary);">Paramètres → Envoi d'e-mails</a></span><?php endif; ?>
           </div>
         </form>
         <script>
-        function circuitAddRow(step) {
+        function circuitAddRow(step, atTop) {
           const tb = document.querySelector('#circuit-table tbody');
           const tr = document.createElement('tr');
           tr.innerHTML = '<td class="drag-cell" title="Glisser pour réordonner"><i class="bi bi-grip-vertical"></i></td>'
@@ -6652,7 +6653,21 @@ elseif ($page === 'requests') {
             tr.querySelector('[name="step_name[]"]').value  = step.name  || '';
             tr.querySelector('[name="step_email[]"]').value = step.email || '';
           }
-          tb.appendChild(tr);
+          if (atTop && tb.firstChild) tb.insertBefore(tr, tb.firstChild); else tb.appendChild(tr);
+        }
+        // ── Visa « Direction du service » en tête de circuit ──
+        // Les circuits enregistrés sont génériques (DSI, DGA, DGS…) : quand la
+        // demande n'émane pas de la direction du service, celle-ci doit viser en
+        // premier. Le bouton insère l'étape en position 1, pré-remplie avec le
+        // chef du service demandeur s'il est renseigné au référentiel, sinon
+        // vide (à compléter via l'annuaire).
+        const DIR_STEP = <?=json_encode(($draftSteps[0] ?? null) && ($draftSteps[0]['label'] ?? '') === 'Direction du service'
+            ? ['label' => $draftSteps[0]['label'], 'name' => $draftSteps[0]['name'], 'email' => $draftSteps[0]['email']]
+            : ['label' => 'Direction du service', 'name' => '', 'email' => ''], JSON_UNESCAPED_UNICODE)?>;
+        function circuitPrependDirection() {
+          circuitAddRow(DIR_STEP, true);
+          const first = document.querySelector('#circuit-table tbody tr .circuit-name');
+          if (first && !first.value) first.focus();
         }
         // ── Circuits enregistrés (Paramètres) : recharge le tableau d'étapes ──
         (function(){
