@@ -4593,7 +4593,7 @@ elseif ($page === 'lines') {
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border)">
         <a href="?page=lines&tab=active" class="tab-btn <?=$tab==='active'?'active':''?>"><i class="bi bi-telephone"></i> Lignes Actives & Suspendues</a>
-        <a href="?page=lines&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>"><i class="bi bi-box-seam"></i> Stock (SIM Vierges)</a>
+        <a href="?page=lines&tab=stock" class="tab-btn <?=$tab==='stock'?'active':''?>"><i class="bi bi-box-seam"></i> Stock et SIM vierges</a>
         <a href="?page=lines&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>"><i class="bi bi-archive"></i> Lignes Résiliées (Archives)</a>
     </div>
 
@@ -6299,6 +6299,9 @@ elseif ($page === 'refs') {
                 <?php elseif($row['id'] === (int)$_SESSION['user_id']): ?>
                   <span class="badge badge-info" style="font-size:.65rem;margin-left:4px;"><i class="bi bi-person"></i> Vous</span>
                 <?php endif; ?>
+              <?php elseif($tab==='agents' && $k==='service_name' && trim((string)$row[$k]) !== ''): ?>
+                <?php // Service cliquable : filtre la liste sur ce service. ?>
+                <span class="cell-link" data-refs-filter="<?=h($row[$k])?>" title="Filtrer sur ce service"><?=h($row[$k])?></span>
               <?php elseif($tab==='services' && ($k==='nb_lines' || $k==='nb_devices') && (int)$row[$k] > 0): ?>
                 <?php // Compteur cliquable : ouvre la liste pré-filtrée sur le nom du service (via le paramètre q). ?>
                 <a href="?page=<?=$k==='nb_lines'?'lines':'devices'?>&tab=active&q=<?=urlencode($row['name'])?>" title="Voir les <?=$k==='nb_lines'?'lignes':'matériels'?> de ce service" style="font-weight:600;"><?=h($row[$k])?></a>
@@ -7757,6 +7760,18 @@ function tableSearch(inp, tbodyId, countId) {
     else count.textContent = visible + ' résultat(s) trouvé(s)';
   }
 }
+
+// Filtrage par clic sur une cellule (ex. service dans la liste des utilisateurs) :
+// remplit la barre de recherche de la page avec la valeur cliquée.
+document.addEventListener('click', function(e) {
+  const cell = e.target.closest('[data-refs-filter]');
+  if (!cell) return;
+  const inp = document.querySelector('.search-bar input:not(#dash-search)');
+  if (!inp) return;
+  inp.value = cell.dataset.refsFilter;
+  inp.dispatchEvent(new Event('input'));
+  inp.scrollIntoView({behavior:'smooth', block:'center'});
+});
 
 // AUTO-FILTRAGE DEPUIS LA RECHERCHE GLOBALE
 window.addEventListener('DOMContentLoaded', () => {
