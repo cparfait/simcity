@@ -294,8 +294,9 @@ function simcity_invoice_parse_line_block(string $block): ?array {
             simcity_inv_add_conso($r, trim($mm[1]), (int)$mm[2], 0, $ko, $inHF, simcity_inv_amount($mm[4] ?? null));
             continue;
         }
-        // À l'acte (SMS / MMS) : « SMS France   8   08 A l acte [ 0,00] »
-        if (preg_match("/^\s+(\D[^\d\n]*?)\s{2,}(\d+)\s+\d+\s+A l['\s]acte(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u", $line, $mm)) {
+        // À l'acte (SMS / MMS) : « SMS France   8   08 A l acte [ 0,00] ».
+        // L'apostrophe varie selon la version de poppler (', ’ ou espace).
+        if (preg_match("/^\s+(\D[^\d\n]*?)\s{2,}(\d+)\s+\d+\s+A\s+l\W{0,2}acte(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u", $line, $mm)) {
             simcity_inv_add_conso($r, trim($mm[1]), (int)$mm[2], 0, 0, $inHF, simcity_inv_amount($mm[3] ?? null));
             continue;
         }
@@ -312,15 +313,19 @@ function simcity_inv_add_conso(array &$r, string $label, int $count, int $second
 
     if ($isSurtaxe) {
         $r['surtaxe_count'] += $count; $r['surtaxe_seconds'] += $seconds; $r['surtaxe_ht'] += $eur;
-    } elseif ($isIntl) {
-        $r['intl_count'] += $count; $r['intl_seconds'] += $seconds; $r['intl_ht'] += $eur;
-        if ($ko) $r['data_ko'] += $ko;
-    } elseif ($ko > 0 || str_starts_with($l, 'data')) {
-        $r['data_ko'] += $ko;
     } elseif (str_starts_with($l, 'sms')) {
+        // Un SMS reste un SMS, même émis vers/depuis l'international ;
+        // seul son éventuel surcoût part dans la colonne international.
         $r['sms_count'] += $count;
+        if ($isIntl) $r['intl_ht'] += $eur;
     } elseif (str_starts_with($l, 'mms')) {
         $r['mms_count'] += $count;
+        if ($isIntl) $r['intl_ht'] += $eur;
+    } elseif ($ko > 0 || str_starts_with($l, 'data')) {
+        $r['data_ko'] += $ko;
+        if ($isIntl) $r['intl_ht'] += $eur;
+    } elseif ($isIntl) { // appels internationaux / en itinérance
+        $r['intl_count'] += $count; $r['intl_seconds'] += $seconds; $r['intl_ht'] += $eur;
     } else { // appels (et rubriques voix inconnues)
         $r['calls_count'] += $count; $r['calls_seconds'] += $seconds;
     }
@@ -385,6 +390,17 @@ function simcity_invoice_import(PDO $pdo, string $pdfTmpPath, string $origName, 
             count($parsed['lines']), is_file(__DIR__ . '/' . $dest) ? $dest : null, $origName, $author]);
     $invId = (int)$pdo->lastInsertId();
 
+    simcity_invoice_store_detail($pdo, $invId, $parsed);
+
+    return ['status' => 'ok', 'file' => $origName, 'invoice_number' => $h['invoice_number'],
+            'invoice_id' => $invId, 'type' => $h['invoice_type'], 'month_key' => $h['month_key'],
+            'nb_lines' => count($parsed['lines']), 'nb_devices' => count($parsed['devices']),
+            'total_ttc' => $h['total_ttc']];
+}
+
+// Insère le détail (lignes + matériels) d'une facture déjà enregistrée.
+function simcity_invoice_store_detail(PDO $pdo, int $invId, array $parsed): void {
+    $h = $parsed['header'];
     if ($parsed['lines']) {
         $ins = $pdo->prepare("INSERT INTO invoice_lines (invoice_id, month_key, phone_number, sfr_user, plan_name,
                 abo_ht, conso_ht, total_ht, calls_count, calls_seconds, sms_count, mms_count, data_ko,
@@ -407,9 +423,28 @@ function simcity_invoice_import(PDO $pdo, string $pdfTmpPath, string $origName, 
             $ins->execute([$invId, $d['label'], $d['imei'], $d['qty'], $d['unit_ht'], $d['total_ht']]);
         }
     }
+}
 
-    return ['status' => 'ok', 'file' => $origName, 'invoice_number' => $h['invoice_number'],
-            'invoice_id' => $invId, 'type' => $h['invoice_type'], 'month_key' => $h['month_key'],
-            'nb_lines' => count($parsed['lines']), 'nb_devices' => count($parsed['devices']),
-            'total_ttc' => $h['total_ttc']];
+// Ré-analyse une facture depuis son PDF archivé avec le parseur courant :
+// le détail est reconstruit, l'en-tête mis à jour. Utile après une mise à
+// jour du parseur — sans re-téléverser les PDF. Retourne '' ou une erreur.
+function simcity_invoice_reparse(PDO $pdo, array $invoice): string {
+    $pdf = __DIR__ . '/' . ($invoice['pdf_path'] ?? '');
+    if (empty($invoice['pdf_path']) || !is_file($pdf)) return "PDF archivé introuvable";
+    try {
+        $parsed = simcity_invoice_parse(simcity_invoice_extract_text($pdf));
+    } catch (Throwable $e) {
+        return $e->getMessage();
+    }
+    $h = $parsed['header'];
+    if (($h['invoice_number'] ?? '') !== $invoice['invoice_number']) return "numéro inattendu dans le PDF";
+    $pdo->prepare("DELETE FROM invoice_lines   WHERE invoice_id=?")->execute([$invoice['id']]);
+    $pdo->prepare("DELETE FROM invoice_devices WHERE invoice_id=?")->execute([$invoice['id']]);
+    $pdo->prepare("UPDATE invoices SET invoice_type=?, billing_account=?, invoice_date=?, period_start=?,
+                   period_end=?, month_key=?, total_ht=?, total_ttc=?, nb_lines=? WHERE id=?")
+        ->execute([$h['invoice_type'], $h['billing_account'], $h['invoice_date'], $h['period_start'],
+                   $h['period_end'], $h['month_key'], $h['total_ht'], $h['total_ttc'],
+                   count($parsed['lines']), $invoice['id']]);
+    simcity_invoice_store_detail($pdo, (int)$invoice['id'], $parsed);
+    return '';
 }

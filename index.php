@@ -3860,6 +3860,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         flash('success', "Facture {$inv['invoice_number']} supprimée (avec son détail).");
                     }
                 }
+            } elseif ($act === 'reparse') {
+                // Ré-analyse toutes les factures depuis les PDF archivés avec
+                // le parseur courant (après une mise à jour de celui-ci).
+                if (empty($_SESSION['is_admin'])) { flash('error', 'Réservé aux super-administrateurs.'); }
+                else {
+                    $ok = 0; $errs = [];
+                    foreach ($pdo->query("SELECT * FROM invoices") as $inv) {
+                        $e = simcity_invoice_reparse($pdo, $inv);
+                        if ($e === '') $ok++; else $errs[] = $inv['invoice_number'] . " : $e";
+                    }
+                    $msg = "$ok facture(s) ré-analysée(s) avec le parseur courant";
+                    if ($errs) $msg .= ' — ' . count($errs) . ' échec(s) : ' . h(implode(' · ', array_slice($errs, 0, 3)));
+                    flash($errs && !$ok ? 'error' : 'success', $msg . '.');
+                }
             } elseif ($act === 'thresholds') {
                 if (empty($_SESSION['is_admin'])) { flash('error', 'Réservé aux super-administrateurs.'); }
                 else {
@@ -5282,17 +5296,44 @@ elseif ($page === 'invoices') {
     <?php endif; ?>
 
     <?php if($tab === 'dash' && $months):
+        // Période du graphique : tout l'historique ou une année complète.
+        $years = array_values(array_unique(array_map(fn($mk) => substr($mk, 0, 4), $months)));
+        rsort($years);
+        $range = $_GET['range'] ?? 'all';
+        if ($range !== 'all' && !in_array($range, $years, true)) $range = 'all';
+
         $monthly = $pdo->query("SELECT month_key, SUM(total_ht) t, SUM(hf_ht) hf, SUM(surtaxe_ht) s, SUM(intl_ht) i, COUNT(*) n
                                 FROM invoice_lines GROUP BY month_key ORDER BY month_key")->fetchAll();
-        $cur = end($monthly);
+        $monthlyView = $range === 'all' ? $monthly : array_values(array_filter($monthly, fn($r) => str_starts_with($r['month_key'], $range)));
+        $periodTotal = array_sum(array_map(fn($r) => (float)$r['t'], $monthlyView));
+        $periodHF    = array_sum(array_map(fn($r) => (float)$r['hf'], $monthlyView));
+        $periodLabel = $range === 'all' ? 'tout l\'historique' : "année $range";
+
+        // KPIs et top 10 : sur le mois sélectionné (dernier par défaut).
+        $cur = null;
+        foreach ($monthly as $mrow) if ($mrow['month_key'] === $selMonth) { $cur = $mrow; break; }
+        $cur = $cur ?: end($monthly);
         $devTotal = $pdo->query("SELECT IFNULL(SUM(total_ht),0) FROM invoices WHERE invoice_type='devices'")->fetchColumn();
         $top = $pdo->prepare("SELECT * FROM invoice_lines WHERE month_key=? ORDER BY total_ht DESC LIMIT 10");
-        $top->execute([$latestMonth]); $top = $top->fetchAll();
+        $top->execute([$cur['month_key']]); $top = $top->fetchAll();
     ?>
+    <form method="get" style="display:flex;align-items:center;gap:1.25rem;flex-wrap:wrap;margin-bottom:1rem;">
+      <input type="hidden" name="page" value="invoices"><input type="hidden" name="tab" value="dash">
+      <span style="display:flex;align-items:center;gap:.5rem;"><label style="margin:0;">Mois</label>
+        <select name="month" onchange="this.form.submit()" style="width:auto;">
+          <?php foreach($months as $mk): ?><option value="<?=h($mk)?>" <?=$mk===$cur['month_key']?'selected':''?>><?=h($fmtMois($mk))?></option><?php endforeach; ?>
+        </select></span>
+      <span style="display:flex;align-items:center;gap:.5rem;"><label style="margin:0;">Période du graphique</label>
+        <select name="range" onchange="this.form.submit()" style="width:auto;">
+          <option value="all" <?=$range==='all'?'selected':''?>>Tout l'historique</option>
+          <?php foreach($years as $y): ?><option value="<?=h($y)?>" <?=$range===$y?'selected':''?>>Année <?=h($y)?></option><?php endforeach; ?>
+        </select></span>
+    </form>
     <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.5rem;">
-      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Mois de consommation</div><div style="font-size:1.5rem;font-weight:700;color:var(--primary);"><?=h($fmtMois($latestMonth))?></div><div class="muted"><?=$cur['n']?> lignes facturées</div></div>
-      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Total lignes mobiles</div><div style="font-size:1.5rem;font-weight:700;"><?=$fmtEur($cur['t'])?> <span style="font-size:.8rem;color:var(--text2);">HT</span></div><div class="muted">factures avec détail par ligne</div></div>
+      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Mois de consommation</div><div style="font-size:1.5rem;font-weight:700;color:var(--primary);"><?=h($fmtMois($cur['month_key']))?></div><div class="muted"><?=$cur['n']?> lignes facturées</div></div>
+      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Total lignes du mois</div><div style="font-size:1.5rem;font-weight:700;"><?=$fmtEur($cur['t'])?> <span style="font-size:.8rem;color:var(--text2);">HT</span></div><div class="muted">factures avec détail par ligne</div></div>
       <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Hors-forfait du mois</div><div style="font-size:1.5rem;font-weight:700;color:<?=(float)$cur['hf']>0?'var(--warning)':'var(--success)'?>;"><?=$fmtEur($cur['hf'])?></div><div class="muted">dont surtaxés <?=$fmtEur($cur['s'])?> · international <?=$fmtEur($cur['i'])?></div></div>
+      <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Total période (<?=h($periodLabel)?>)</div><div style="font-size:1.5rem;font-weight:700;"><?=$fmtEur($periodTotal)?> <span style="font-size:.8rem;color:var(--text2);">HT</span></div><div class="muted">sur <?=count($monthlyView)?> mois · hors-forfait <?=$fmtEur($periodHF)?></div></div>
       <div class="card" style="padding:1.1rem 1.3rem;"><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Alertes en cours</div><div style="font-size:1.5rem;font-weight:700;color:<?=$nbAlerts?'var(--danger)':'var(--success)'?>;"><?=$nbAlerts?></div><div class="muted"><a href="?page=invoices&tab=alerts">voir le détail <i class="bi bi-arrow-right"></i></a></div></div>
     </div>
 
@@ -5302,7 +5343,7 @@ elseif ($page === 'invoices') {
         <div style="padding:1rem;height:290px;"><canvas id="invMonthly"></canvas></div>
       </div>
       <div class="card">
-        <div class="card-header"><i class="bi bi-trophy"></i> Top 10 des lignes les plus chères — <?=h($fmtMois($latestMonth))?></div>
+        <div class="card-header"><i class="bi bi-trophy"></i> Top 10 des lignes les plus chères — <?=h($fmtMois($cur['month_key']))?></div>
         <table class="data-table" style="font-size:.85rem;">
           <thead><tr><th>Ligne</th><th>Utilisateur (SFR)</th><th>Total HT</th></tr></thead>
           <tbody>
@@ -5323,10 +5364,10 @@ elseif ($page === 'invoices') {
     (function(){
       const el = document.getElementById('invMonthly'); if(!el) return;
       new Chart(el, {type:'bar',
-        data:{labels:<?=json_encode(array_map($fmtMois, array_column($monthly,'month_key')))?>,
+        data:{labels:<?=json_encode(array_map($fmtMois, array_column($monthlyView,'month_key')))?>,
               datasets:[
-                {label:'Total lignes € HT', data:<?=json_encode(array_map(fn($r)=>round((float)$r['t'],2), $monthly))?>, backgroundColor:'<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>', borderRadius:4},
-                {label:'Hors-forfait € HT', data:<?=json_encode(array_map(fn($r)=>round((float)$r['hf'],2), $monthly))?>, backgroundColor:'#f59e0b', borderRadius:4}
+                {label:'Total lignes € HT', data:<?=json_encode(array_map(fn($r)=>round((float)$r['t'],2), $monthlyView))?>, backgroundColor:'<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>', borderRadius:4},
+                {label:'Hors-forfait € HT', data:<?=json_encode(array_map(fn($r)=>round((float)$r['hf'],2), $monthlyView))?>, backgroundColor:'#f59e0b', borderRadius:4}
               ]},
         options:{responsive:true,maintainAspectRatio:false,
           scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},y:{beginAtZero:true,ticks:{color:'#94a3b8'},grid:{color:'rgba(148,163,184,.15)'}}},
@@ -5339,6 +5380,9 @@ elseif ($page === 'invoices') {
         $invoices = $pdo->query("SELECT * FROM invoices ORDER BY invoice_date DESC, invoice_number DESC")->fetchAll();
         $typeBadge = ['lines'=>['Mensuelle — détail lignes','badge-success'], 'devices'=>['Terminaux','badge-info'],
                       'manual'=>['Régularisation','badge-warning'], 'credit'=>['Avoir','badge-danger'], 'other'=>['Autre','badge-muted']];
+        // Contrôle de cohérence : la somme du détail par ligne doit retomber
+        // sur le total HT de la facture (au centime près).
+        $lineSums = $pdo->query("SELECT invoice_id, SUM(total_ht) s FROM invoice_lines GROUP BY invoice_id")->fetchAll(PDO::FETCH_KEY_PAIR);
     ?>
     <div class="card" style="margin-bottom:1.5rem;">
       <div class="card-header"><i class="bi bi-cloud-upload"></i> Importer des factures PDF</div>
@@ -5358,6 +5402,15 @@ elseif ($page === 'invoices') {
           <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-upload"></i> Importer</button>
         </div>
       </form>
+      <?php if(!empty($_SESSION['is_admin']) && $invoices): ?>
+      <form method="post" style="padding:0 1.5rem 1.25rem;border-top:1px solid var(--border);"
+            onsubmit="return confirm('Ré-analyser toutes les factures depuis les PDF archivés avec le parseur courant ? Le détail par ligne est reconstruit (les totaux peuvent évoluer après une mise à jour du parseur).')">
+        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+        <input type="hidden" name="_entity" value="invoice"><input type="hidden" name="_action" value="reparse">
+        <p class="muted" style="font-size:.8rem;margin:.9rem 0 .6rem;">Après une mise à jour de l'application, le bouton ci-dessous relit les PDF archivés avec la dernière version du parseur — sans re-téléverser.</p>
+        <button type="submit" class="btn-secondary" style="font-size:.82rem;"><i class="bi bi-arrow-clockwise"></i> Ré-analyser les <?=count($invoices)?> facture(s)</button>
+      </form>
+      <?php endif; ?>
     </div>
 
     <div class="search-bar-wrap">
@@ -5366,9 +5419,9 @@ elseif ($page === 'invoices') {
     </div>
     <div class="card" style="overflow-x:auto;">
       <table class="data-table">
-        <thead><tr><th>N° de facture</th><th>Type</th><th>Compte</th><th>Date</th><th>Mois conso</th><th>Total HT</th><th>Total TTC</th><th>Lignes</th><th>Importée</th><th>Actions</th></tr></thead>
+        <thead><tr><th>N° de facture</th><th>Type</th><th>Compte</th><th>Date</th><th>Mois conso</th><th>Total HT</th><th>Total TTC</th><th>Lignes</th><th>Contrôle</th><th>Importée</th><th>Actions</th></tr></thead>
         <tbody id="tbody-inv">
-        <?php if(!$invoices): ?><tr><td colspan="10" class="empty-cell">Aucune facture importée</td></tr><?php endif; ?>
+        <?php if(!$invoices): ?><tr><td colspan="11" class="empty-cell">Aucune facture importée</td></tr><?php endif; ?>
         <?php foreach($invoices as $inv): [$tl,$tc] = $typeBadge[$inv['invoice_type']] ?? $typeBadge['other']; ?>
         <tr>
           <td style="font-family:var(--font-mono);font-size:.85rem;"><?=h($inv['invoice_number'])?></td>
@@ -5379,6 +5432,16 @@ elseif ($page === 'invoices') {
           <td style="font-weight:600;"><?=$inv['total_ht'] !== null ? $fmtEur($inv['total_ht']) : '—'?></td>
           <td><?=$inv['total_ttc'] !== null ? $fmtEur($inv['total_ttc']) : '—'?></td>
           <td><?=$inv['invoice_type']==='lines' ? (int)$inv['nb_lines'] : '—'?></td>
+          <td>
+            <?php if($inv['invoice_type'] === 'lines' && $inv['total_ht'] !== null):
+                $diff = round((float)($lineSums[$inv['id']] ?? 0) - (float)$inv['total_ht'], 2); ?>
+              <?php if(abs($diff) < 0.02): ?>
+                <span class="badge badge-success" title="La somme du détail par ligne égale le total de la facture"><i class="bi bi-check-lg"></i> détail = total</span>
+              <?php else: ?>
+                <span class="badge badge-warning" title="Somme du détail par ligne : <?=h($fmtEur($lineSums[$inv['id']] ?? 0))?>"><i class="bi bi-exclamation-triangle"></i> écart <?=h($fmtEur($diff))?></span>
+              <?php endif; ?>
+            <?php else: ?>—<?php endif; ?>
+          </td>
           <td class="muted" style="font-size:.78rem;"><?=date('d/m/Y', strtotime($inv['imported_at']))?><br><?=h($inv['imported_by'] ?: '')?></td>
           <td class="actions">
             <?php if($inv['pdf_path']): ?><a class="btn-icon" title="Ouvrir le PDF archivé" href="<?=h($inv['pdf_path'])?>" target="_blank" style="text-decoration:none;"><i class="bi bi-filetype-pdf"></i></a><?php endif; ?>
