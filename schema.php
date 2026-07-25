@@ -355,6 +355,8 @@ function simcity_apply_schema(PDO $pdo): void
         intl_seconds    INT NOT NULL DEFAULT 0,
         intl_ht         DECIMAL(10,2) NOT NULL DEFAULT 0,
         hf_ht           DECIMAL(10,2) NOT NULL DEFAULT 0,
+        catalog_ht      DECIMAL(10,2) NULL,
+        remise_pct      DECIMAL(5,2) NULL,
         UNIQUE KEY uq_invline (invoice_id, phone_number),
         INDEX idx_invline_phone (phone_number, month_key),
         INDEX idx_invline_month (month_key),
@@ -403,6 +405,12 @@ function simcity_apply_schema(PDO $pdo): void
     // devices.inventory_label
     if (empty($pdo->query("SHOW COLUMNS FROM devices LIKE 'inventory_label'")->fetchAll())) {
         $pdo->exec("ALTER TABLE devices ADD COLUMN inventory_label VARCHAR(100) NULL AFTER serial_number");
+    }
+
+    // invoice_lines : remise marché lue sur la facture (prix catalogue + taux)
+    if (empty($pdo->query("SHOW COLUMNS FROM invoice_lines LIKE 'catalog_ht'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE invoice_lines ADD COLUMN catalog_ht DECIMAL(10,2) NULL AFTER hf_ht");
+        $pdo->exec("ALTER TABLE invoice_lines ADD COLUMN remise_pct DECIMAL(5,2)  NULL AFTER catalog_ht");
     }
 
     // sign_tokens.dsi_name
@@ -601,6 +609,7 @@ function simcity_apply_schema(PDO $pdo): void
         ['inv_alert_hf_eur',      '5',  "Facturation — hors-forfait signalé au-delà de N € HT par mois"],
         ['inv_alert_intl_eur',    '1',  "Facturation — international signalé au-delà de N € HT par mois"],
         ['inv_alert_surtaxe_eur', '1',  "Facturation — numéros surtaxés signalés au-delà de N € HT par mois"],
+        ['inv_alert_remise_pct',  '90', "Facturation — remise marché attendue (%) : en dessous, la ligne est signalée"],
     ] as [$k, $v, $l]) {
         $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
             ->execute([$k, $v, $l]);

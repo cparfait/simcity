@@ -209,6 +209,7 @@ function simcity_invoice_parse_line_block(string $block): ?array {
           'calls_count' => 0, 'calls_seconds' => 0, 'sms_count' => 0, 'mms_count' => 0,
           'data_ko' => 0, 'surtaxe_count' => 0, 'surtaxe_seconds' => 0, 'surtaxe_ht' => 0.0,
           'intl_count' => 0, 'intl_seconds' => 0, 'intl_ht' => 0.0, 'hf_ht' => 0.0,
+          'catalog_ht' => null, 'remise_pct' => null,
           'period_start' => null, 'period_end' => null];
 
     $lines = preg_split('/\R/u', $block);
@@ -251,6 +252,19 @@ function simcity_invoice_parse_line_block(string $block): ?array {
     // ── Forfait : première ligne d'abonnement commençant par « Forfait ».
     if (preg_match('/^\s+(Forfait [^\n]*?)\s{2,}\d+\s+\d/mu', $block, $mm)) {
         $r['plan_name'] = trim($mm[1]);
+    } elseif (preg_match('/(Forfait [A-Za-z0-9À-ÿ\'’+ .\/-]{2,60}?)(?:\s{2,}|\s*$)/mu', $block, $mm)) {
+        // Repli : la mise en page décroche parfois le libellé de sa quantité
+        // (nom d'utilisateur sur la même ligne, montant entièrement remisé…).
+        $r['plan_name'] = trim($mm[1]);
+    }
+
+    // ── Remise marché : « Remise sur abonnement (96,00% de 20,00€ HT) ».
+    // Le taux et le prix catalogue sont écrits en clair dans chaque bloc : ils
+    // permettent de vérifier que la remise du marché est bien appliquée, au
+    // lieu de la deviner à partir du montant facturé.
+    if (preg_match('/Remise sur abonnement\s*\(\s*(\d{1,3},\d+)\s*%\s*de\s*([\d\s]*\d,\d{2})\s*€/u', $block, $mm)) {
+        $r['remise_pct'] = simcity_inv_amount($mm[1]);
+        $r['catalog_ht'] = simcity_inv_amount($mm[2]);
     }
 
     // ── Montants de synthèse du bloc.
@@ -404,8 +418,9 @@ function simcity_invoice_store_detail(PDO $pdo, int $invId, array $parsed): void
     if ($parsed['lines']) {
         $ins = $pdo->prepare("INSERT INTO invoice_lines (invoice_id, month_key, phone_number, sfr_user, plan_name,
                 abo_ht, conso_ht, total_ht, calls_count, calls_seconds, sms_count, mms_count, data_ko,
-                surtaxe_count, surtaxe_seconds, surtaxe_ht, intl_count, intl_seconds, intl_ht, hf_ht)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                surtaxe_count, surtaxe_seconds, surtaxe_ht, intl_count, intl_seconds, intl_ht, hf_ht,
+                catalog_ht, remise_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON DUPLICATE KEY UPDATE sfr_user=VALUES(sfr_user)");
         foreach ($parsed['lines'] as $l) {
             $mk = $l['period_start'] ? substr($l['period_start'], 0, 7) : ($h['month_key'] ?? '');
@@ -413,7 +428,7 @@ function simcity_invoice_store_detail(PDO $pdo, int $invId, array $parsed): void
                 $l['abo_ht'], $l['conso_ht'], $l['total_ht'], $l['calls_count'], $l['calls_seconds'],
                 $l['sms_count'], $l['mms_count'], $l['data_ko'], $l['surtaxe_count'], $l['surtaxe_seconds'],
                 round($l['surtaxe_ht'], 2), $l['intl_count'], $l['intl_seconds'], round($l['intl_ht'], 2),
-                round($l['hf_ht'], 2)]);
+                round($l['hf_ht'], 2), $l['catalog_ht'], $l['remise_pct']]);
         }
     }
     if ($parsed['devices']) {
