@@ -89,6 +89,9 @@ require_once __DIR__ . '/import_lib.php';
 // ─── Bibliothèque des factures opérateur (Facturation / Contrôle) ───
 require_once __DIR__ . '/invoice_lib.php';
 
+// ─── Bibliothèque de l'export de parc SFR (contrôle du référentiel) ───
+require_once __DIR__ . '/sfr_parc_lib.php';
+
 // ─── Sauvegarde automatique « sans cron » ─────────────────────
 // Déclenchée par le trafic web (idéal en conteneur, sans crontab). Un verrou
 // atomique en base garantit qu'un seul visiteur lance la sauvegarde par
@@ -3844,6 +3847,71 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     @unlink($pend['file']); unset($_SESSION['import_pending']);
                     header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
                 }
+            }
+        } elseif ($ent === 'parc') {
+            // Import depuis SFR — export de parc (.xlsx). Même mécanique en deux
+            // temps que l'import CSV : « preview » met le fichier de côté et
+            // affiche le contrôle, « run » n'écrit que les postes cochés.
+            if (empty($_SESSION['is_admin'])) {
+                flash('error', 'Accès refusé — réservé aux super-administrateurs.');
+            } elseif ($act === 'cancel') {
+                if (!empty($_SESSION['parc_pending']['file'])) @unlink($_SESSION['parc_pending']['file']);
+                unset($_SESSION['parc_pending']);
+                flash('success', 'Contrôle abandonné — aucune donnée modifiée.');
+                header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
+            } elseif ($act === 'preview') {
+                $err = simcity_parc_validate($_FILES['file_data'] ?? []);
+                if ($err !== '') { flash('error', $err); }
+                else {
+                    if (!empty($_SESSION['parc_pending']['file'])) @unlink($_SESSION['parc_pending']['file']);
+                    $tmp = tempnam(sys_get_temp_dir(), 'simcity_parc_');
+                    move_uploaded_file($_FILES['file_data']['tmp_name'], $tmp);
+                    try {
+                        $probe = simcity_parc_parse($tmp);          // valide le format tout de suite
+                        $_SESSION['parc_pending'] = ['file' => $tmp,
+                            'name' => (string)($_FILES['file_data']['name'] ?? 'parc.xlsx'),
+                            'nb'   => count($probe['records'])];
+                        header('Location: index.php?page=refs&tab=settings&sub=maintenance#parc-review'); exit;
+                    } catch (Throwable $e) {
+                        @unlink($tmp);
+                        flash('error', "Lecture impossible : " . h($e->getMessage()));
+                    }
+                }
+            } elseif ($act === 'run') {
+                $pend = $_SESSION['parc_pending'] ?? null;
+                if (!$pend || !is_file($pend['file'])) {
+                    flash('error', "Fichier introuvable — relancez l'analyse de l'export.");
+                } else {
+                    $opts = ['billing' => !empty($d['apply_billing']), 'plan' => !empty($d['apply_plan']),
+                             'status'  => !empty($d['apply_status']),  'iccid' => !empty($d['apply_iccid']),
+                             'create'  => !empty($d['apply_create'])];
+                    if (!array_filter($opts)) {
+                        flash('error', "Aucun poste coché — rien à mettre à jour. Le contrôle reste consultable.");
+                    } else {
+                        try {
+                            $parsed = simcity_parc_parse($pend['file']);
+                            $done = simcity_parc_apply($pdo, $parsed['records'], $opts);
+                            $resume = [];
+                            if ($done['created'])  $resume[] = "{$done['created']} ligne(s) créée(s)";
+                            if ($done['billing'])  $resume[] = "{$done['billing']} compte(s) de facturation rattaché(s)";
+                            if ($done['plan'])     $resume[] = "{$done['plan']} forfait(s) corrigé(s)";
+                            if ($done['status'])   $resume[] = "{$done['status']} statut(s) aligné(s)";
+                            if ($done['iccid'])    $resume[] = "{$done['iccid']} ICCID complété(s)";
+                            if ($done['accounts']) $resume[] = "{$done['accounts']} compte(s) créé(s) au référentiel";
+                            if ($done['plans'])    $resume[] = "{$done['plans']} forfait(s) créé(s) au référentiel";
+                            $txt = $resume ? implode(', ', $resume) : 'aucune différence à appliquer';
+                            logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "Import depuis SFR ({$pend['name']}) : $txt");
+                            flash('success', "Mise à jour depuis l'export SFR — $txt.");
+                        } catch (Throwable $e) {
+                            $detail = (defined('APP_DEBUG') && APP_DEBUG) ? ' — ' . $e->getMessage() : '';
+                            flash('error', "La mise à jour a échoué$detail.");
+                        }
+                        @unlink($pend['file']); unset($_SESSION['parc_pending']);
+                        header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
+                    }
+                }
+            } else {
+                flash('error', 'Action inconnue.');
             }
         } elseif ($ent === 'invoice') {
             // Module Facturation / Contrôle — factures opérateur (PDF)
@@ -7820,6 +7888,194 @@ elseif ($page === 'refs') {
         </div>
       </form>
     </div>
+
+    <!-- Bloc import depuis SFR — contrôle du référentiel contre l'état de parc -->
+    <div class="card" style="margin-top:1.5rem;">
+      <div class="card-header"><i class="bi bi-broadcast"></i> Import depuis SFR — état de parc</div>
+      <form method="post" enctype="multipart/form-data" style="padding:1.5rem;">
+        <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+        <input type="hidden" name="_entity" value="parc">
+        <input type="hidden" name="_action" value="preview">
+
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+          Déposez l'export « <strong>État de parc</strong> » de l'espace client SFR Business (fichier <code>EdP_…​.xlsx</code>).
+          Il sert d'abord de <strong>contrôle</strong> : l'écran suivant compare ligne par ligne l'état réel chez l'opérateur
+          avec le référentiel SimCity — titulaires, forfaits, statuts, comptes de facturation, cartes SIM et terminaux.<br>
+          <strong>Rien n'est écrit sans votre validation</strong>, et vous choisissez alors poste par poste ce qui est mis à jour.
+          Vous pouvez aussi ne rien appliquer et n'utiliser que le rapport.
+        </p>
+
+        <div class="form-group form-full">
+          <label>Export de parc (.xlsx)</label>
+          <input type="file" name="file_data" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required
+            style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.6rem;color:var(--text);width:100%;">
+        </div>
+        <p style="color:var(--text3);font-size:.82rem;line-height:1.6;margin:.5rem 0 1.25rem;">
+          15 Mo maximum. Les colonnes sont reconnues par leur en-tête, l'ordre du portail peut donc changer sans casser la lecture.
+          <br><strong>Les codes PIN, PUK et le RIO présents dans l'export ne sont jamais lus ni stockés</strong> — l'application
+          n'a pas à devenir un coffre à codes SIM.
+        </p>
+        <p style="margin:0 0 1.25rem;font-size:.85rem;">
+          <a href="https://www.sfrbusiness.fr/espace-client/portail/#/facturation-et-paiement/societe/multiple"
+             target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:6px;">
+            <i class="bi bi-box-arrow-up-right"></i> Ouvrir l'espace client SFR Business</a>
+        </p>
+
+        <div style="padding-top:1rem;border-top:1px solid var(--border);">
+          <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-search"></i> Analyser et contrôler</button>
+        </div>
+      </form>
+    </div>
+
+    <?php
+    // ── Contrôle de l'export de parc SFR ─────────────────────────
+    // Un export analysé attend une décision : on affiche le rapport de
+    // comparaison, et l'opérateur choisit quels postes appliquer.
+    $pendParc = $_SESSION['parc_pending'] ?? null;
+    if ($pendParc && !is_file($pendParc['file'])) { unset($_SESSION['parc_pending']); $pendParc = null; }
+    $parcCmp = null;
+    if ($pendParc) {
+        try {
+            $parsed  = simcity_parc_parse($pendParc['file']);
+            $parcCmp = simcity_parc_compare($pdo, $parsed['records']);
+        } catch (Throwable $e) {
+            $parcCmp = null;
+            flash('error', "Lecture de l'export impossible : " . h($e->getMessage()));
+        }
+    }
+    ?>
+    <?php if($pendParc && $parcCmp):
+        $c = $parcCmp['counts'];
+        $issueMeta = [
+            'unknown'     => ['Ligne inconnue de SimCity',        'badge-danger',  'bi-question-circle'],
+            'name'        => ['Titulaire différent',              'badge-warning', 'bi-person-exclamation'],
+            'plan'        => ['Forfait différent',                'badge-warning', 'bi-globe2'],
+            'status'      => ['Statut différent',                 'badge-warning', 'bi-toggle-off'],
+            'billing'     => ['Compte de facturation différent',  'badge-info',    'bi-cash-coin'],
+            'iccid'       => ['Carte SIM différente',             'badge-info',    'bi-sim'],
+            'imei'        => ['IMEI différent du matériel associé','badge-warning','bi-phone'],
+            'device_swap' => ['Terminal utilisé ≠ terminal acheté','badge-muted',  'bi-arrow-left-right'],
+            'imei_absent' => ['IMEI utilisé absent du parc',       'badge-danger',  'bi-exclamation-triangle'],
+        ];
+        $fltr = isset($_GET['pissue'], $issueMeta[$_GET['pissue']]) ? $_GET['pissue'] : '';
+        $flagged = array_values(array_filter($parcCmp['rows'], fn($r) => $r['issues']));
+        usort($flagged, fn($x, $y) => count($y['issues']) <=> count($x['issues']));
+    ?>
+    <div class="card" style="margin-top:1.5rem;border:1px solid var(--primary);" id="parc-review">
+      <div class="card-header"><i class="bi bi-clipboard-check"></i> Contrôle de l'état de parc — <?=h($pendParc['name'])?></div>
+      <div style="padding:1.5rem;">
+        <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;margin-bottom:1.25rem;">
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Lignes chez SFR</div>
+               <div style="font-size:1.5rem;font-weight:700;color:var(--primary);"><?=$c['total']?></div>
+               <div class="muted">dans l'export déposé</div></div>
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Concordantes</div>
+               <div style="font-size:1.5rem;font-weight:700;color:var(--success);"><?=$c['ok']?></div>
+               <div class="muted">aucun écart détecté</div></div>
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Inconnues de SimCity</div>
+               <div style="font-size:1.5rem;font-weight:700;color:<?=$c['unknown']?'var(--danger)':'var(--success)'?>;"><?=$c['unknown']?></div>
+               <div class="muted">facturées mais hors référentiel</div></div>
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Absentes de l'export</div>
+               <div style="font-size:1.5rem;font-weight:700;color:<?=$c['missing']?'var(--warning)':'var(--success)'?>;"><?=$c['missing']?></div>
+               <div class="muted">dans SimCity, plus chez SFR</div></div>
+        </div>
+
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+          <a href="?page=refs&tab=settings&sub=maintenance#parc-review" class="badge <?=$fltr===''?'badge-info':'badge-muted'?>" style="text-decoration:none;">Tous les écarts (<?=count($flagged)?>)</a>
+          <?php foreach($issueMeta as $k => [$lbl, $cls, $ico]): if(empty($c[$k])) continue; ?>
+          <a href="?page=refs&tab=settings&sub=maintenance&pissue=<?=$k?>#parc-review" class="badge <?=$fltr===$k?$cls:'badge-muted'?>" style="text-decoration:none;"><i class="bi <?=$ico?>"></i> <?=$lbl?> (<?=$c[$k]?>)</a>
+          <?php endforeach; ?>
+        </div>
+
+        <div style="max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.5rem;">
+          <table class="data-table" style="font-size:.83rem;">
+            <thead><tr><th>Ligne</th><th>Chez SFR</th><th>Dans SimCity</th><th>Écarts constatés</th></tr></thead>
+            <tbody>
+            <?php $shownP = 0; foreach($flagged as $r): if($fltr !== '' && !in_array($fltr, $r['issues'], true)) continue;
+                  if(++$shownP > 400) break; $rec = $r['rec']; $a = $r['app']; ?>
+            <tr>
+              <td style="font-family:var(--font-mono);white-space:nowrap;"><?=h(formatPhone($rec['phone']))?></td>
+              <td style="font-size:.8rem;">
+                <?=h(trim($rec['last_name'] . ' ' . $rec['first_name']) ?: '—')?><br>
+                <span class="muted"><?=h($rec['plan'] ?: '—')?> · <?=h($rec['status'] ?: '?')?><?=$rec['billing_acct'] !== '' ? ' · ' . h($rec['billing_acct']) : ''?></span><br>
+                <span class="muted"><?=h($rec['device_used'] ?: 'terminal non renseigné')?></span>
+              </td>
+              <td style="font-size:.8rem;">
+                <?php if(!$a): ?><span class="badge badge-danger" style="font-size:.66rem;">absente du référentiel</span>
+                <?php else: ?>
+                  <?=h(trim($a['ln'] . ' ' . $a['fn']) ?: 'sans utilisateur')?><br>
+                  <span class="muted"><?=h($a['plan_name'] ?: '—')?> · <?=h($a['status'])?><?=$a['acct'] !== '' ? ' · ' . h($a['acct']) : ' · sans compte'?></span><br>
+                  <span class="muted"><?=h(trim($a['brand'] . ' ' . $a['model']) ?: 'aucun matériel associé')?></span>
+                <?php endif; ?>
+              </td>
+              <td>
+                <?php foreach($r['issues'] as $is): [$lbl, $cls, $ico] = $issueMeta[$is]; ?>
+                <span class="badge <?=$cls?>" style="font-size:.66rem;"><i class="bi <?=$ico?>"></i> <?=$lbl?></span>
+                <?php endforeach; ?>
+              </td>
+            </tr>
+            <?php endforeach; if(!$shownP): ?><tr><td colspan="4" class="empty-cell">Aucun écart pour ce filtre</td></tr><?php endif; ?>
+            <?php if($shownP > 400): ?><tr><td colspan="4" class="muted">Affichage limité aux 400 premiers écarts.</td></tr><?php endif; ?>
+            </tbody>
+          </table>
+        </div>
+
+        <?php if($parcCmp['missing']): ?>
+        <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--warning);margin-bottom:.5rem;">
+          <i class="bi bi-eye-slash"></i> Dans SimCity mais absentes de l'export SFR (<?=count($parcCmp['missing'])?>)</h4>
+        <p class="muted" style="font-size:.82rem;margin-bottom:.6rem;">Lignes actives au référentiel que l'opérateur ne connaît plus : résiliations à enregistrer côté SimCity.</p>
+        <div style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.5rem;">
+          <table class="data-table" style="font-size:.83rem;">
+            <thead><tr><th>Ligne</th><th>Utilisateur</th><th>Statut SimCity</th></tr></thead>
+            <tbody>
+            <?php foreach($parcCmp['missing'] as $m): ?>
+            <tr><td style="font-family:var(--font-mono);"><?=h(formatPhone(preg_replace('/\D/', '', (string)$m['phone_number'])))?></td>
+                <td><?=h(trim($m['ln'] . ' ' . $m['fn']) ?: '—')?></td>
+                <td><?=h($m['status'])?></td></tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php endif; ?>
+
+        <form method="post" onsubmit="return confirm('Appliquer les postes cochés au référentiel SimCity ?')">
+          <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+          <input type="hidden" name="_entity" value="parc">
+          <input type="hidden" name="_action" value="run">
+          <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);margin-bottom:.6rem;">
+            <i class="bi bi-sliders"></i> Que voulez-vous mettre à jour ?</h4>
+          <p class="muted" style="font-size:.82rem;margin-bottom:.9rem;">
+            Ne cochez que ce que vous voulez laisser l'export écraser. Les titulaires ne sont jamais modifiés automatiquement :
+            un nom qui diffère se corrige à la main, sur la fiche de la ligne ou chez l'opérateur.</p>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:.6rem;margin-bottom:1.25rem;">
+            <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;cursor:pointer;">
+              <input type="checkbox" name="apply_billing" value="1" style="margin-top:3px;">
+              <span><strong>Comptes de facturation</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['billing']?> écart(s)</span>
+              <span class="muted" style="display:block;">Rattache chaque ligne à son compte, et crée les comptes absents du référentiel.</span></span></label>
+            <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;cursor:pointer;">
+              <input type="checkbox" name="apply_plan" value="1" style="margin-top:3px;">
+              <span><strong>Forfaits</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['plan']?> écart(s)</span>
+              <span class="muted" style="display:block;">Aligne le forfait sur celui de l'opérateur, et crée les forfaits inconnus.</span></span></label>
+            <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;cursor:pointer;">
+              <input type="checkbox" name="apply_status" value="1" style="margin-top:3px;">
+              <span><strong>Statuts</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['status']?> écart(s)</span>
+              <span class="muted" style="display:block;">Actif / Suspendue. Les lignes en stock ne sont pas touchées.</span></span></label>
+            <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;cursor:pointer;">
+              <input type="checkbox" name="apply_iccid" value="1" style="margin-top:3px;">
+              <span><strong>Cartes SIM</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['iccid']?> écart(s)</span>
+              <span class="muted" style="display:block;">Complète l'ICCID <em>uniquement</em> si le champ est vide dans SimCity.</span></span></label>
+            <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;cursor:pointer;">
+              <input type="checkbox" name="apply_create" value="1" style="margin-top:3px;">
+              <span><strong>Créer les lignes inconnues</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['unknown']?></span>
+              <span class="muted" style="display:block;">Créées en stock, sans utilisateur : l'affectation reste manuelle.</span></span></label>
+          </div>
+          <div style="display:flex;gap:.75rem;flex-wrap:wrap;padding-top:1rem;border-top:1px solid var(--border);">
+            <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-check-lg"></i> Appliquer les postes cochés</button>
+            <button type="submit" name="_action" value="cancel" class="btn-secondary" formnovalidate style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-x-lg"></i> Fermer sans rien modifier</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <?php endif; ?>
 
     <!-- Bloc vidage des données de test — conserve paramètres, circuits et comptes -->
     <div class="card" style="margin-top:1.5rem;">
