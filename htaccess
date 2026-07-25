@@ -42,6 +42,12 @@
     RewriteRule ^uploads/.*\.php$ - [F,L]
     RewriteRule ^uploads/.*\.phtml$ - [F,L]
     RewriteRule ^uploads/.*\.phar$ - [F,L]
+
+    # Bloquer l'accès direct aux PDF de factures opérateur : une facture
+    # mensuelle contient la liste nominative complète du parc (noms, numéros,
+    # consommations). Le téléchargement passe par index.php
+    # (?page=invoice_pdf&id=…), après contrôle d'accès.
+    RewriteRule ^uploads/invoices/ - [F,L]
 </IfModule>
 
 # ─── En-têtes de sécurité HTTP ────────────────────────────────
