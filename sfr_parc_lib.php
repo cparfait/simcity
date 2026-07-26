@@ -10,10 +10,17 @@
 //  Il sert d'abord de CONTRÔLE du référentiel SimCity : rien n'est écrit sans
 //  validation explicite, poste par poste, depuis l'écran de contrôle.
 //
-//  Données volontairement IGNORÉES à la lecture : PIN 1/2, PUK 1/2 et RIO.
-//  Les stocker ferait de l'application un coffre à codes SIM — un vol de base
-//  ou de sauvegarde donnerait le contrôle des lignes. Elles ne sont donc même
-//  pas chargées en mémoire.
+//  Codes SIM : PIN 1 / PUK 1 alimentent les colonnes mobile_lines.pin et .puk,
+//  qui existent depuis l'origine et que l'import CSV remplit déjà. PIN 2 et
+//  PUK 2 ont leurs propres colonnes. Ces codes ne sont écrits que si le poste
+//  correspondant est coché à l'écran de contrôle, et ils ne sortent jamais
+//  dans un message ni dans un journal — l'historique note un décompte, pas
+//  une valeur. Ils restent en clair en base : la sauvegarde SQL et l'accès à
+//  la base doivent donc être protégés en conséquence (cf. README).
+//
+//  Le RIO n'est pas dans ce fichier : la colonne contient le renvoi « Voir
+//  export RIO » du portail. Il n'est donc repris que s'il ressemble à un vrai
+//  RIO (12 caractères alphanumériques), ce qui n'arrive pas avec cet export.
 // ============================================================
 
 const SIMCITY_PARC_MAX_BYTES = 15 * 1024 * 1024;
@@ -39,6 +46,11 @@ const SIMCITY_PARC_COLUMNS = [
     'eid'          => 'eid',
     'iccid'        => 'n de csim',
     'offer'        => 'type d offre',
+    'pin'          => 'pin 1',
+    'pin2'         => 'pin 2',
+    'puk'          => 'puk 1',
+    'puk2'         => 'puk 2',
+    'rio'          => 'rio',
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -214,9 +226,24 @@ function simcity_parc_parse(string $path): array {
             'eid'           => preg_replace('/\D/', '', $get('eid')),
             'iccid'         => preg_replace('/\D/', '', $get('iccid')),
             'offer'         => $get('offer'),
+            // Codes SIM : uniquement des chiffres, longueurs plausibles.
+            'pin'           => simcity_parc_code($get('pin'), 4, 8),
+            'pin2'          => simcity_parc_code($get('pin2'), 4, 8),
+            'puk'           => simcity_parc_code($get('puk'), 8, 12),
+            'puk2'          => simcity_parc_code($get('puk2'), 8, 12),
+            // Le portail renvoie « Voir export RIO » : on ne garde que ce qui
+            // ressemble réellement à un RIO.
+            'rio'           => preg_match('/^[A-Za-z0-9]{12}$/', $get('rio')) ? strtoupper($get('rio')) : '',
         ];
     }
     return ['records' => $records, 'ignored' => $ignored, 'columns' => array_keys($map)];
+}
+
+// Code SIM : chiffres uniquement, dans une longueur plausible, sinon ''.
+// Écarte les cellules de remplissage du portail (« - », « n/a »…).
+function simcity_parc_code(string $s, int $min, int $max): string {
+    $d = preg_replace('/\D/', '', $s);
+    return (strlen($d) >= $min && strlen($d) <= $max) ? $d : '';
 }
 
 // « 18/06/2019 » → « Y-m-d » (null si vide ou invalide).
@@ -245,6 +272,7 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
     $app = [];
     $sql = "SELECT l.id, l.phone_number, l.iccid, l.status, l.archived, l.sim_vierge, l.agent_id,
                    l.plan_id, l.billing_id, l.device_id, l.activation_date,
+                   IFNULL(l.pin,'') pin, IFNULL(l.puk,'') puk,
                    IFNULL(a.last_name,'') ln, IFNULL(a.first_name,'') fn,
                    IFNULL(p.name,'') plan_name, REPLACE(IFNULL(b.account_number,''),' ','') acct,
                    IFNULL(d.imei,'') imei, IFNULL(m.brand,'') brand, IFNULL(m.name,'') model
@@ -265,7 +293,8 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
 
     $rows = [];
     $counts = ['total' => count($records), 'unknown' => 0, 'name' => 0, 'plan' => 0, 'status' => 0,
-               'billing' => 0, 'iccid' => 0, 'imei' => 0, 'device_swap' => 0, 'imei_absent' => 0, 'ok' => 0];
+               'billing' => 0, 'iccid' => 0, 'imei' => 0, 'codes' => 0, 'device_swap' => 0,
+               'imei_absent' => 0, 'ok' => 0];
     $seen = [];
     foreach ($records as $rec) {
         $seen[$rec['phone']] = true;
@@ -299,6 +328,12 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
             if ($rec['imei_used'] !== '' && $a['imei'] !== '' && preg_replace('/\D/', '', $a['imei']) !== $rec['imei_used']) {
                 $issues[] = 'imei'; $counts['imei']++;
             }
+            // Codes SIM : on signale un écart, jamais les valeurs. « Absent
+            // dans SimCity » compte aussi comme un écart à compléter.
+            if (($rec['pin'] !== '' && $rec['pin'] !== trim((string)$a['pin']))
+                || ($rec['puk'] !== '' && $rec['puk'] !== trim((string)$a['puk']))) {
+                $issues[] = 'codes'; $counts['codes']++;
+            }
             if (!$issues) $counts['ok']++;
         }
         // Contrôles indépendants du référentiel de lignes.
@@ -329,7 +364,7 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
 // $opts : ['billing'=>bool, 'plan'=>bool, 'status'=>bool, 'iccid'=>bool, 'create'=>bool]
 // Retourne le décompte des écritures réalisées.
 function simcity_parc_apply(PDO $pdo, array $records, array $opts): array {
-    $done = ['billing' => 0, 'plan' => 0, 'status' => 0, 'iccid' => 0, 'created' => 0,
+    $done = ['billing' => 0, 'plan' => 0, 'status' => 0, 'iccid' => 0, 'codes' => 0, 'created' => 0,
              'accounts' => 0, 'plans' => 0];
 
     // Référentiels résolus / créés à la demande.
@@ -338,7 +373,9 @@ function simcity_parc_apply(PDO $pdo, array $records, array $opts): array {
     $planId = [];
     foreach ($pdo->query("SELECT id, name FROM plan_types") as $r) $planId[simcity_parc_norm_header((string)$r['name'])] = (int)$r['id'];
 
-    $findLine = $pdo->prepare("SELECT id, iccid, status, plan_id, billing_id FROM mobile_lines
+    $findLine = $pdo->prepare("SELECT id, iccid, status, plan_id, billing_id,
+            IFNULL(pin,'') pin, IFNULL(pin2,'') pin2, IFNULL(puk,'') puk, IFNULL(puk2,'') puk2, IFNULL(rio,'') rio
+        FROM mobile_lines
         WHERE REPLACE(REPLACE(REPLACE(phone_number,' ',''),'.',''),'-','') = ? LIMIT 1");
 
     foreach ($records as $rec) {
@@ -376,11 +413,17 @@ function simcity_parc_apply(PDO $pdo, array $records, array $opts): array {
         if (!$line) {
             // Création : ligne en stock, sans agent — l'affectation reste manuelle.
             if (empty($opts['create'])) continue;
+            $withCodes = !empty($opts['codes']);
             $pdo->prepare("INSERT INTO mobile_lines (phone_number, iccid, plan_id, billing_id, status,
-                    activation_date, notes) VALUES (?,?,?,?,?,?,?)")
+                    activation_date, pin, pin2, puk, puk2, rio, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
                 ->execute([$rec['phone'], $rec['iccid'] ?: null, $pid, $bid,
-                           $status === 'Suspended' ? 'Suspended' : 'Stock',
-                           $rec['activation'], 'Créée depuis un export de parc SFR']);
+                           $status === 'Suspended' ? 'Suspended' : 'Stock', $rec['activation'],
+                           $withCodes ? ($rec['pin']  ?: null) : null,
+                           $withCodes ? ($rec['pin2'] ?: null) : null,
+                           $withCodes ? ($rec['puk']  ?: null) : null,
+                           $withCodes ? ($rec['puk2'] ?: null) : null,
+                           $withCodes ? ($rec['rio']  ?: null) : null,
+                           'Créée depuis un export de parc SFR']);
             $done['created']++;
             continue;
         }
@@ -404,6 +447,20 @@ function simcity_parc_apply(PDO $pdo, array $records, array $opts): array {
         if (!empty($opts['iccid']) && $rec['iccid'] !== '' && trim((string)$line['iccid']) === '') {
             $pdo->prepare("UPDATE mobile_lines SET iccid=? WHERE id=?")->execute([$rec['iccid'], $line['id']]);
             $done['iccid']++;
+        }
+        // Codes SIM : l'opérateur est la source de référence, on aligne donc
+        // les valeurs présentes dans l'export (champ vide côté export = on ne
+        // touche pas). Un seul UPDATE, compté une fois par ligne.
+        if (!empty($opts['codes'])) {
+            $set = []; $args = [];
+            foreach (['pin' => 'pin', 'pin2' => 'pin2', 'puk' => 'puk', 'puk2' => 'puk2', 'rio' => 'rio'] as $k => $col) {
+                if ($rec[$k] !== '' && $rec[$k] !== trim((string)$line[$col])) { $set[] = "$col=?"; $args[] = $rec[$k]; }
+            }
+            if ($set) {
+                $args[] = $line['id'];
+                $pdo->prepare("UPDATE mobile_lines SET " . implode(',', $set) . " WHERE id=?")->execute($args);
+                $done['codes']++;
+            }
         }
     }
     return $done;

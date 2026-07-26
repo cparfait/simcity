@@ -3884,7 +3884,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } else {
                     $opts = ['billing' => !empty($d['apply_billing']), 'plan' => !empty($d['apply_plan']),
                              'status'  => !empty($d['apply_status']),  'iccid' => !empty($d['apply_iccid']),
-                             'create'  => !empty($d['apply_create'])];
+                             'codes'   => !empty($d['apply_codes']),   'create' => !empty($d['apply_create'])];
                     if (!array_filter($opts)) {
                         flash('error', "Aucun poste coché — rien à mettre à jour. Le contrôle reste consultable.");
                     } else {
@@ -3897,12 +3897,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             if ($done['plan'])     $resume[] = "{$done['plan']} forfait(s) corrigé(s)";
                             if ($done['status'])   $resume[] = "{$done['status']} statut(s) aligné(s)";
                             if ($done['iccid'])    $resume[] = "{$done['iccid']} ICCID complété(s)";
+                            if ($done['codes'])    $resume[] = "{$done['codes']} ligne(s) avec codes SIM mis à jour";
                             if ($done['accounts']) $resume[] = "{$done['accounts']} compte(s) créé(s) au référentiel";
                             if ($done['plans'])    $resume[] = "{$done['plans']} forfait(s) créé(s) au référentiel";
                             $txt = $resume ? implode(', ', $resume) : 'aucune différence à appliquer';
                             logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "Import depuis SFR ({$pend['name']}) : $txt");
+                            // Le bloc POST est encapsulé dans une transaction
+                            // commitée tout à la fin ; comme on sort par un
+                            // redirect, c'est ici qu'il faut valider, sinon PDO
+                            // annule tout à la destruction du script.
+                            if ($pdo->inTransaction()) $pdo->commit();
                             flash('success', "Mise à jour depuis l'export SFR — $txt.");
                         } catch (Throwable $e) {
+                            if ($pdo->inTransaction()) $pdo->rollBack();
                             $detail = (defined('APP_DEBUG') && APP_DEBUG) ? ' — ' . $e->getMessage() : '';
                             flash('error', "La mise à jour a échoué$detail.");
                         }
@@ -4444,7 +4451,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'invoice', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'invoice', 'parc', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -6817,21 +6824,18 @@ elseif ($page === 'refs') {
         $ent = 'settings';
     }
     ?>
-    <?php if($tab !== 'settings'):
-      $addLabels = [
-        'agents'    => 'Ajouter un(e) utilisateur(trice)',
-        'services'  => 'Ajouter un service',
-        'models'    => 'Ajouter un modèle',
-        'plans'     => 'Ajouter un forfait',
-        'operators' => 'Ajouter un opérateur',
-        'billing'   => 'Ajouter un compte de facturation',
-        'admins'    => 'Ajouter un compte admin',
-      ];
+    <?php
+    // Le bouton d'ajout est rendu plus bas, à droite de la barre de recherche.
+    $addLabels = [
+      'agents'    => 'Ajouter un(e) utilisateur(trice)',
+      'services'  => 'Ajouter un service',
+      'models'    => 'Ajouter un modèle',
+      'plans'     => 'Ajouter un forfait',
+      'operators' => 'Ajouter un opérateur',
+      'billing'   => 'Ajouter un compte de facturation',
+      'admins'    => 'Ajouter un compte admin',
+    ];
     ?>
-    <div class="page-header">
-      <button class="btn-primary" onclick="openModal('modal-add-<?=$ent?>')"><i class="bi bi-plus-lg"></i> <?=h($addLabels[$tab] ?? 'Ajouter')?></button>
-    </div>
-    <?php endif; ?>
 
     <?php if($tab !== 'agents'): // « Utilisateurs » a son propre menu à gauche : pas de bandeau d'onglets sur cette page ?>
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
@@ -7698,16 +7702,120 @@ elseif ($page === 'refs') {
     </div>
 
     <?php
+    // ── Rapport de comparaison, commun aux deux sources d'import ──
+    // CSV d'inventaire et export de parc SFR passent par le même moteur
+    // (simcity_parc_compare) et donc par le même rapport : mêmes écarts,
+    // mêmes règles, un seul écran à comprendre.
+    $parcControlReport = function(array $cmp, string $srcLabel, string $param, string $anchor) {
+        $c = $cmp['counts'];
+        $issueMeta = [
+            'unknown'     => ['Ligne inconnue de SimCity',         'badge-danger',  'bi-question-circle'],
+            'name'        => ['Titulaire différent',               'badge-warning', 'bi-person-exclamation'],
+            'plan'        => ['Forfait différent',                 'badge-warning', 'bi-globe2'],
+            'status'      => ['Statut différent',                  'badge-warning', 'bi-toggle-off'],
+            'billing'     => ['Compte de facturation différent',   'badge-info',    'bi-cash-coin'],
+            'iccid'       => ['Carte SIM différente',              'badge-info',    'bi-sim'],
+            'imei'        => ['IMEI différent du matériel associé', 'badge-warning', 'bi-phone'],
+            'codes'       => ['Codes SIM à compléter ou corriger',  'badge-info',    'bi-key'],
+            'device_swap' => ['Terminal utilisé ≠ terminal acheté', 'badge-muted',   'bi-arrow-left-right'],
+            'imei_absent' => ['IMEI utilisé absent du parc',        'badge-danger',  'bi-exclamation-triangle'],
+        ];
+        $fltr = isset($_GET[$param], $issueMeta[$_GET[$param]]) ? $_GET[$param] : '';
+        $flagged = array_values(array_filter($cmp['rows'], fn($r) => $r['issues']));
+        usort($flagged, fn($x, $y) => count($y['issues']) <=> count($x['issues']));
+        $base = "?page=refs&tab=settings&sub=maintenance";
+        ob_start(); ?>
+        <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;margin-bottom:1.25rem;">
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Lignes dans le fichier</div>
+               <div style="font-size:1.5rem;font-weight:700;color:var(--primary);"><?=$c['total']?></div>
+               <div class="muted"><?=h($srcLabel)?></div></div>
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Concordantes</div>
+               <div style="font-size:1.5rem;font-weight:700;color:var(--success);"><?=$c['ok']?></div>
+               <div class="muted">aucun écart détecté</div></div>
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Inconnues de SimCity</div>
+               <div style="font-size:1.5rem;font-weight:700;color:<?=$c['unknown']?'var(--danger)':'var(--success)'?>;"><?=$c['unknown']?></div>
+               <div class="muted">seraient des créations</div></div>
+          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Absentes du fichier</div>
+               <div style="font-size:1.5rem;font-weight:700;color:<?=$c['missing']?'var(--warning)':'var(--success)'?>;"><?=$c['missing']?></div>
+               <div class="muted">actives dans SimCity</div></div>
+        </div>
+
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+          <a href="<?=$base?>#<?=h($anchor)?>" class="badge <?=$fltr===''?'badge-info':'badge-muted'?>" style="text-decoration:none;">Tous les écarts (<?=count($flagged)?>)</a>
+          <?php foreach($issueMeta as $k => [$lbl, $cls, $ico]): if(empty($c[$k])) continue; ?>
+          <a href="<?=$base?>&<?=h($param)?>=<?=$k?>#<?=h($anchor)?>" class="badge <?=$fltr===$k?$cls:'badge-muted'?>" style="text-decoration:none;"><i class="bi <?=$ico?>"></i> <?=$lbl?> (<?=$c[$k]?>)</a>
+          <?php endforeach; ?>
+        </div>
+
+        <div style="max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.5rem;">
+          <table class="data-table" style="font-size:.83rem;">
+            <thead><tr><th>Ligne</th><th>Dans le fichier</th><th>Dans SimCity</th><th>Écarts constatés</th></tr></thead>
+            <tbody>
+            <?php $shownP = 0; foreach($flagged as $r): if($fltr !== '' && !in_array($fltr, $r['issues'], true)) continue;
+                  if(++$shownP > 400) break; $rec = $r['rec']; $a = $r['app']; ?>
+            <tr>
+              <td style="font-family:var(--font-mono);white-space:nowrap;"><?=h(formatPhone($rec['phone']))?></td>
+              <td style="font-size:.8rem;">
+                <?=h(trim($rec['last_name'] . ' ' . $rec['first_name']) ?: '—')?><br>
+                <span class="muted"><?=h($rec['plan'] ?: '—')?><?=$rec['status'] !== '' ? ' · ' . h($rec['status']) : ''?><?=$rec['billing_acct'] !== '' ? ' · ' . h($rec['billing_acct']) : ''?></span><br>
+                <span class="muted"><?=h($rec['device_used'] ?: 'terminal non renseigné')?></span>
+              </td>
+              <td style="font-size:.8rem;">
+                <?php if(!$a): ?><span class="badge badge-danger" style="font-size:.66rem;">absente du référentiel</span>
+                <?php else: ?>
+                  <?=h(trim($a['ln'] . ' ' . $a['fn']) ?: 'sans utilisateur')?><br>
+                  <span class="muted"><?=h($a['plan_name'] ?: '—')?> · <?=h($a['status'])?><?=$a['acct'] !== '' ? ' · ' . h($a['acct']) : ' · sans compte'?></span><br>
+                  <span class="muted"><?=h(trim($a['brand'] . ' ' . $a['model']) ?: 'aucun matériel associé')?></span>
+                <?php endif; ?>
+              </td>
+              <td>
+                <?php foreach($r['issues'] as $is): [$lbl, $cls, $ico] = $issueMeta[$is]; ?>
+                <span class="badge <?=$cls?>" style="font-size:.66rem;"><i class="bi <?=$ico?>"></i> <?=$lbl?></span>
+                <?php endforeach; ?>
+              </td>
+            </tr>
+            <?php endforeach; if(!$shownP): ?><tr><td colspan="4" class="empty-cell">Aucun écart pour ce filtre</td></tr><?php endif; ?>
+            <?php if($shownP > 400): ?><tr><td colspan="4" class="muted">Affichage limité aux 400 premiers écarts.</td></tr><?php endif; ?>
+            </tbody>
+          </table>
+        </div>
+
+        <?php if($cmp['missing']): ?>
+        <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--warning);margin-bottom:.5rem;">
+          <i class="bi bi-eye-slash"></i> Dans SimCity mais absentes du fichier (<?=count($cmp['missing'])?>)</h4>
+        <p class="muted" style="font-size:.82rem;margin-bottom:.6rem;">Lignes actives au référentiel qui ne figurent pas dans le fichier déposé — à vérifier (résiliation non enregistrée, ou fichier partiel).</p>
+        <div style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.5rem;">
+          <table class="data-table" style="font-size:.83rem;">
+            <thead><tr><th>Ligne</th><th>Utilisateur</th><th>Statut SimCity</th></tr></thead>
+            <tbody>
+            <?php foreach($cmp['missing'] as $m): ?>
+            <tr><td style="font-family:var(--font-mono);"><?=h(formatPhone(preg_replace('/\D/', '', (string)$m['phone_number'])))?></td>
+                <td><?=h(trim($m['ln'] . ' ' . $m['fn']) ?: '—')?></td>
+                <td><?=h($m['status'])?></td></tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <?php endif; ?>
+        <?php return ob_get_clean();
+    };
+
     // ── Étape de contrôle avant importation ──────────────────────
     // Un CSV analysé attend confirmation : on liste les utilisateurs du
     // fichier, rapprochés du référentiel ou à créer, avec possibilité
-    // d'associer manuellement chaque non-correspondance à un agent existant.
+    // d'associer manuellement chaque non-correspondance à un agent existant,
+    // et on affiche le même rapport de comparaison que l'export SFR.
     $pendImp = $_SESSION['import_pending'] ?? null;
     if ($pendImp && !is_file($pendImp['file'])) { unset($_SESSION['import_pending']); $pendImp = null; }
-    $impScan = null;
+    $impScan = null; $impCmp = null;
     if ($pendImp) {
         try { $impScan = simcity_import_scan_users($pdo, $pendImp['file']); }
         catch (Throwable $e) { $impScan = ['matched'=>[], 'unmatched'=>[]]; }
+        // La comparaison n'a de sens que sans purge : après purge, tout est créé.
+        if (empty($pendImp['purge'])) {
+            try { $impCmp = simcity_parc_compare($pdo, simcity_import_csv_records($pendImp['file'])); }
+            catch (Throwable $e) { $impCmp = null; }
+        }
     }
     ?>
     <?php if($pendImp): ?>
@@ -7732,6 +7840,17 @@ elseif ($page === 'refs') {
           Pour un import propre, associez les non-correspondances à un utilisateur existant (recherche ci-dessous)
           ou laissez vide pour les créer.
         </p>
+
+        <?php if($impCmp): ?>
+        <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);margin-bottom:.6rem;">
+          <i class="bi bi-clipboard-check"></i> Comparaison des lignes avec le référentiel</h4>
+        <p class="muted" style="font-size:.82rem;margin-bottom:.9rem;">
+          Même contrôle que l'export SFR : ce que le CSV apporte, ce que SimCity contient déjà, et les écarts entre les deux.
+          L'import ne crée que ce qui manque (les doublons de numéro et d'IMEI sont ignorés) — ce tableau vous dit d'avance
+          ce qui sera créé et sur quoi les deux sources divergent.
+        </p>
+        <?=$parcControlReport($impCmp, 'fichier CSV déposé', 'cissue', 'import-review')?>
+        <?php endif; ?>
 
         <?php if($impScan['unmatched']): ?>
         <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--warning);margin-bottom:.5rem;"><i class="bi bi-person-plus"></i> Sans correspondance (<?=count($impScan['unmatched'])?>)</h4>
@@ -7912,8 +8031,9 @@ elseif ($page === 'refs') {
         </div>
         <p style="color:var(--text3);font-size:.82rem;line-height:1.6;margin:.5rem 0 1.25rem;">
           15 Mo maximum. Les colonnes sont reconnues par leur en-tête, l'ordre du portail peut donc changer sans casser la lecture.
-          <br><strong>Les codes PIN, PUK et le RIO présents dans l'export ne sont jamais lus ni stockés</strong> — l'application
-          n'a pas à devenir un coffre à codes SIM.
+          <br>Les <strong>codes SIM (PIN 1/2, PUK 1/2)</strong> sont repris si vous cochez le poste correspondant à l'étape de contrôle.
+          Ils sont alors stockés en clair, comme ceux saisis à la main ou importés par CSV : restreignez l'accès à la base et aux
+          sauvegardes SQL en conséquence. Le RIO n'est pas dans ce fichier (le portail y renvoie vers un export dédié).
         </p>
         <p style="margin:0 0 1.25rem;font-size:.85rem;">
           <a href="https://www.sfrbusiness.fr/espace-client/portail/#/facturation-et-paiement/societe/multiple"
@@ -7944,98 +8064,12 @@ elseif ($page === 'refs') {
         }
     }
     ?>
-    <?php if($pendParc && $parcCmp):
-        $c = $parcCmp['counts'];
-        $issueMeta = [
-            'unknown'     => ['Ligne inconnue de SimCity',        'badge-danger',  'bi-question-circle'],
-            'name'        => ['Titulaire différent',              'badge-warning', 'bi-person-exclamation'],
-            'plan'        => ['Forfait différent',                'badge-warning', 'bi-globe2'],
-            'status'      => ['Statut différent',                 'badge-warning', 'bi-toggle-off'],
-            'billing'     => ['Compte de facturation différent',  'badge-info',    'bi-cash-coin'],
-            'iccid'       => ['Carte SIM différente',             'badge-info',    'bi-sim'],
-            'imei'        => ['IMEI différent du matériel associé','badge-warning','bi-phone'],
-            'device_swap' => ['Terminal utilisé ≠ terminal acheté','badge-muted',  'bi-arrow-left-right'],
-            'imei_absent' => ['IMEI utilisé absent du parc',       'badge-danger',  'bi-exclamation-triangle'],
-        ];
-        $fltr = isset($_GET['pissue'], $issueMeta[$_GET['pissue']]) ? $_GET['pissue'] : '';
-        $flagged = array_values(array_filter($parcCmp['rows'], fn($r) => $r['issues']));
-        usort($flagged, fn($x, $y) => count($y['issues']) <=> count($x['issues']));
-    ?>
+    <?php if($pendParc && $parcCmp): ?>
     <div class="card" style="margin-top:1.5rem;border:1px solid var(--primary);" id="parc-review">
       <div class="card-header"><i class="bi bi-clipboard-check"></i> Contrôle de l'état de parc — <?=h($pendParc['name'])?></div>
       <div style="padding:1.5rem;">
-        <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1rem;margin-bottom:1.25rem;">
-          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Lignes chez SFR</div>
-               <div style="font-size:1.5rem;font-weight:700;color:var(--primary);"><?=$c['total']?></div>
-               <div class="muted">dans l'export déposé</div></div>
-          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Concordantes</div>
-               <div style="font-size:1.5rem;font-weight:700;color:var(--success);"><?=$c['ok']?></div>
-               <div class="muted">aucun écart détecté</div></div>
-          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Inconnues de SimCity</div>
-               <div style="font-size:1.5rem;font-weight:700;color:<?=$c['unknown']?'var(--danger)':'var(--success)'?>;"><?=$c['unknown']?></div>
-               <div class="muted">facturées mais hors référentiel</div></div>
-          <div><div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Absentes de l'export</div>
-               <div style="font-size:1.5rem;font-weight:700;color:<?=$c['missing']?'var(--warning)':'var(--success)'?>;"><?=$c['missing']?></div>
-               <div class="muted">dans SimCity, plus chez SFR</div></div>
-        </div>
-
-        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem;">
-          <a href="?page=refs&tab=settings&sub=maintenance#parc-review" class="badge <?=$fltr===''?'badge-info':'badge-muted'?>" style="text-decoration:none;">Tous les écarts (<?=count($flagged)?>)</a>
-          <?php foreach($issueMeta as $k => [$lbl, $cls, $ico]): if(empty($c[$k])) continue; ?>
-          <a href="?page=refs&tab=settings&sub=maintenance&pissue=<?=$k?>#parc-review" class="badge <?=$fltr===$k?$cls:'badge-muted'?>" style="text-decoration:none;"><i class="bi <?=$ico?>"></i> <?=$lbl?> (<?=$c[$k]?>)</a>
-          <?php endforeach; ?>
-        </div>
-
-        <div style="max-height:420px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.5rem;">
-          <table class="data-table" style="font-size:.83rem;">
-            <thead><tr><th>Ligne</th><th>Chez SFR</th><th>Dans SimCity</th><th>Écarts constatés</th></tr></thead>
-            <tbody>
-            <?php $shownP = 0; foreach($flagged as $r): if($fltr !== '' && !in_array($fltr, $r['issues'], true)) continue;
-                  if(++$shownP > 400) break; $rec = $r['rec']; $a = $r['app']; ?>
-            <tr>
-              <td style="font-family:var(--font-mono);white-space:nowrap;"><?=h(formatPhone($rec['phone']))?></td>
-              <td style="font-size:.8rem;">
-                <?=h(trim($rec['last_name'] . ' ' . $rec['first_name']) ?: '—')?><br>
-                <span class="muted"><?=h($rec['plan'] ?: '—')?> · <?=h($rec['status'] ?: '?')?><?=$rec['billing_acct'] !== '' ? ' · ' . h($rec['billing_acct']) : ''?></span><br>
-                <span class="muted"><?=h($rec['device_used'] ?: 'terminal non renseigné')?></span>
-              </td>
-              <td style="font-size:.8rem;">
-                <?php if(!$a): ?><span class="badge badge-danger" style="font-size:.66rem;">absente du référentiel</span>
-                <?php else: ?>
-                  <?=h(trim($a['ln'] . ' ' . $a['fn']) ?: 'sans utilisateur')?><br>
-                  <span class="muted"><?=h($a['plan_name'] ?: '—')?> · <?=h($a['status'])?><?=$a['acct'] !== '' ? ' · ' . h($a['acct']) : ' · sans compte'?></span><br>
-                  <span class="muted"><?=h(trim($a['brand'] . ' ' . $a['model']) ?: 'aucun matériel associé')?></span>
-                <?php endif; ?>
-              </td>
-              <td>
-                <?php foreach($r['issues'] as $is): [$lbl, $cls, $ico] = $issueMeta[$is]; ?>
-                <span class="badge <?=$cls?>" style="font-size:.66rem;"><i class="bi <?=$ico?>"></i> <?=$lbl?></span>
-                <?php endforeach; ?>
-              </td>
-            </tr>
-            <?php endforeach; if(!$shownP): ?><tr><td colspan="4" class="empty-cell">Aucun écart pour ce filtre</td></tr><?php endif; ?>
-            <?php if($shownP > 400): ?><tr><td colspan="4" class="muted">Affichage limité aux 400 premiers écarts.</td></tr><?php endif; ?>
-            </tbody>
-          </table>
-        </div>
-
-        <?php if($parcCmp['missing']): ?>
-        <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--warning);margin-bottom:.5rem;">
-          <i class="bi bi-eye-slash"></i> Dans SimCity mais absentes de l'export SFR (<?=count($parcCmp['missing'])?>)</h4>
-        <p class="muted" style="font-size:.82rem;margin-bottom:.6rem;">Lignes actives au référentiel que l'opérateur ne connaît plus : résiliations à enregistrer côté SimCity.</p>
-        <div style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:1.5rem;">
-          <table class="data-table" style="font-size:.83rem;">
-            <thead><tr><th>Ligne</th><th>Utilisateur</th><th>Statut SimCity</th></tr></thead>
-            <tbody>
-            <?php foreach($parcCmp['missing'] as $m): ?>
-            <tr><td style="font-family:var(--font-mono);"><?=h(formatPhone(preg_replace('/\D/', '', (string)$m['phone_number'])))?></td>
-                <td><?=h(trim($m['ln'] . ' ' . $m['fn']) ?: '—')?></td>
-                <td><?=h($m['status'])?></td></tr>
-            <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-        <?php endif; ?>
+        <?=$parcControlReport($parcCmp, 'export SFR', 'pissue', 'parc-review')?>
+        <?php $c = $parcCmp['counts']; ?>
 
         <form method="post" onsubmit="return confirm('Appliquer les postes cochés au référentiel SimCity ?')">
           <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
@@ -8063,6 +8097,11 @@ elseif ($page === 'refs') {
               <input type="checkbox" name="apply_iccid" value="1" style="margin-top:3px;">
               <span><strong>Cartes SIM</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['iccid']?> écart(s)</span>
               <span class="muted" style="display:block;">Complète l'ICCID <em>uniquement</em> si le champ est vide dans SimCity.</span></span></label>
+            <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;cursor:pointer;">
+              <input type="checkbox" name="apply_codes" value="1" style="margin-top:3px;">
+              <span><strong>Codes SIM (PIN, PUK, RIO)</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['codes']?> écart(s)</span>
+              <span class="muted" style="display:block;">PIN 1/2, PUK 1/2 tels que l'opérateur les publie. Ils sont stockés en clair :
+              l'accès à la base et aux sauvegardes SQL doit être restreint en conséquence.</span></span></label>
             <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;cursor:pointer;">
               <input type="checkbox" name="apply_create" value="1" style="margin-top:3px;">
               <span><strong>Créer les lignes inconnues</strong> <span class="badge badge-muted" style="font-size:.66rem;"><?=$c['unknown']?></span>
@@ -8153,9 +8192,14 @@ elseif ($page === 'refs') {
       <a href="?page=refs&tab=agents&arch=1" class="tab-btn <?=$agentArchived?'active':''?>"><i class="bi bi-archive"></i> Partis <span class="badge badge-muted" style="font-size:.68rem;"><?=(int)($agCounts['partis'] ?? 0)?></span></a>
     </div>
     <?php endif; ?>
-    <div class="search-bar-wrap">
+    <!-- Recherche compacte et bouton d'ajout sur la même ligne : le bandeau
+         d'action pleine largeur au-dessus des onglets coûtait une ligne pour rien. -->
+    <div class="search-bar-wrap search-bar-inline">
       <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Filtrer..." oninput="tableSearch(this,'tbody-refs','count')"></div>
       <div class="search-count" id="count"></div>
+      <?php if($tab !== 'settings'): ?>
+      <button class="btn-primary" style="white-space:nowrap;" onclick="openModal('modal-add-<?=$ent?>')"><i class="bi bi-plus-lg"></i> <?=h($addLabels[$tab] ?? 'Ajouter')?></button>
+      <?php endif; ?>
     </div>
 
     <div class="card" style="overflow-x:auto;">
@@ -9257,6 +9301,11 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .data-table td{padding:.8rem 1.25rem;border-bottom:1px solid var(--border);font-size:.875rem;line-height:1.4} .data-table tbody tr{transition:background-color .12s ease} .data-table tbody tr:hover{background:var(--bg3)}
 .empty-cell{text-align:center;color:var(--text3);padding:3rem!important;font-style:italic} .muted{color:var(--text2)!important;font-size:.82rem;}
 .search-bar-wrap{margin-bottom:1rem;} .search-bar{display:flex;align-items:center;gap:.6rem;background:var(--card);border:1px solid var(--border2);border-radius:var(--radius-sm);padding:.55rem .9rem; transition:border-color .2s, box-shadow .2s; }
+/* Variante compacte : recherche limitée en largeur, action alignée à droite */
+.search-bar-inline{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap;}
+.search-bar-inline>.search-bar{flex:0 1 380px;min-width:200px;}
+.search-bar-inline>.search-count{margin:0;}
+.search-bar-inline>.btn-primary{margin-left:auto;}
 [data-theme="dark"] .search-bar{background:var(--bg3)}
 .search-bar:focus-within { border-color:var(--primary); box-shadow:var(--ring); }
 .search-bar-icon{font-size:1rem;opacity:.5;flex-shrink:0;} .search-bar input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:.9rem;} .search-count{font-size:.75rem;color:var(--text3);margin-top:.3rem;}

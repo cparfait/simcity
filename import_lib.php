@@ -106,6 +106,56 @@ function simcity_import_scan_users(PDO $pdo, string $csvPath): array {
     return ['matched' => $matched, 'unmatched' => $unmatched];
 }
 
+// Convertit le CSV dans la forme d'enregistrement produite par l'export de
+// parc SFR (voir sfr_parc_lib.php), afin de réutiliser le même moteur de
+// comparaison : que les données viennent d'un CSV ou du portail opérateur,
+// le contrôle avant import est le même écran et les mêmes règles.
+// Le CSV ne porte pas de statut de ligne : ce contrôle-là est donc neutre.
+function simcity_import_csv_records(string $csvPath): array {
+    $file = fopen($csvPath, 'r');
+    if (!$file) throw new RuntimeException("Fichier CSV illisible.");
+    $startReading = false;
+    $records = [];
+    while (($row = fgetcsv($file, 4000, ";")) !== false) {
+        $row = array_map(fn($v) => mb_convert_encoding((string)$v, 'UTF-8', 'Windows-1252'), $row);
+        if (!$startReading) {
+            if (isset($row[0]) && stripos($row[0], 'LIGNE') !== false) $startReading = true;
+            continue;
+        }
+        $phone = preg_replace('/\D/', '', $row[0] ?? '');
+        if (strlen($phone) < 9) continue;
+        $imei  = preg_replace('/\D/', '', $row[10] ?? '');
+        $model = trim($row[11] ?? '');
+        $records[] = [
+            'phone'         => $phone,
+            'last_name'     => (string)fmtLastName($row[2] ?? ''),
+            'first_name'    => (string)fmtFirstName($row[3] ?? ''),
+            'civility'      => '',
+            'billing_acct'  => preg_replace('/\s+/', '', $row[5] ?? ''),
+            'billing_name'  => '',
+            'status'        => '',                       // absent du CSV
+            'activation'    => simcity_parc_date(trim($row[9] ?? '')),
+            'engagement'    => null,
+            'plan'          => trim($row[12] ?? ''),
+            'device_used'   => $model,
+            'device_bought' => $model,
+            'imei_used'     => $imei,
+            'imei_bought'   => $imei,
+            'sim_format'    => '',
+            'eid'           => '',
+            'iccid'         => preg_replace('/\D/', '', $row[13] ?? ''),
+            'offer'         => '',
+            'pin'           => simcity_parc_code((string)($row[14] ?? ''), 4, 8),
+            'pin2'          => '',
+            'puk'           => simcity_parc_code((string)($row[15] ?? ''), 8, 12),
+            'puk2'          => '',
+            'rio'           => '',
+        ];
+    }
+    fclose($file);
+    return $records;
+}
+
 // Importe le CSV et retourne le décompte des objets créés, par catégorie.
 // $agentMap : associations décidées à l'étape de contrôle — clé
 // mb_strtolower("NOM|Prénom") => id d'un agent existant. Les utilisateurs

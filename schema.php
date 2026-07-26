@@ -407,6 +407,14 @@ function simcity_apply_schema(PDO $pdo): void
         $pdo->exec("ALTER TABLE devices ADD COLUMN inventory_label VARCHAR(100) NULL AFTER serial_number");
     }
 
+    // mobile_lines : codes SIM secondaires et RIO (export de parc SFR).
+    // pin / puk existent depuis l'origine ; PIN 2 et PUK 2 ont leurs colonnes.
+    if (empty($pdo->query("SHOW COLUMNS FROM mobile_lines LIKE 'pin2'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE mobile_lines ADD COLUMN pin2 VARCHAR(10) NULL AFTER pin");
+        $pdo->exec("ALTER TABLE mobile_lines ADD COLUMN puk2 VARCHAR(15) NULL AFTER puk");
+        $pdo->exec("ALTER TABLE mobile_lines ADD COLUMN rio  VARCHAR(20) NULL AFTER puk2");
+    }
+
     // invoice_lines : remise marché lue sur la facture (prix catalogue + taux)
     if (empty($pdo->query("SHOW COLUMNS FROM invoice_lines LIKE 'catalog_ht'")->fetchAll())) {
         $pdo->exec("ALTER TABLE invoice_lines ADD COLUMN catalog_ht DECIMAL(10,2) NULL AFTER hf_ht");
