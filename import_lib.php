@@ -106,6 +106,12 @@ function simcity_import_scan_users(PDO $pdo, string $csvPath): array {
     return ['matched' => $matched, 'unmatched' => $unmatched];
 }
 
+// Dépendances explicites : la conversion ci-dessous réutilise les
+// normalisations de l'export de parc (dates, codes SIM) pour produire la même
+// forme d'objet, et la mise en forme partagée des noms.
+require_once __DIR__ . '/sfr_parc_lib.php';
+require_once __DIR__ . '/lib_format.php';
+
 // Convertit le CSV dans la forme d'enregistrement produite par l'export de
 // parc SFR (voir sfr_parc_lib.php), afin de réutiliser le même moteur de
 // comparaison : que les données viennent d'un CSV ou du portail opérateur,

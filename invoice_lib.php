@@ -103,6 +103,21 @@ function simcity_inv_normalize_name(?string $s): string {
     return trim(preg_replace('/\s+/', ' ', $s));
 }
 
+// Deux noms désignent-ils la même personne ? Règle unique de l'application,
+// utilisée par le rapprochement des factures ET par le contrôle de l'état de
+// parc : la même question doit recevoir la même réponse dans les deux écrans.
+// Tolérante à l'ordre des mots, aux prénoms composés absents d'un côté et aux
+// fautes de frappe légères.
+function simcity_name_matches(?string $a, ?string $b): bool {
+    $wa = array_values(array_filter(explode(' ', simcity_inv_normalize_name($a))));
+    $wb = array_values(array_filter(explode(' ', simcity_inv_normalize_name($b))));
+    if (!$wa || !$wb) return false;
+    $inter = array_intersect($wa, $wb);
+    if (count($inter) >= min(count($wa), count($wb))) return true;   // l'un contient l'autre
+    if (count($inter) >= 2) return true;                             // nom + prénom communs
+    return levenshtein(implode(' ', $wa), implode(' ', $wb)) <= 3;   // tolérance typo
+}
+
 // ─────────────────────────────────────────────────────────────
 // PARSEUR PRINCIPAL
 // ─────────────────────────────────────────────────────────────
@@ -416,15 +431,15 @@ function simcity_invoice_import(PDO $pdo, string $pdfTmpPath, string $origName, 
 function simcity_invoice_store_detail(PDO $pdo, int $invId, array $parsed): void {
     $h = $parsed['header'];
     if ($parsed['lines']) {
-        $ins = $pdo->prepare("INSERT INTO invoice_lines (invoice_id, month_key, phone_number, sfr_user, plan_name,
+        $ins = $pdo->prepare("INSERT INTO invoice_lines (invoice_id, month_key, billing_account, phone_number, sfr_user, plan_name,
                 abo_ht, conso_ht, total_ht, calls_count, calls_seconds, sms_count, mms_count, data_ko,
                 surtaxe_count, surtaxe_seconds, surtaxe_ht, intl_count, intl_seconds, intl_ht, hf_ht,
                 catalog_ht, remise_pct)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON DUPLICATE KEY UPDATE sfr_user=VALUES(sfr_user)");
         foreach ($parsed['lines'] as $l) {
             $mk = $l['period_start'] ? substr($l['period_start'], 0, 7) : ($h['month_key'] ?? '');
-            $ins->execute([$invId, $mk, $l['phone_number'], $l['sfr_user'] ?: null, $l['plan_name'],
+            $ins->execute([$invId, $mk, $h['billing_account'], $l['phone_number'], $l['sfr_user'] ?: null, $l['plan_name'],
                 $l['abo_ht'], $l['conso_ht'], $l['total_ht'], $l['calls_count'], $l['calls_seconds'],
                 $l['sms_count'], $l['mms_count'], $l['data_ko'], $l['surtaxe_count'], $l['surtaxe_seconds'],
                 round($l['surtaxe_ht'], 2), $l['intl_count'], $l['intl_seconds'], round($l['intl_ht'], 2),

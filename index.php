@@ -2333,6 +2333,34 @@ if (isset($_GET['page']) && $_GET['page'] === 'invoice_pdf') {
     exit;
 }
 
+// ─── 3d ter. TÉLÉCHARGEMENT D'UNE PIÈCE JOINTE ────────────────
+// Même principe que les PDF de factures : les fichiers joints aux fiches
+// agents (justificatifs, courriers) ne sont plus servis directement par
+// Apache, mais ici, après contrôle de session.
+if (isset($_GET['page']) && $_GET['page'] === 'attachment') {
+    if (!isset($_SESSION['user_id'])) die("Accès refusé — connexion requise.");
+    $st = $pdo->prepare("SELECT file_name, file_path FROM attachments WHERE id=?");
+    $st->execute([(int)($_GET['id'] ?? 0)]);
+    $att = $st->fetch();
+    if (!$att || empty($att['file_path'])) die("Pièce jointe introuvable.");
+    // Le chemin vient de la base ; on le durcit malgré tout : sous uploads/,
+    // sans traversée de dossier.
+    $rel = ltrim(str_replace('\\', '/', (string)$att['file_path']), '/');
+    if (!preg_match('#^uploads/[A-Za-z0-9._-]+$#', $rel)) die("Chemin de fichier invalide.");
+    $path = __DIR__ . '/' . $rel;
+    if (!is_file($path)) die("Fichier absent du serveur.");
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime  = $finfo->file($path) ?: 'application/octet-stream';
+    $name  = preg_replace('/[^\w .()-]/u', '_', (string)($att['file_name'] ?: basename($rel)));
+    while (ob_get_level()) ob_end_clean();
+    header('Content-Type: ' . $mime);
+    header('Content-Disposition: inline; filename="' . $name . '"');
+    header('Content-Length: ' . filesize($path));
+    header('X-Content-Type-Options: nosniff');
+    readfile($path);
+    exit;
+}
+
 // ─── 3e. LOGO SVG TEINTÉ ──────────────────────────────────────
 // Sert le logo embarqué, recoloré avec la couleur du site si définie.
 // Public (affiché sur la page de connexion et les pages de demande).
@@ -3027,7 +3055,8 @@ if (isset($_GET['ajax_agent_details'])) {
     echo "<form method='post' enctype='multipart/form-data' style='display:flex;gap:10px;margin-bottom:1rem;padding:0;'><input type='hidden' name='_entity' value='attachment'><input type='hidden' name='agent_id' value='$id'><input type='hidden' name='" . CSRF_TOKEN_NAME . "' value='" . h($CSRF_TOKEN) . "'><input type='file' name='file' required style='padding:5px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:4px; flex:1;'><button type='submit' class='btn-primary' style='padding:5px 10px'>Uploader</button></form>";
     if($att) {
         echo "<ul style='padding-left:1.5rem; margin-bottom:2rem; color:var(--text);'>";
-        foreach($att as $a) echo "<li style='margin-bottom:5px;'><a href='{$a['file_path']}' target='_blank' style='color:var(--info); text-decoration:none;'>".h($a['file_name'])."</a></li>";
+        // Diffusion par index.php (contrôle de session), jamais par Apache.
+        foreach($att as $a) echo "<li style='margin-bottom:5px;'><a href='?page=attachment&id=".(int)$a['id']."' target='_blank' style='color:var(--info); text-decoration:none;'>".h($a['file_name'])."</a></li>";
         echo "</ul>";
     } else { echo "<div class='muted' style='margin-bottom:2rem;'>Aucun document.</div>"; }
 
@@ -3947,7 +3976,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } elseif ($ent === 'invoice') {
             // Module Facturation / Contrôle — factures opérateur (PDF)
-            if ($act === 'upload') {
+            // Réservé aux super-admins comme la suppression, la ré-analyse et
+            // les seuils : une facture mensuelle apporte en base la liste
+            // nominative complète du parc et de ses consommations.
+            if ($act === 'upload' && empty($_SESSION['is_admin'])) {
+                flash('error', 'Réservé aux super-administrateurs.');
+            } elseif ($act === 'upload') {
                 $files = $_FILES['file_data'] ?? null;
                 if (!$files || !isset($files['name'])) {
                     flash('error', 'Aucun fichier reçu.');
@@ -4396,7 +4430,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $isEsim    = !empty($d['esim']) ? 1 : 0;
                 $phoneNum  = $simVierge ? null : $phoneNum;
                 $statusVal = $simVierge ? 'Stock' : S($d,'status','Stock');
-                $pdo->prepare("INSERT INTO mobile_lines(phone_number,iccid,pin,puk,agent_id,billing_id,plan_id,service_id,device_id,activation_date,options_details,status,notes,personal_device,sim_vierge,esim,eid,activation_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")->execute([$phoneNum,S($d,'iccid'),S($d,'pin'),S($d,'puk'),$agt,$bil,$pln,$svc,$dev,NV($d,'activation_date'),S($d,'options_details'),$statusVal,S($d,'notes'),!empty($d['personal_device'])?1:0,$simVierge,$isEsim,NV($d,'eid'),NV($d,'activation_code')]);
+                $pdo->prepare("INSERT INTO mobile_lines(phone_number,iccid,pin,pin2,puk,puk2,rio,agent_id,billing_id,plan_id,service_id,device_id,activation_date,options_details,status,notes,personal_device,sim_vierge,esim,eid,activation_code) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")->execute([$phoneNum,S($d,'iccid'),S($d,'pin'),S($d,'pin2'),S($d,'puk'),S($d,'puk2'),S($d,'rio'),$agt,$bil,$pln,$svc,$dev,NV($d,'activation_date'),S($d,'options_details'),$statusVal,S($d,'notes'),!empty($d['personal_device'])?1:0,$simVierge,$isEsim,NV($d,'eid'),NV($d,'activation_code')]);
                 $newId = $pdo->lastInsertId();
                 if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'line', $newId, "Ligne/SIM".($isEsim?" (eSIM)":" ")." attribuée à $agtName", $agt); cancelPendingBons($pdo, $agt, "Nouvelle ligne attribuée"); }
                 if ($dev) {
@@ -4410,7 +4444,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $statusVal = $simVierge ? 'Stock' : S($d,'status');
                 $oldData = $pdo->query("SELECT agent_id, device_id FROM mobile_lines WHERE id=$id")->fetch();
                 $oldAgt = $oldData['agent_id']; $oldDev = $oldData['device_id'];
-                $pdo->prepare("UPDATE mobile_lines SET phone_number=?,iccid=?,pin=?,puk=?,agent_id=?,billing_id=?,plan_id=?,service_id=?,device_id=?,activation_date=?,options_details=?,status=?,notes=?,personal_device=?,sim_vierge=?,esim=?,eid=?,activation_code=? WHERE id=?")->execute([$phoneNum,S($d,'iccid'),S($d,'pin'),S($d,'puk'),$agt,$bil,$pln,$svc,$dev,NV($d,'activation_date'),S($d,'options_details'),$statusVal,S($d,'notes'),!empty($d['personal_device'])?1:0,$simVierge,$isEsim,NV($d,'eid'),NV($d,'activation_code'),$id]);
+                $pdo->prepare("UPDATE mobile_lines SET phone_number=?,iccid=?,pin=?,pin2=?,puk=?,puk2=?,rio=?,agent_id=?,billing_id=?,plan_id=?,service_id=?,device_id=?,activation_date=?,options_details=?,status=?,notes=?,personal_device=?,sim_vierge=?,esim=?,eid=?,activation_code=? WHERE id=?")->execute([$phoneNum,S($d,'iccid'),S($d,'pin'),S($d,'pin2'),S($d,'puk'),S($d,'puk2'),S($d,'rio'),$agt,$bil,$pln,$svc,$dev,NV($d,'activation_date'),S($d,'options_details'),$statusVal,S($d,'notes'),!empty($d['personal_device'])?1:0,$simVierge,$isEsim,NV($d,'eid'),NV($d,'activation_code'),$id]);
                 
                 if ($oldAgt != $agt) {
                     if ($oldAgt) logHistory($pdo, 'line', $id, "Ligne retirée de la dotation", $oldAgt);
@@ -4510,6 +4544,33 @@ if ($page === 'dashboard') {
 
     $alertSuspended = $pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND status='Suspended'")->fetchColumn();
 
+    // ── Facturation : lignes payées sans être utilisées ───────────
+    // Le module Facturation sait lesquelles sont réellement inactives : c'est
+    // l'information qui manquait ici pour que l'alerte « pensez à les résilier »
+    // porte un chiffre. Même règle que les alertes du module (N mois de silence
+    // consécutifs jusqu'au dernier mois facturé).
+    $invZeroNb = 0; $invZeroEur = 0.0; $invLastMonth = null;
+    $invZeroMonths = max(1, (int)getSetting($pdo, 'inv_alert_zero_months', 2));
+    try {
+        $invLastMonth = $pdo->query("SELECT MAX(month_key) FROM invoice_lines")->fetchColumn() ?: null;
+        if ($invLastMonth) {
+            $serie = [];
+            $stZ = $pdo->prepare("SELECT phone_number, month_key, total_ht,
+                        calls_count + sms_count + mms_count + data_ko AS conso
+                    FROM invoice_lines WHERE month_key <= ? ORDER BY month_key");
+            $stZ->execute([$invLastMonth]);
+            foreach ($stZ as $z) $serie[$z['phone_number']][$z['month_key']] = $z;
+            foreach ($serie as $byMonth) {
+                if (!isset($byMonth[$invLastMonth])) continue;
+                $streak = 0;
+                foreach (array_reverse(array_keys($byMonth)) as $mk) {
+                    if ((int)$byMonth[$mk]['conso'] === 0) $streak++; else break;
+                }
+                if ($streak >= $invZeroMonths) { $invZeroNb++; $invZeroEur += (float)$byMonth[$invLastMonth]['total_ht']; }
+            }
+        }
+    } catch (Throwable $e) { $invZeroNb = 0; }   // module non encore alimenté
+
     $brandData = $pdo->query("SELECT m.brand, COUNT(d.id) as c FROM devices d JOIN models m ON d.model_id=m.id WHERE d.archived=0 GROUP BY m.brand")->fetchAll();
     $brands = []; $bCounts = []; foreach($brandData as $b) { $brands[] = $b['brand']; $bCounts[] = $b['c']; }
 
@@ -4581,7 +4642,7 @@ if ($page === 'dashboard') {
         </div>
       </div>
 
-      <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $bonsExpired > 0 || $bonsExpSoon > 0 || $reqToQualify > 0 || $reqValidated > 0 || $reqStalled > 0): ?>
+      <?php if($cLinesStk <= $threshSim || $cDevStk <= $threshDevice || $alertSuspended > 0 || $invZeroNb > 0 || $bonsExpired > 0 || $bonsExpSoon > 0 || $reqToQualify > 0 || $reqValidated > 0 || $reqStalled > 0): ?>
       <div style="background:rgba(239,68,68,.07);border:1px solid rgba(239,68,68,.3);padding:1.25rem;border-radius:var(--radius);margin-bottom:1.5rem;">
           <h4 style="color:var(--danger);margin-bottom:10px;display:flex;align-items:center;gap:8px;"><i class="bi bi-exclamation-triangle-fill"></i> Points d'attention immédiats</h4>
           <ul style="color:var(--text);margin:0;padding-left:1.5rem;font-size:0.9rem;line-height:1.8;">
@@ -4593,6 +4654,13 @@ if ($page === 'dashboard') {
               <?php endif; ?>
               <?php if($alertSuspended > 0): ?>
               <li><strong><a href="?page=lines&tab=suspended" style="color:inherit;">Lignes Suspendues</a> :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$alertSuspended?></span> ligne(s) hors service (pensez à les résilier si inactives).</li>
+              <?php endif; ?>
+              <?php if($invZeroNb > 0): ?>
+              <li><strong><a href="?page=invoices&tab=alerts&type=zero" style="color:inherit;">Lignes facturées sans consommation</a> :</strong>
+                  <span style="color:var(--info);font-weight:bold;"><?=$invZeroNb?></span> ligne(s) payée(s) sans aucun usage depuis
+                  au moins <?=$invZeroMonths?> mois — <strong><?=number_format($invZeroEur, 2, ',', ' ')?> € HT/mois</strong>,
+                  soit <?=number_format($invZeroEur * 12, 2, ',', ' ')?> € par an.
+                  <a href="?page=invoices&tab=alerts&type=zero" style="color:var(--primary);font-size:.82rem;">Voir le détail →</a></li>
               <?php endif; ?>
               <?php if($bonsExpired > 0): ?>
               <li><strong>Bons expirés :</strong> <span style="color:var(--danger);font-weight:bold;"><?=$bonsExpired?></span> bon(s) en attente dont le lien de signature a expiré — regénérez-les depuis la fiche agent.</li>
@@ -4799,7 +4867,7 @@ elseif ($page === 'lines') {
     elseif ($isSuspended) $where .= " AND l.status='Suspended'";
     elseif (!$isArchive) $where .= " AND l.status NOT IN ('Stock','Suspended')";
 
-    $lines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.pin, l.puk, l.agent_id, l.billing_id, l.plan_id, l.service_id, l.device_id, l.activation_date, l.options_details, l.status, l.notes, l.archived, l.created_at, IFNULL(l.personal_device,0) as personal_device, IFNULL(l.sim_vierge,0) as sim_vierge, IFNULL(l.esim,0) as esim, l.eid, l.activation_code, a.first_name, a.last_name, s.name as service_name, b.account_number, p.name as plan_name, IFNULL(o.name,'') as operator_name, d.imei, d.serial_number, m.brand, m.name as model_name FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id LEFT JOIN billing_accounts b ON l.billing_id=b.id LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id LEFT JOIN devices d ON l.device_id=d.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY l.created_at DESC")->fetchAll();
+    $lines = $pdo->query("SELECT l.id, l.phone_number, l.iccid, l.pin, l.pin2, l.puk, l.puk2, l.rio, l.agent_id, l.billing_id, l.plan_id, l.service_id, l.device_id, l.activation_date, l.options_details, l.status, l.notes, l.archived, l.created_at, IFNULL(l.personal_device,0) as personal_device, IFNULL(l.sim_vierge,0) as sim_vierge, IFNULL(l.esim,0) as esim, l.eid, l.activation_code, a.first_name, a.last_name, s.name as service_name, b.account_number, p.name as plan_name, IFNULL(o.name,'') as operator_name, d.imei, d.serial_number, m.brand, m.name as model_name FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id LEFT JOIN billing_accounts b ON l.billing_id=b.id LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id LEFT JOIN devices d ON l.device_id=d.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY l.created_at DESC")->fetchAll();
     
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
     $plans = $pdo->query("SELECT p.id, p.name, IFNULL(o.name,'') as operator_name FROM plan_types p LEFT JOIN operators o ON p.operator_id=o.id ORDER BY o.name, p.name")->fetchAll();
@@ -4861,7 +4929,11 @@ elseif ($page === 'lines') {
           <?php elseif(!empty($l['esim'])): ?><span class="badge" style="background:rgba(139,92,246,.15);color:#a78bfa;font-size:.7rem;"><i class="bi bi-sim"></i> eSIM</span>
           <?php endif; ?>
           <code class="ref" title="ICCID"><?=h($l['iccid']?:'Pas de SIM')?></code><?php if(!empty($l['eid'])): ?><br><span class="muted" style="font-size:.72rem;">EID: <?=h($l['eid'])?></span><?php endif; ?>
-          <br><span class="muted">PIN: <?=h($l['pin']?:'-')?> | PUK: <?=h($l['puk']?:'-')?></span></td>
+          <br><span class="muted">PIN: <?=h($l['pin']?:'-')?> | PUK: <?=h($l['puk']?:'-')?><?php
+            // Codes secondaires et RIO : affichés seulement s'ils sont renseignés
+            // (alimentés par l'import depuis SFR), pour ne pas alourdir la ligne.
+            if(!empty($l['pin2']) || !empty($l['puk2'])): ?><br>PIN 2: <?=h($l['pin2']?:'-')?> | PUK 2: <?=h($l['puk2']?:'-')?><?php endif; ?><?php
+            if(!empty($l['rio'])): ?><br>RIO: <?=h($l['rio'])?><?php endif; ?></span></td>
           <td>
             <?php if($l['agent_id']): ?>
               <strong style="cursor:pointer;border-bottom:1px dashed var(--border2);color:var(--text);"
@@ -4954,6 +5026,9 @@ elseif ($page === 'lines') {
         </div>
         <div class="form-group"><label>N° SIM (ICCID)</label><input type="text" name="iccid" id="<?=$act?>-iccid" placeholder="893310..."></div>
         <div class="form-group"><div style="display:flex;gap:1rem;"><div style="flex:1"><label>Code PIN</label><input type="text" name="pin" id="<?=$act?>-pin"></div><div style="flex:1"><label>Code PUK</label><input type="text" name="puk" id="<?=$act?>-puk"></div></div></div>
+        <!-- Codes secondaires : renseignés par l'import depuis SFR (PIN 2 / PUK 2), modifiables ici -->
+        <div class="form-group"><div style="display:flex;gap:1rem;"><div style="flex:1"><label>Code PIN 2</label><input type="text" name="pin2" id="<?=$act?>-pin2"></div><div style="flex:1"><label>Code PUK 2</label><input type="text" name="puk2" id="<?=$act?>-puk2"></div></div></div>
+        <div class="form-group"><label>RIO <span style="font-weight:400;text-transform:none;">(portabilité)</span></label><input type="text" name="rio" id="<?=$act?>-rio" maxlength="20"></div>
         <!-- Champs spécifiques eSIM (masqués par défaut) -->
         <div class="form-group" id="<?=$act?>-esim-fields" style="display:none;">
           <label>EID <span style="color:var(--text3);font-weight:400;text-transform:none;">(identifiant du composant eSIM, propre à l'appareil)</span></label>
@@ -5342,10 +5417,9 @@ elseif ($page === 'invoices') {
     $acct = (isset($_GET['acct']) && isset($accounts[$_GET['acct']])) ? (string)$_GET['acct'] : '';
     $acctLabel = $acct === '' ? 'tous les comptes' : ($accounts[$acct] ? "$acct — {$accounts[$acct]}" : $acct);
 
-    // Le détail par ligne ne porte pas le compte : il est sur la facture, d'où
-    // la jointure. Ces trois fragments s'insèrent dans chaque requête filtrable.
-    $accJoin  = $acct !== '' ? 'JOIN invoices fi ON fi.id = l.invoice_id' : '';
-    $accWhere = $acct !== '' ? ' AND fi.billing_account = ?' : '';
+    // Le compte est recopié sur chaque ligne de détail (invoice_lines.
+    // billing_account) : le filtre est donc un simple critère, sans jointure.
+    $accWhere = $acct !== '' ? ' AND l.billing_account = ?' : '';
     $accArgs  = $acct !== '' ? [$acct] : [];
     $accQuery = function (string $sql, array $args = []) use ($pdo, $accArgs) {
         $st = $pdo->prepare($sql);
@@ -5354,7 +5428,7 @@ elseif ($page === 'invoices') {
     };
 
     // Mois disponibles (détail par ligne), pour le compte retenu.
-    $months = $accQuery("SELECT DISTINCT l.month_key FROM invoice_lines l $accJoin
+    $months = $accQuery("SELECT DISTINCT l.month_key FROM invoice_lines l
             WHERE 1=1 $accWhere ORDER BY l.month_key DESC")->fetchAll(PDO::FETCH_COLUMN);
 
     // ── PÉRIODE D'ANALYSE — état commun à toute la page ──────────
@@ -5365,7 +5439,7 @@ elseif ($page === 'invoices') {
     $monthly = $months ? $accQuery("SELECT l.month_key, SUM(l.total_ht) t, SUM(l.abo_ht) abo, SUM(l.conso_ht) conso,
                 SUM(l.hf_ht) hf, SUM(l.surtaxe_ht) s, SUM(l.intl_ht) i, SUM(l.data_ko) ko,
                 SUM(l.calls_seconds) secs, SUM(l.sms_count+l.mms_count) sms, COUNT(*) n
-            FROM invoice_lines l $accJoin WHERE 1=1 $accWhere
+            FROM invoice_lines l WHERE 1=1 $accWhere
             GROUP BY l.month_key ORDER BY l.month_key")->fetchAll() : [];
     $byKey = [];
     foreach ($monthly as $mrow) $byKey[$mrow['month_key']] = $mrow;
@@ -5474,7 +5548,7 @@ elseif ($page === 'invoices') {
         // Séries par numéro, limitées au mois d'arrivée (une période qui
         // s'arrête en mars ne doit pas voir les consommations d'avril).
         $series = [];
-        foreach ($accQuery("SELECT l.* FROM invoice_lines l $accJoin
+        foreach ($accQuery("SELECT l.* FROM invoice_lines l
                 WHERE l.month_key <= ? $accWhere ORDER BY l.month_key", [$latestMonth]) as $il) {
             $series[$il['phone_number']][$il['month_key']] = $il;
         }
@@ -5677,14 +5751,14 @@ elseif ($page === 'invoices') {
         $top = $accQuery("SELECT l.phone_number, $topExpr val, SUM(l.total_ht) ht, COUNT(*) nbm,
                 (SELECT x.sfr_user FROM invoice_lines x WHERE x.phone_number = l.phone_number
                    AND x.month_key <= ? ORDER BY x.month_key DESC LIMIT 1) sfr_user
-            FROM invoice_lines l $accJoin WHERE l.month_key IN ($ph) $accWhere
+            FROM invoice_lines l WHERE l.month_key IN ($ph) $accWhere
             GROUP BY l.phone_number HAVING val > 0 ORDER BY val DESC, ht DESC LIMIT 10",
             array_merge([$axisTo], $axis))->fetchAll();
 
         // ── Statistiques thématiques (sections repliables) ────────────
         // Photo du mois d'arrivée : forfaits, remise, prix unitaires.
         $snap = $accQuery("SELECT l.phone_number, l.plan_name, l.abo_ht, l.total_ht, l.data_ko,
-                l.catalog_ht, l.remise_pct FROM invoice_lines l $accJoin
+                l.catalog_ht, l.remise_pct FROM invoice_lines l
                 WHERE l.month_key = ? $accWhere", [$axisTo])->fetchAll();
 
         // 1. Par forfait : effectif, prix médian, et lignes hors médiane (une
@@ -5729,7 +5803,7 @@ elseif ($page === 'invoices') {
         // 3. Répartition par service : le rapprochement se fait sur le numéro
         //    normalisé, donc en PHP à partir du référentiel déjà chargé.
         $perPhone = $accQuery("SELECT l.phone_number, SUM(l.total_ht) ht, SUM(l.hf_ht) hf
-                FROM invoice_lines l $accJoin WHERE l.month_key IN ($ph) $accWhere
+                FROM invoice_lines l WHERE l.month_key IN ($ph) $accWhere
                 GROUP BY l.phone_number", $axis)->fetchAll();
         $svcStats = [];
         foreach ($perPhone as $pp) {
@@ -6140,6 +6214,11 @@ elseif ($page === 'invoices') {
     ?>
     <div class="card" style="margin-bottom:1.5rem;">
       <div class="card-header"><i class="bi bi-cloud-upload"></i> Importer des factures PDF</div>
+      <?php if(empty($_SESSION['is_admin'])): ?>
+      <p class="muted" style="padding:1.5rem;margin:0;"><i class="bi bi-lock"></i>
+        L'import des factures est réservé aux super-administrateurs : une facture mensuelle verse en base la liste
+        nominative complète du parc et de ses consommations. Les onglets d'analyse restent consultables.</p>
+      <?php else: ?>
       <form method="post" enctype="multipart/form-data" style="padding:1.5rem;">
         <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
         <input type="hidden" name="_entity" value="invoice">
@@ -6182,7 +6261,15 @@ elseif ($page === 'invoices') {
         <button type="submit" class="btn-secondary" style="font-size:.82rem;"><i class="bi bi-arrow-clockwise"></i> Ré-analyser toutes les factures</button>
       </form>
       <?php endif; ?>
+      <?php endif; /* fin du garde super-admin sur l'import */ ?>
     </div>
+
+    <?php if(!empty($_SESSION['is_admin'])): ?>
+    <p class="muted" style="margin:-.5rem 0 1.5rem;font-size:.83rem;"><i class="bi bi-arrow-right-circle"></i>
+      Les factures disent ce qui est <strong>payé</strong>. Pour contrôler ce que l'opérateur a <strong>en parc</strong>
+      (titulaires, forfaits, statuts, terminaux et IMEI), utilisez
+      <a href="?page=refs&tab=settings&sub=maintenance">Référentiels et Paramètres → Maintenance → Import depuis SFR</a>.</p>
+    <?php endif; ?>
 
     <?php if(!empty($_SESSION['invoice_import_report'])):
         $rep = $_SESSION['invoice_import_report'];
@@ -6284,20 +6371,13 @@ elseif ($page === 'invoices') {
 
     <?php if($tab === 'reconcile' && $months):
         // Rapprochement du mois sélectionné : facture ↔ référentiel.
-        $factLines = $accQuery("SELECT l.* FROM invoice_lines l $accJoin
+        $factLines = $accQuery("SELECT l.* FROM invoice_lines l
                 WHERE l.month_key = ? $accWhere ORDER BY l.phone_number", [$selMonth])->fetchAll();
         $factPhones = [];
         $rows = [];
-        // Similarité de noms : jeux de mots-clés (l'un inclus dans l'autre = OK).
-        $nameMatch = function(string $sfr, string $app): bool {
-            $a = array_filter(explode(' ', simcity_inv_normalize_name($sfr)));
-            $b = array_filter(explode(' ', simcity_inv_normalize_name($app)));
-            if (!$a || !$b) return false;
-            $inter = array_intersect($a, $b);
-            if (count($inter) >= min(count($a), count($b))) return true;      // l'un contient l'autre
-            if (count($inter) >= 2) return true;                              // au moins nom + prénom communs
-            return levenshtein(implode(' ', $a), implode(' ', $b)) <= 3;      // tolérance typo
-        };
+        // Similarité de noms : règle unique de l'application (invoice_lib.php),
+        // partagée avec le contrôle de l'état de parc SFR.
+        $nameMatch = fn(string $sfr, string $app): bool => simcity_name_matches($sfr, $app);
         foreach ($factLines as $fl) {
             $phone = $fl['phone_number'];
             $factPhones[$phone] = true;
@@ -6383,7 +6463,10 @@ elseif ($page === 'invoices') {
     </div>
     <p class="muted" style="margin-top:.75rem;font-size:.8rem;"><i class="bi bi-info-circle"></i>
       « Nom différent » : mettez à jour la fiche SimCity, ou faites corriger le nom chez SFR (espace client / commercial) pour retrouver un rapprochement propre.
-      « Facturée mais inconnue » : ligne payée qui n'est pas dans votre parc — à vérifier en priorité (résiliation oubliée ?).</p>
+      « Facturée mais inconnue » : ligne payée qui n'est pas dans votre parc — à vérifier en priorité (résiliation oubliée ?).<br>
+      <i class="bi bi-arrow-right-circle"></i> Ce rapprochement porte sur ce qui est <strong>facturé</strong>. Pour comparer avec l'état de parc
+      de l'opérateur (forfaits, statuts, terminaux, IMEI), voir
+      <a href="?page=refs&tab=settings&sub=maintenance">Référentiels et Paramètres → Maintenance → Import depuis SFR</a>.</p>
     <?php endif; ?>
 
     <?php if($tab === 'conso' && $months):
@@ -6477,7 +6560,7 @@ elseif ($page === 'invoices') {
                     LEFT JOIN services s ON COALESCE(ml.service_id, a2.service_id)=s.id
                     WHERE $norm = l.phone_number AND ml.archived=0 LIMIT 1) service_name,
                 (SELECT COUNT(*) FROM mobile_lines ml WHERE $norm = l.phone_number) in_app
-            FROM invoice_lines l $accJoin WHERE l.month_key IN ($ph) $accWhere
+            FROM invoice_lines l WHERE l.month_key IN ($ph) $accWhere
             GROUP BY l.phone_number";
         $baseArgs = array_merge([$axisTo, $axisTo], $axis, $accArgs);
 
@@ -8105,6 +8188,9 @@ elseif ($page === 'refs') {
              target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:6px;">
             <i class="bi bi-box-arrow-up-right"></i> Ouvrir l'espace client SFR Business</a>
         </p>
+        <p class="muted" style="margin:-.6rem 0 1.25rem;font-size:.83rem;"><i class="bi bi-arrow-right-circle"></i>
+          Cet écran contrôle ce que l'opérateur a <strong>en parc</strong>. Pour contrôler ce qui est <strong>payé</strong>,
+          voir <a href="?page=invoices&tab=reconcile">Facturation / Contrôle → Rapprochement des noms</a>.</p>
 
         <div style="padding-top:1rem;border-top:1px solid var(--border);">
           <button type="submit" class="btn-primary" style="display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-search"></i> Analyser et contrôler</button>
@@ -9147,6 +9233,29 @@ elseif ($page === 'stats') {
     $sPhysSim = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND esim=0 AND sim_vierge=0")->fetchColumn();
     $sByod    = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND personal_device=1")->fetchColumn();
 
+    // ── Facturation : vue panoramique (12 derniers mois facturés) ──
+    // La page Statistiques reste le tour d'horizon ; le pilotage fin (période,
+    // compte, tops, alertes) est dans le module Facturation / Contrôle.
+    $statInvMonths = $pdo->query("SELECT month_key, SUM(total_ht) t, SUM(hf_ht) hf, COUNT(*) n
+            FROM invoice_lines GROUP BY month_key ORDER BY month_key DESC LIMIT 12")->fetchAll();
+    $statInvMonths = array_reverse($statInvMonths);
+    $statInvLastTotal = 0.0; $statInvHf = 0.0; $statInvUnit = 0.0; $statInvSvc = [];
+    if ($statInvMonths) {
+        $last = end($statInvMonths);
+        $statInvLastTotal = (float)$last['t'];
+        $statInvHf        = (float)$last['hf'];
+        $statInvUnit      = (int)$last['n'] > 0 ? (float)$last['t'] / (int)$last['n'] : 0.0;
+        // Coût par service : rapprochement sur le numéro normalisé.
+        $stSvcInv = $pdo->prepare("SELECT IFNULL(s.name,'(sans service)') svc, SUM(l.total_ht) t
+            FROM invoice_lines l
+            JOIN mobile_lines ml ON REPLACE(REPLACE(REPLACE(ml.phone_number,' ',''),'.',''),'-','') = l.phone_number
+            LEFT JOIN agents a ON ml.agent_id = a.id
+            LEFT JOIN services s ON COALESCE(ml.service_id, a.service_id) = s.id
+            WHERE l.month_key = ? GROUP BY svc ORDER BY t DESC LIMIT 10");
+        $stSvcInv->execute([$last['month_key']]);
+        $statInvSvc = $stSvcInv->fetchAll();
+    }
+
     // ── 2. Par service ──
     $statSvc = $pdo->query("SELECT s.name AS k,
             (SELECT COUNT(*) FROM mobile_lines l WHERE l.service_id=s.id AND l.archived=0) AS lignes,
@@ -9242,7 +9351,28 @@ elseif ($page === 'stats') {
         <?php $chartCard('Motifs de remplacement', 'exclamation-triangle', 'stReqMotif', (bool)$statReqMotif, 'Aucun renouvellement avec motif.'); ?>
       </div>
 
-      <!-- 4. INCIDENTS & RENOUVELLEMENT -->
+      <!-- 4. FACTURATION — vue panoramique ; l'analyse fine est dans le module -->
+      <?php if($statInvMonths): ?>
+      <h3 style="font-size:1rem;color:var(--text-strong);margin-top:.5rem;"><i class="bi bi-receipt"></i> Facturation
+        <a href="?page=invoices" style="font-size:.78rem;font-weight:400;margin-left:.5rem;">analyse détaillée →</a></h3>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--primary);">
+          <div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--primary);"><?=number_format($statInvLastTotal, 0, ',', ' ')?> €</div>
+          <div style="font-size:.78rem;color:var(--text2);">Dernier mois facturé (HT)</div></div>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--warning);">
+          <div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--warning);"><?=number_format($statInvHf, 2, ',', ' ')?> €</div>
+          <div style="font-size:.78rem;color:var(--text2);">Hors-forfait du mois</div></div>
+        <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--info);">
+          <div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--info);"><?=number_format($statInvUnit, 2, ',', ' ')?> €</div>
+          <div style="font-size:.78rem;color:var(--text2);">Coût moyen par ligne</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">
+        <?php $chartCard('Coût mensuel des lignes (€ HT)', 'graph-up', 'stInvMonth', true); ?>
+        <?php $chartCard('Coût par service (top 10, dernier mois)', 'building', 'stInvSvc', (bool)$statInvSvc, 'Aucune ligne facturée rattachée à un service — voir le rapprochement.'); ?>
+      </div>
+      <?php endif; ?>
+
+      <!-- 5. INCIDENTS & RENOUVELLEMENT -->
       <h3 style="font-size:1rem;color:var(--text-strong);margin-top:.5rem;"><i class="bi bi-tools"></i> Incidents &amp; renouvellement</h3>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">
         <?php $chartCard('Matériels archivés par motif', 'trash3', 'stArch', (bool)$motifCounts, 'Aucun matériel archivé.'); ?>
@@ -9255,10 +9385,16 @@ elseif ($page === 'stats') {
     <script>
     document.addEventListener('DOMContentLoaded', function() {
       const PAL = ['#4f46e5','#2563eb','#7c3aed','#d97706','#059669','#dc2626','#0891b2','#db2777','#65a30d','#ea580c'];
+      // Couleurs d'axe lues sur le thème courant, comme les graphiques du
+      // module Facturation : les valeurs figées passaient mal en thème clair.
+      const _css  = getComputedStyle(document.documentElement);
+      const _var  = (n, d) => (_css.getPropertyValue(n) || '').trim() || d;
+      const AXIS  = _var('--text2', '#64748b');
+      const GRID  = _var('--border', 'rgba(148,163,184,.15)');
       function doughnut(id, labels, data){ const el=document.getElementById(id); if(!el||!labels.length)return;
-        new Chart(el,{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:PAL,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:'#94a3b8',boxWidth:12,padding:10}}}}}); }
+        new Chart(el,{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:PAL,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:AXIS,boxWidth:12,padding:10}}}}}); }
       function bars(id, labels, datasets, horizontal){ const el=document.getElementById(id); if(!el||!labels.length)return;
-        new Chart(el,{type:'bar',data:{labels,datasets},options:{indexAxis:horizontal?'y':'x',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true,ticks:{color:'#94a3b8',precision:0},grid:{color:'rgba(148,163,184,.15)'}},y:{beginAtZero:true,ticks:{color:'#94a3b8',precision:0},grid:{color:'rgba(148,163,184,.15)'}}},plugins:{legend:{display:datasets.length>1,labels:{color:'#94a3b8'}}}}}); }
+        new Chart(el,{type:'bar',data:{labels,datasets},options:{indexAxis:horizontal?'y':'x',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true,ticks:{color:AXIS,precision:0},grid:{color:GRID}},y:{beginAtZero:true,ticks:{color:AXIS,precision:0},grid:{color:GRID}}},plugins:{legend:{display:datasets.length>1,labels:{color:AXIS}}}}}); }
 
       // Parc & stock
       doughnut('stBrand', <?=json_encode($col($statBrand,'k'))?>, <?=json_encode(array_map('intval',$col($statBrand,'c')))?>);
@@ -9277,6 +9413,20 @@ elseif ($page === 'stats') {
       doughnut('stReqStatus', <?=json_encode(array_map(fn($k)=>$reqStatusMap[$k]??$k, $col($statReqStatus,'k')))?>, <?=json_encode(array_map('intval',$col($statReqStatus,'c')))?>);
       doughnut('stReqType', <?=json_encode(array_map(fn($k)=>$k==='renouvellement'?'Renouvellement':'Attribution', $col($statReqType,'k')))?>, <?=json_encode(array_map('intval',$col($statReqType,'c')))?>);
       bars('stReqMotif', <?=json_encode($col($statReqMotif,'k'))?>, [{label:'Demandes',data:<?=json_encode(array_map('intval',$col($statReqMotif,'c')))?>,backgroundColor:'#dc2626',borderRadius:4}]);
+
+      // Facturation
+      <?php if($statInvMonths):
+        $moisCourt = function(string $mk): string {
+            $n = [1=>'janv.',2=>'févr.',3=>'mars',4=>'avr.',5=>'mai',6=>'juin',7=>'juil.',8=>'août',9=>'sept.',10=>'oct.',11=>'nov.',12=>'déc.'];
+            [$y, $m] = explode('-', $mk);
+            return ($n[(int)$m] ?? '?') . ' ' . substr($y, 2);
+        }; ?>
+      bars('stInvMonth', <?=json_encode(array_map($moisCourt, array_column($statInvMonths, 'month_key')))?>,
+           [{label:'Total € HT',data:<?=json_encode(array_map(fn($r) => round((float)$r['t'], 2), $statInvMonths))?>,backgroundColor:'#4f46e5',borderRadius:4},
+            {label:'Hors-forfait € HT',data:<?=json_encode(array_map(fn($r) => round((float)$r['hf'], 2), $statInvMonths))?>,backgroundColor:'#d97706',borderRadius:4}]);
+      bars('stInvSvc', <?=json_encode($col($statInvSvc,'svc'))?>,
+           [{label:'€ HT',data:<?=json_encode(array_map(fn($v) => round((float)$v, 2), $col($statInvSvc,'t')))?>,backgroundColor:'#0891b2',borderRadius:4}], true);
+      <?php endif; ?>
 
       // Incidents & renouvellement
       bars('stArch', <?=json_encode(array_keys($motifCounts))?>, [{label:'Matériels',data:<?=json_encode(array_values($motifCounts))?>,backgroundColor:'#dc2626',borderRadius:4}]);

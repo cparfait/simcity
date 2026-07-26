@@ -23,6 +23,12 @@
 //  RIO (12 caractères alphanumériques), ce qui n'arrive pas avec cet export.
 // ============================================================
 
+// Dépendances explicites : la comparaison des noms est définie avec le parseur
+// de factures, leur mise en forme dans la bibliothèque partagée. Les deux
+// sources d'import (CSV et portail) doivent produire des noms identiques.
+require_once __DIR__ . '/invoice_lib.php';
+require_once __DIR__ . '/lib_format.php';
+
 const SIMCITY_PARC_MAX_BYTES = 15 * 1024 * 1024;
 
 // Colonnes retenues, désignées par leur en-tête dans l'export (comparaison
@@ -209,8 +215,11 @@ function simcity_parc_parse(string $path): array {
         if (strlen($phone) < 9) { $ignored++; continue; }
         $records[] = [
             'phone'         => $phone,
-            'last_name'     => $get('last_name'),
-            'first_name'    => $get('first_name'),
+            // Mise en forme commune à toutes les entrées de l'application
+            // (fiches, import CSV, portail) : sans elle, le même agent
+            // s'afficherait « durand » ici et « DURAND » ailleurs.
+            'last_name'     => (string)fmtLastName($get('last_name')),
+            'first_name'    => (string)fmtFirstName($get('first_name')),
             'civility'      => $get('civility'),
             'billing_acct'  => preg_replace('/\s+/', '', $get('billing_acct')),
             'billing_name'  => $get('billing_name'),
@@ -305,11 +314,10 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
             $issues[] = 'unknown';
             $counts['unknown']++;
         } else {
-            // Nom : comparaison tolérante, même normalisation que les factures.
+            // Nom : règle commune à tous les rapprochements de l'application.
             $sfrName = trim($rec['last_name'] . ' ' . $rec['first_name']);
             $appName = trim($a['ln'] . ' ' . $a['fn']);
-            if ($sfrName !== '' && $appName !== ''
-                && simcity_inv_normalize_name($sfrName) !== simcity_inv_normalize_name($appName)) {
+            if ($sfrName !== '' && $appName !== '' && !simcity_name_matches($sfrName, $appName)) {
                 $issues[] = 'name'; $counts['name']++;
             }
             if ($rec['plan'] !== '' && simcity_parc_norm_header($rec['plan']) !== simcity_parc_norm_header($a['plan_name'])) {

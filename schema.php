@@ -337,6 +337,7 @@ function simcity_apply_schema(PDO $pdo): void
         id              INT AUTO_INCREMENT PRIMARY KEY,
         invoice_id      INT NOT NULL,
         month_key       CHAR(7) NOT NULL,
+        billing_account VARCHAR(30) NULL,
         phone_number    VARCHAR(20) NOT NULL,
         sfr_user        VARCHAR(190) NULL,
         plan_name       VARCHAR(120) NULL,
@@ -360,6 +361,7 @@ function simcity_apply_schema(PDO $pdo): void
         UNIQUE KEY uq_invline (invoice_id, phone_number),
         INDEX idx_invline_phone (phone_number, month_key),
         INDEX idx_invline_month (month_key),
+        INDEX idx_invline_acct (billing_account, month_key),
         FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
     ) ENGINE=InnoDB;");
 
@@ -419,6 +421,16 @@ function simcity_apply_schema(PDO $pdo): void
     if (empty($pdo->query("SHOW COLUMNS FROM invoice_lines LIKE 'catalog_ht'")->fetchAll())) {
         $pdo->exec("ALTER TABLE invoice_lines ADD COLUMN catalog_ht DECIMAL(10,2) NULL AFTER hf_ht");
         $pdo->exec("ALTER TABLE invoice_lines ADD COLUMN remise_pct DECIMAL(5,2)  NULL AFTER catalog_ht");
+    }
+
+    // invoice_lines.billing_account : recopié depuis la facture. Le compte est
+    // le second axe de filtrage de tout le module ; le porter sur le détail
+    // évite une jointure sur invoices dans chacune des requêtes.
+    if (empty($pdo->query("SHOW COLUMNS FROM invoice_lines LIKE 'billing_account'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE invoice_lines ADD COLUMN billing_account VARCHAR(30) NULL AFTER month_key");
+        $pdo->exec("ALTER TABLE invoice_lines ADD INDEX idx_invline_acct (billing_account, month_key)");
+        $pdo->exec("UPDATE invoice_lines l JOIN invoices i ON i.id = l.invoice_id
+                    SET l.billing_account = i.billing_account");
     }
 
     // sign_tokens.dsi_name

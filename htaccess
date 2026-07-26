@@ -48,6 +48,13 @@
     # consommations). Le téléchargement passe par index.php
     # (?page=invoice_pdf&id=…), après contrôle d'accès.
     RewriteRule ^uploads/invoices/ - [F,L]
+
+    # Même règle pour les pièces jointes des fiches agents (justificatifs,
+    # courriers, photos) : elles ne sont servies que par index.php
+    # (?page=attachment&id=…), après contrôle de session. Seul le logo, affiché
+    # dans les pages et les PDF, reste accessible directement.
+    RewriteCond %{REQUEST_URI} !^/uploads/pdf_logo_
+    RewriteRule ^uploads/[^/]+$ - [F,L]
 </IfModule>
 
 # ─── En-têtes de sécurité HTTP ────────────────────────────────

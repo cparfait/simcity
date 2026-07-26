@@ -208,7 +208,8 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 
 ### 🟡 À connaître
 
-- Le **mot de passe SMTP** est stocké en clair dans la table `settings` (exposé via l'export SQL) — restreignez l'accès à la base et aux sauvegardes.
+- Le **mot de passe SMTP** et celui du **compte de service AD** sont stockés en clair dans la table `settings`, donc présents dans chaque sauvegarde SQL. Hasher est impossible (l'authentification SMTP exige le mot de passe en clair) et chiffrer n'apporterait rien en conteneur, où la clé devrait de toute façon venir de l'environnement. **La bonne réponse est de les fournir par `MAIL_PASSWORD` / `LDAP_BIND_PASSWORD`** : la variable prime sur la base et verrouille le champ. Attention, elle ne *supprime* pas la valeur déjà enregistrée : un bouton **« Effacer la valeur stockée »** apparaît alors sous la carte concernée (Paramètres → Envoi d'e-mails, et Sécurité) — les sauvegardes antérieures restent à traiter à la main.
+- Les **codes PIN / PUK** des cartes SIM sont également en clair (saisie manuelle, import CSV ou import depuis SFR) : même précaution sur l'accès à la base et aux fichiers `.sql`.
 - Les tables `history_logs` et `sim_history` ne sont jamais purgées ; prévoyez un archivage si la volumétrie devient importante.
 
 ---
@@ -243,6 +244,42 @@ Utilisez le bouton 🔄 dans les actions d'une ligne pour enregistrer un changem
 
 - Les seuils d'alerte stock sont configurables dans **Paramètres**
 - Une alerte apparaît sur le tableau de bord quand le stock SIM ou matériel passe sous le seuil
+- Le tableau de bord signale aussi les **lignes facturées sans aucune consommation**, avec leur coût mensuel et annuel (donnée issue du module Facturation)
+
+### Facturation / Contrôle
+
+Le module compare ce que l'opérateur **facture** à ce que contient le référentiel. Il travaille sur les PDF de factures déposés dans l'onglet **Import** — rien n'est récupéré automatiquement chez l'opérateur.
+
+**Une période commune à tout le module.** Un couple *mois de départ / mois d'arrivée* pilote les compteurs, les graphiques, les tops, l'historique, les consommations, le rapprochement et les alertes. Un second filtre restreint à un **compte de facturation**. Le mois d'arrivée sert de mois de référence aux vues mensuelles.
+
+**Onglets :**
+
+- **Tableau de bord** — compteurs de la période, évolution du coût et du nombre de lignes, top 10 multi-critères (coût, SMS, hors-forfait, international, surtaxés, data, appels), et des sections repliables : historique mensuel, répartition par forfait, remise marché, répartition par service, terminaux facturés, activité du parc
+- **Import des factures** — dépôt multi-fichiers, contrôle des doublons par numéro de facture avec compte rendu fichier par fichier, et bouton de **ré-analyse** qui relit les PDF archivés avec la version courante du parseur (utile après une mise à jour, sans re-téléverser)
+- **Consommations** — une ligne par numéro, cumulée sur la période, avec recherche, filtres (forfait, service, signalement), tri par colonne et pagination. **Les totaux du pied de tableau portent sur toute la sélection filtrée, pas sur la page affichée**
+- **Alertes** — un tableau unique trié par impact en € HT/mois : facture manquante, ligne sans consommation, hors-forfait, surtaxés, international, remise marché, variations de volume. Les seuils sont réglables (super-admins)
+- **Rapprochement des noms** — facture ↔ référentiel, par statut de concordance
+
+**Ce que le parseur lit dans les factures SFR :** le détail par ligne (utilisateur, forfait, appels, SMS/MMS, data, surtaxés, international, hors-forfait), et la **remise marché** écrite en clair dans chaque bloc (`Remise sur abonnement (96,00% de 20,00€ HT)`) — d'où le prix catalogue, le taux appliqué et l'économie réelle du marché. Types reconnus : `9A…` mensuelle, `9T…` terminaux, `9AF…` régularisation, `9AA…` avoir.
+
+> 🔒 Les PDF archivés ne sont **pas** servis directement par le serveur web : une facture mensuelle contient la liste nominative complète du parc. Le `.htaccess` bloque `uploads/invoices/` et la diffusion passe par l'application, après contrôle de session. Il en va de même pour les pièces jointes des fiches agents.
+
+> L'import de factures est réservé aux **super-administrateurs** (il verse en base des données nominatives de consommation) ; les onglets d'analyse restent consultables par tous les comptes admin.
+
+### Import depuis SFR (état de parc)
+
+**Référentiels et Paramètres → Maintenance → Import depuis SFR.** Déposez l'export « État de parc » de l'espace client (`EdP_….xlsx`) : l'écran compare **ligne par ligne** l'état réel chez l'opérateur et le référentiel SimCity, et **rien n'est écrit sans validation**.
+
+Écarts détectés : ligne inconnue du référentiel, titulaire différent, forfait, statut, compte de facturation, carte SIM, IMEI différent du matériel associé, terminal utilisé ≠ terminal acheté, IMEI utilisé absent du parc, codes SIM à compléter — plus les lignes actives dans SimCity que l'opérateur ne connaît plus (résiliations à enregistrer).
+
+La mise à jour est ensuite **cochée poste par poste** : comptes de facturation, forfaits, statuts, ICCID (seulement si le champ est vide), codes SIM, création des lignes inconnues (en stock, sans utilisateur). Les titulaires ne sont jamais écrasés automatiquement. L'opération est idempotente.
+
+Deux points à connaître :
+
+- La lecture du `.xlsx` ne dépend d'aucune extension PHP supplémentaire (le ZIP est lu directement, `zlib` suffit) : rien à installer, y compris dans l'image Docker qui n'embarque pas `ZipArchive`.
+- **PIN 1/2 et PUK 1/2** sont repris si vous cochez le poste correspondant, et stockés en clair comme ceux saisis à la main — restreignez l'accès à la base et aux sauvegardes SQL en conséquence. Le **RIO** n'est pas dans ce fichier (le portail y renvoie vers un export dédié).
+
+L'import CSV d'inventaire propose le **même écran de comparaison**, en plus du rapprochement des utilisateurs : les deux sources partagent le même moteur et les mêmes règles.
 
 ---
 
@@ -256,6 +293,9 @@ simcity/
 ├── install.php       # Installation initiale — à supprimer après usage
 ├── reset.php         # Réinitialisation complète — à supprimer après usage
 ├── import_lib.php    # Import CSV en masse (Paramètres → Maintenance)
+├── invoice_lib.php   # Factures opérateur : parseur PDF, remise marché, noms
+├── sfr_parc_lib.php  # Export « état de parc » SFR : lecteur xlsx + contrôles
+├── lib_format.php    # Normalisation des noms / e-mails (partagé)
 ├── backup.php        # Sauvegarde automatique (cron / tâche planifiée)
 ├── backup_lib.php    # Fonctions de sauvegarde / restauration (partagées)
 ├── ldap_auth.php     # Authentification LDAP / Active Directory (optionnelle)
@@ -320,9 +360,21 @@ mysql -u root -p simcity_db < simcity_sauvegarde_XXXX.sql
 
 ## Test de recette
 
-Le script `tests/smoke.sh` rejoue le parcours complet en HTTP (connexion → attribution →
-génération du bon → signature → restitution → vérifications). À lancer **uniquement contre
-une instance de test** :
+Trois niveaux, tous rejoués par la CI GitHub à chaque push.
+
+**Tests unitaires** — sans base de données ni fichier de données réel :
+
+```bash
+php tests/invoice_parse_test.php
+```
+
+```bash
+php tests/parc_import_test.php
+```
+
+Le premier valide le parseur de factures sur une facture synthétique (`tests/fixtures/`). Le second fabrique lui-même un classeur `.xlsx` et un CSV, et couvre le lecteur ZIP (méthodes « stocké » et « deflate »), la reconnaissance des colonnes, les normalisations (dates, codes SIM, statuts, en-têtes accentués) et la règle de rapprochement des noms commune aux deux contrôles.
+
+**Test de recette HTTP** — `tests/smoke.sh` rejoue le parcours complet (connexion → attribution → génération du bon → signature → restitution → vérifications). À lancer **uniquement contre une instance de test** :
 
 ```bash
 BASE_URL=http://localhost/simcity/index.php ADMIN_USER=admin ADMIN_PASS=admin bash tests/smoke.sh
