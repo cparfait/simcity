@@ -3848,6 +3848,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
                 }
             }
+        } elseif ($ent === 'secret_purge') {
+            // Effacement d'un secret stocké dans « settings ». Une variable
+            // d'environnement PRIME sur la base mais ne l'efface pas : la
+            // valeur historique reste en table et dans toutes les sauvegardes
+            // SQL déjà produites. Ce bouton la retire pour de bon.
+            if (empty($_SESSION['is_admin'])) {
+                flash('error', 'Accès refusé — réservé aux super-administrateurs.');
+            } else {
+                $purgeable = ['smtp_pass' => 'mot de passe SMTP', 'ldap_bind_password' => 'mot de passe du compte de service AD'];
+                $key = (string)($d['setting_key'] ?? '');
+                if (!isset($purgeable[$key])) {
+                    flash('error', 'Secret inconnu.');
+                } elseif (trim((string)getSetting($pdo, $key, '')) === '') {
+                    flash('success', "Aucune valeur stockée pour le {$purgeable[$key]} — rien à effacer.");
+                } else {
+                    $pdo->prepare("UPDATE settings SET setting_value='' WHERE setting_key=?")->execute([$key]);
+                    $env = SMTP_ENV_KEYS[$key] ?? (LDAP_KEYS[$key] ?? '');
+                    $fromEnv = $env !== '' && getenv($env) !== false && getenv($env) !== '';
+                    logHistory($pdo, 'admin', (int)$_SESSION['user_id'],
+                        "Effacement du {$purgeable[$key]} stocké en base" . ($fromEnv ? " (désormais fourni par $env)" : ''));
+                    flash('success', "Le {$purgeable[$key]} a été effacé de la base."
+                        . ($fromEnv ? " Il continue d'être lu depuis la variable d'environnement $env."
+                                    : " L'authentification correspondante est désormais sans mot de passe."));
+                }
+            }
         } elseif ($ent === 'parc') {
             // Import depuis SFR — export de parc (.xlsx). Même mécanique en deux
             // temps que l'import CSV : « preview » met le fichier de côté et
@@ -4451,7 +4476,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'invoice', 'parc', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'invoice', 'parc', 'secret_purge', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -7015,6 +7040,44 @@ elseif ($page === 'refs') {
     </div><!-- fin section « Général » -->
     <?php endif; ?>
 
+    <?php
+    // ── Secret encore stocké en base : proposition d'effacement ──
+    // Une variable d'environnement prime sur la table mais ne la vide pas.
+    // Tant que la valeur y reste, elle part dans chaque sauvegarde SQL.
+    // Ce bloc n'apparaît que s'il y a effectivement quelque chose à effacer.
+    $secretPurgeBox = function($pdo, string $key, string $envVar, string $label) use ($CSRF_TOKEN) {
+        if (empty($_SESSION['is_admin'])) return '';
+        if (trim((string)getSetting($pdo, $key, '')) === '') return '';
+        $fromEnv = getenv($envVar) !== false && getenv($envVar) !== '';
+        $col = $fromEnv ? 'var(--warning)' : 'var(--text2)';
+        ob_start(); ?>
+        <div style="margin:0 1.5rem 1.5rem;padding:.85rem 1rem;border-left:3px solid <?=$col?>;background:var(--bg3);border-radius:var(--radius-sm);font-size:.84rem;">
+          <strong style="color:<?=$col?>;"><i class="bi bi-shield-exclamation"></i>
+            <?=$fromEnv ? 'Valeur en double' : 'Secret stocké en base'?></strong>
+          <p style="margin:.4rem 0 .7rem;color:var(--text2);line-height:1.55;">
+            <?php if($fromEnv): ?>
+              Le <?=h($label)?> est fourni par la variable d'environnement <code><?=h($envVar)?></code>, qui prime — mais une
+              valeur reste enregistrée dans la base. Elle n'est plus utilisée, et elle continue de partir dans chaque
+              sauvegarde SQL. Autant l'effacer.
+            <?php else: ?>
+              Le <?=h($label)?> est enregistré dans la table <code>settings</code>, en clair : il figure donc dans chaque
+              sauvegarde SQL. Pour l'éviter, fournissez-le par la variable d'environnement <code><?=h($envVar)?></code>
+              (elle prime sur la base et verrouille le champ), puis effacez la valeur stockée ici.
+            <?php endif; ?>
+          </p>
+          <form method="post" style="margin:0;"
+                onsubmit="return confirm('Effacer le <?=h($label)?> enregistré en base ?<?=$fromEnv ? '' : '\n\nL\'envoi se fera sans authentification tant qu\'aucune variable d\'environnement ne le fournit.'?>')">
+            <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
+            <input type="hidden" name="_entity" value="secret_purge">
+            <input type="hidden" name="_action" value="run">
+            <input type="hidden" name="setting_key" value="<?=h($key)?>">
+            <button type="submit" class="btn-secondary" style="font-size:.82rem;"><i class="bi bi-eraser"></i> Effacer la valeur stockée</button>
+          </form>
+        </div>
+        <?php return ob_get_clean();
+    };
+    ?>
+
     <?php if($settingsSub === 'email'): ?>
     <div style="column-width:460px;column-gap:1.5rem;">
 
@@ -7053,6 +7116,7 @@ elseif ($page === 'refs') {
             <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
           </div>
         </form>
+        <?=$secretPurgeBox($pdo, 'smtp_pass', 'MAIL_PASSWORD', 'mot de passe SMTP')?>
         <?php
           // Adresse de test pré-remplie avec l'e-mail de l'administrateur connecté
           $smtpTestTo = '';
@@ -7583,6 +7647,7 @@ elseif ($page === 'refs') {
           <button type="submit" class="btn-secondary">🔌 Tester la connexion</button>
           <small style="color:var(--text3);margin-left:.75rem;">Teste la configuration <strong>enregistrée</strong> (enregistrez d'abord vos modifications).</small>
         </form>
+        <?=$secretPurgeBox($pdo, 'ldap_bind_password', 'LDAP_BIND_PASSWORD', 'mot de passe du compte de service AD')?>
         <?php endif; ?>
       </div>
 
