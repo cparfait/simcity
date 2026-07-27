@@ -2503,7 +2503,7 @@ if (!isset($_SESSION['user_id'])) {
         button:hover{background:var(--primary-dark);}
     </style></head>
     <body>
-        <div class="login-box"><img src="index.php?logo=1" alt="SimCity" class="login-logo"><h2>SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI<?php if(ldap_auth_enabled()) echo '<br><span style="font-size:.78rem;color:var(--text-light);">Comptes locaux ou Active Directory</span>'; ?></p>
+        <div class="login-box"><img src="index.php?logo=1" alt="SimCity" class="login-logo"><h2>SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI</p>
             <?php if(isset($login_error)) echo "<div style='color:var(--danger);text-align:center;margin-bottom:1rem;'>".h($login_error)."</div>"; ?>
             <form method="post" autocomplete="off">
                 <?=csrf_field()?>
