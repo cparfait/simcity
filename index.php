@@ -4780,7 +4780,7 @@ if ($page === 'dashboard') {
             <?php if(empty($recent)): ?><tr><td colspan="4" class="empty-cell">Aucune ligne récente</td></tr><?php endif; ?>
             <?php foreach($recent as $r): ?>
             <tr>
-              <td><a href="?page=lines&open_line=<?=$r['line_id']?>" class="cell-link" style="font-family:var(--font-mono);color:var(--primary);font-size:1.05rem;font-weight:700;" title="Ouvrir la fiche de la ligne"><?=formatPhone($r['phone_number'])?></a></td>
+              <td><a href="?page=lines&open_line=<?=$r['line_id']?>" class="cell-link" style="font-family:var(--font-mono);color:var(--primary);font-size:1.05rem;font-weight:700;white-space:nowrap;" title="Ouvrir la fiche de la ligne"><?=formatPhone($r['phone_number'])?></a></td>
               <td><?php if($r['agent_id']): ?><span class="cell-link" onclick="viewAgent(<?=$r['agent_id']?>, '<?=h(addslashes($r['first_name'].' '.$r['last_name']))?>')" title="Ouvrir la fiche utilisateur"><?=h($r['first_name'].' '.$r['last_name'])?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
               <td><span class="badge badge-muted"><?=h($r['plan_type']?:'Non défini')?></span></td>
               <td><?=statusBadge($r['status'])?></td>
@@ -4937,7 +4937,7 @@ elseif ($page === 'lines') {
         <?php foreach($lines as $l): ?>
         <tr>
           <td><input type="checkbox" class="bulk-chk-line" value="<?=$l['id']?>" onchange="updateBulkBar('line')" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></td>
-          <td><strong class="cell-link" onclick="this.closest('tr').querySelector('.btn-edit').click()" title="Ouvrir la fiche de la ligne" style="font-family:var(--font-mono);font-size:1.05rem;color:var(--primary)"><?= !empty($l['sim_vierge']) ? '<span style="color:var(--text3);font-style:italic;font-family:var(--font);">Sans numéro</span>' : formatPhone($l['phone_number']) ?></strong><br>
+          <td><strong class="cell-link" onclick="this.closest('tr').querySelector('.btn-edit').click()" title="Ouvrir la fiche de la ligne" style="font-family:var(--font-mono);font-size:1.05rem;color:var(--primary);white-space:nowrap;"><?= !empty($l['sim_vierge']) ? '<span style="color:var(--text3);font-style:italic;font-family:var(--font);">Sans numéro</span>' : formatPhone($l['phone_number']) ?></strong><br>
           <?php if(!empty($l['sim_vierge'])): ?><span class="badge" style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.7rem;"><i class="bi bi-box-seam"></i> SIM Vierge</span>
           <?php elseif(!empty($l['esim'])): ?><span class="badge" style="background:rgba(139,92,246,.15);color:#a78bfa;font-size:.7rem;"><i class="bi bi-sim"></i> eSIM</span>
           <?php endif; ?>
@@ -5985,7 +5985,7 @@ elseif ($page === 'invoices') {
           <tbody>
           <?php if(!$top): ?><tr><td colspan="5" class="empty-cell">Aucune ligne concernée sur la période</td></tr><?php endif; ?>
           <?php foreach($top as $t): $tapp = $appLines[$t['phone_number']] ?? null; ?>
-            <tr><td><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($t['phone_number'])?>" style="font-family:var(--font-mono);"><?=h(formatPhone($t['phone_number']))?></a></td>
+            <tr><td><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($t['phone_number'])?>" style="font-family:var(--font-mono);white-space:nowrap;"><?=h(formatPhone($t['phone_number']))?></a></td>
                 <td><?=h($t['sfr_user'] ?: '—')?></td>
                 <td class="muted"><?=$tapp ? h($tapp['service_name'] ?: '—') : '<span class="badge badge-danger" style="font-size:.65rem;">hors SimCity</span>'?></td>
                 <td style="font-weight:600;text-align:right;font-family:var(--font-mono);"><?=$topFmt($t['val'])?></td>
@@ -6067,7 +6067,7 @@ elseif ($page === 'invoices') {
             <td>
               <?php if(!$ps['out']): ?><span class="muted">—</span><?php else: ?>
                 <?php foreach(array_slice($ps['out'], 0, 4) as $o): ?>
-                <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($o['phone_number'])?>" style="font-family:var(--font-mono);font-size:.8rem;"><?=h(formatPhone($o['phone_number']))?></a>
+                <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($o['phone_number'])?>" style="font-family:var(--font-mono);font-size:.8rem;white-space:nowrap;"><?=h(formatPhone($o['phone_number']))?></a>
                 <span class="badge badge-warning" style="font-size:.66rem;"><?=$fmtEur($o['abo_ht'])?></span><br>
                 <?php endforeach; ?>
                 <?php if(count($ps['out']) > 4): ?><span class="muted" style="font-size:.75rem;">+ <?=count($ps['out']) - 4?> autres</span><?php endif; ?>
@@ -6553,7 +6553,7 @@ elseif ($page === 'invoices') {
         <?php $shown = 0; foreach($rows as $r): if($filter !== '' && $r['status'] !== $filter) continue; $shown++;
             [$lbl, $cls, $ico] = $statusMeta[$r['status']]; $app = $r['app']; ?>
         <tr>
-          <td style="font-family:var(--font-mono);"><a href="?page=invoices&tab=conso&line=<?=h($r['phone'])?>"><?=h(formatPhone($r['phone']))?></a></td>
+          <td style="font-family:var(--font-mono);white-space:nowrap;"><a href="?page=invoices&tab=conso&line=<?=h($r['phone'])?>"><?=h(formatPhone($r['phone']))?></a></td>
           <td><?=h($r['sfr'] ?: '—')?></td>
           <td><?=$app ? h(trim($app['ln'].' '.$app['fn']) ?: '—') : '—'?></td>
           <td class="muted"><?=$app ? h($app['service_name'] ?: '—') : '—'?></td>
@@ -6822,7 +6822,7 @@ elseif ($page === 'invoices') {
           <?php if(!$consoRows): ?><tr><td colspan="12" class="empty-cell">Aucune ligne ne correspond aux filtres</td></tr><?php endif; ?>
           <?php foreach($consoRows as $c): ?>
           <tr>
-            <td style="font-family:var(--font-mono);"><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($c['phone_number'])?>" title="Historique de la ligne"><?=h(formatPhone($c['phone_number']))?></a></td>
+            <td style="font-family:var(--font-mono);white-space:nowrap;"><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($c['phone_number'])?>" title="Historique de la ligne"><?=h(formatPhone($c['phone_number']))?></a></td>
             <td><?=h($c['sfr_user'] ?: '—')?></td>
             <td class="muted"><?=(int)$c['in_app'] ? h($c['service_name'] ?: '—') : '<span class="badge badge-danger" style="font-size:.65rem;">hors SimCity</span>'?></td>
             <td class="muted" style="font-size:.8rem;"><?=h($c['plan_name'] ?: '—')?></td>
@@ -6986,7 +6986,7 @@ elseif ($page === 'invoices') {
         <?php $shown = 0; foreach($flat as $a): if($filter !== '' && $a['type'] !== $filter) continue; $shown++;
               [$glbl, $gico, $gcls, ] = $groupMeta[$a['type']]; ?>
           <tr>
-            <td style="font-family:var(--font-mono);"><?php if($a['phone']): ?><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($a['phone'])?>"><?=h(formatPhone($a['phone']))?></a><?php else: ?><span class="muted">tout le parc</span><?php endif; ?></td>
+            <td style="font-family:var(--font-mono);white-space:nowrap;"><?php if($a['phone']): ?><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($a['phone'])?>"><?=h(formatPhone($a['phone']))?></a><?php else: ?><span class="muted">tout le parc</span><?php endif; ?></td>
             <td><?=h($a['who'] ?: '—')?><?php if($a['plan']): ?><br><span class="muted" style="font-size:.74rem;"><?=h($a['plan'])?></span><?php endif; ?></td>
             <td><span class="badge <?=$gcls?>" style="font-size:.7rem;"><i class="bi <?=$gico?>"></i> <?=h($glbl)?></span></td>
             <td><?=h($a['detail'])?></td>
@@ -8058,7 +8058,7 @@ elseif ($page === 'refs') {
             <thead><tr><th>Ligne</th><th>Utilisateur</th><th>Statut SimCity</th></tr></thead>
             <tbody>
             <?php foreach($cmp['missing'] as $m): ?>
-            <tr><td style="font-family:var(--font-mono);"><?=h(formatPhone(preg_replace('/\D/', '', (string)$m['phone_number'])))?></td>
+            <tr><td style="font-family:var(--font-mono);white-space:nowrap;"><?=h(formatPhone(preg_replace('/\D/', '', (string)$m['phone_number'])))?></td>
                 <td><?=h(trim($m['ln'] . ' ' . $m['fn']) ?: '—')?></td>
                 <td><?=h($m['status'])?></td></tr>
             <?php endforeach; ?>
@@ -10064,17 +10064,27 @@ document.addEventListener('change', function(e) {
 
 function tableSearch(inp, tbodyId, countId) {
   const q = inp.value.trim().toLowerCase(); const qNoSpaces = q.replace(/\s+/g, '');
+  // Requête entièrement numérique (n° de ligne, ICCID, IMEI... avec ou sans séparateurs) :
+  // comparaison sur la seule suite de chiffres. Le découpage en mots serait trop lâche :
+  // chaque paire de « 06 01 27 16 60 » matcherait un champ différent (PIN, PUK, IMEI, CF...).
+  const numeric = /^[\d\s.\-]+$/.test(q) && /\d/.test(q);
+  const qDigits = q.replace(/\D/g, '');
   const tbody = document.getElementById(tbodyId); const count = document.getElementById(countId);
   if (!tbody) return;
   const rows  = Array.from(tbody.querySelectorAll('tr')); const words = q.split(/\s+/).filter(Boolean);
   let visible = 0;
-  
+
   rows.forEach(function(tr) {
     if (tr.querySelector('td.empty-cell')) return;
     const txt = tr.textContent.toLowerCase(); const txtNoSpaces = txt.replace(/\s+/g, '');
-    const matchWords = (!words.length || words.every(function(w) { return txt.includes(w); }));
-    const matchNoSpace = qNoSpaces.length > 0 && txtNoSpaces.includes(qNoSpaces);
-    const match = matchWords || matchNoSpace;
+    let match;
+    if (numeric) {
+      match = txtNoSpaces.includes(qDigits);
+    } else {
+      const matchWords = (!words.length || words.every(function(w) { return txt.includes(w); }));
+      const matchNoSpace = qNoSpaces.length > 0 && txtNoSpaces.includes(qNoSpaces);
+      match = matchWords || matchNoSpace;
+    }
     tr.style.display = match ? '' : 'none';
     if (match) visible++;
   });
