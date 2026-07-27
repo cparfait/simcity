@@ -48,17 +48,28 @@ function simcity_invoice_pdftotext_bin(): string {
 }
 
 // Extrait le texte d'un PDF avec mise en page préservée (-layout).
+// stdout et stderr sont séparés : les warnings poppler ne doivent jamais se
+// mêler au texte parsé, et un binaire absent doit se diagnostiquer comme tel
+// (pas comme « facture illisible »).
 function simcity_invoice_extract_text(string $pdfPath): string {
     $bin = simcity_invoice_pdftotext_bin();
     $cmd = escapeshellarg($bin) . ' -layout -enc UTF-8 ' . escapeshellarg($pdfPath) . ' -';
-    $out = shell_exec($cmd . ' 2>&1');
-    if ($out === null || $out === false || trim((string)$out) === '') {
-        throw new RuntimeException("pdftotext indisponible ou PDF illisible (binaire : $bin).");
+    $proc = @proc_open($cmd, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($proc)) {
+        throw new RuntimeException("pdftotext indisponible (binaire : $bin).");
     }
-    if (stripos((string)$out, 'Syntax Error') !== false && strlen((string)$out) < 500) {
-        throw new RuntimeException("PDF illisible par pdftotext.");
+    $out = (string)stream_get_contents($pipes[1]);
+    $err = trim((string)stream_get_contents($pipes[2]));
+    fclose($pipes[1]); fclose($pipes[2]);
+    proc_close($proc);
+    if (trim($out) === '') {
+        if ($err !== '' && (stripos($err, 'not found') !== false || stripos($err, 'reconnu') !== false
+                            || stripos($err, 'introuvable') !== false)) {
+            throw new RuntimeException("pdftotext indisponible (binaire : $bin) — $err");
+        }
+        throw new RuntimeException('PDF illisible par pdftotext' . ($err !== '' ? ' — ' . mb_substr($err, 0, 200) : '') . '.');
     }
-    return (string)$out;
+    return $out;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -114,7 +125,10 @@ function simcity_name_matches(?string $a, ?string $b): bool {
     if (!$wa || !$wb) return false;
     $inter = array_intersect($wa, $wb);
     if (count($inter) >= min(count($wa), count($wb))) return true;   // l'un contient l'autre
-    if (count($inter) >= 2) return true;                             // nom + prénom communs
+    // NB : « 2 mots communs suffisent » serait trop lâche — un patronyme
+    // composé partagé (« CAZAUX RIBEIRE Anaïs » / « CAZAUX RIBEIRE Bertrand »)
+    // masquerait un vrai changement de titulaire. Si chaque côté garde un mot
+    // propre, on ne conclut que sur la distance globale.
     return levenshtein(implode(' ', $wa), implode(' ', $wb)) <= 3;   // tolérance typo
 }
 
@@ -130,7 +144,7 @@ function simcity_invoice_parse(string $text): array {
     $devices = [];
 
     if ($header['invoice_type'] === 'lines') {
-        $lines = simcity_invoice_parse_lines($text);
+        $lines = simcity_invoice_merge_lines(simcity_invoice_parse_lines($text));
         // Le mois de consommation des blocs fait foi pour month_key.
         if ($lines && !empty($lines[0]['period_start'])) {
             $header['period_start'] = $lines[0]['period_start'];
@@ -195,6 +209,32 @@ function simcity_inv_is_noise(string $line): bool {
     return (bool)preg_match(
         '/^(AE\/FE|\d+\/\d+$|Date facture|N° de|Votre détail|MAIRIE |SFR, 16|Veuillez trouver|\d{5} [A-Z])/u', $l)
         || str_contains($l, '/P/');
+}
+
+// Fusionne les blocs d'un même numéro au sein d'une même facture (changement
+// de forfait ou de sous-compte en cours de mois) : la clé UNIQUE
+// (invoice_id, phone_number) n'autorise qu'un enregistrement par numéro —
+// sans fusion, les montants du second bloc seraient silencieusement perdus.
+function simcity_invoice_merge_lines(array $lines): array {
+    $merged = [];
+    foreach ($lines as $l) {
+        $k = $l['phone_number'];
+        if (!isset($merged[$k])) { $merged[$k] = $l; continue; }
+        $m =& $merged[$k];
+        foreach (['abo_ht','conso_ht','total_ht','surtaxe_ht','intl_ht','hf_ht',
+                  'calls_count','calls_seconds','sms_count','mms_count','data_ko',
+                  'surtaxe_count','surtaxe_seconds','intl_count','intl_seconds'] as $f) $m[$f] += $l[$f];
+        if ($m['sfr_user'] === '' && $l['sfr_user'] !== '') $m['sfr_user'] = $l['sfr_user'];
+        if ($m['plan_name'] === null && $l['plan_name'] !== null) $m['plan_name'] = $l['plan_name'];
+        if ($m['period_start'] === null && $l['period_start'] !== null) {
+            $m['period_start'] = $l['period_start']; $m['period_end'] = $l['period_end'];
+        }
+        if ($m['catalog_ht'] === null && $l['catalog_ht'] !== null) {
+            $m['catalog_ht'] = $l['catalog_ht']; $m['remise_pct'] = $l['remise_pct'];
+        }
+        unset($m);
+    }
+    return array_values($merged);
 }
 
 // Détail par compte client → un enregistrement par numéro de ligne.
@@ -312,20 +352,23 @@ function simcity_invoice_parse_line_block(string $block): ?array {
         if (stripos($line, 'Au-delà ou hors forfait')   !== false) { $inHF = true;  continue; }
         if (stripos($line, 'Total de vos consommations') !== false) { $inHF = false; continue; }
 
+        // Le libellé peut contenir un chiffre (« Appels internationaux Zone 2 ») :
+        // il commence par un non-chiffre puis court, en lazy, jusqu'au premier
+        // double espace suivi des colonnes numériques — les gaps de -layout.
         // Durée : « Appels France   53   01:33:37 [20,00%  0,62] »
-        if (preg_match('/^\s+(\D[^\d\n]*?)\s{2,}(\d+)\s+(\d{1,3}:\d{2}:\d{2})(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u', $line, $mm)) {
+        if (preg_match('/^\s+(\D[^\n]*?)\s{2,}(\d+)\s+(\d{1,3}:\d{2}:\d{2})(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u', $line, $mm)) {
             simcity_inv_add_conso($r, trim($mm[1]), (int)$mm[2], simcity_inv_seconds($mm[3]), 0, $inHF, simcity_inv_amount($mm[4] ?? null));
             continue;
         }
         // Data : « Data France   35   413386 Ko [20,00%  1,20] »
-        if (preg_match('/^\s+(\D[^\d\n]*?)\s{2,}(\d+)\s+([\d\s]+)\s?Ko(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u', $line, $mm)) {
+        if (preg_match('/^\s+(\D[^\n]*?)\s{2,}(\d+)\s+([\d\s]+)\s?Ko(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u', $line, $mm)) {
             $ko = (int)preg_replace('/\s+/', '', $mm[3]);
             simcity_inv_add_conso($r, trim($mm[1]), (int)$mm[2], 0, $ko, $inHF, simcity_inv_amount($mm[4] ?? null));
             continue;
         }
         // À l'acte (SMS / MMS) : « SMS France   8   08 A l acte [ 0,00] ».
         // L'apostrophe varie selon la version de poppler (', ’ ou espace).
-        if (preg_match("/^\s+(\D[^\d\n]*?)\s{2,}(\d+)\s+\d+\s+A\s+l\W{0,2}acte(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u", $line, $mm)) {
+        if (preg_match("/^\s+(\D[^\n]*?)\s{2,}(\d+)\s+\d+\s+A\s+l\W{0,2}acte(?:\s+[\d,]+%)?(?:\s+(-?[\d\s]*\d,\d{2}))?\s*$/u", $line, $mm)) {
             simcity_inv_add_conso($r, trim($mm[1]), (int)$mm[2], 0, 0, $inHF, simcity_inv_amount($mm[3] ?? null));
             continue;
         }
@@ -337,7 +380,9 @@ function simcity_invoice_parse_line_block(string $block): ?array {
 function simcity_inv_add_conso(array &$r, string $label, int $count, int $seconds, int $ko, bool $horsForfait, float $eur): void {
     $l = mb_strtolower($label);
     $isSurtaxe = str_contains($l, 'surtax');
-    $isIntl    = str_contains($l, 'international') || str_contains($l, 'étranger')
+    // « internationa » couvre « international » ET « internationaux » (le
+    // pluriel ne contient pas le singulier : …aux ≠ …al).
+    $isIntl    = str_contains($l, 'internationa') || str_contains($l, 'étranger')
               || str_contains($l, 'dom') || str_contains($l, 'roaming') || str_contains($l, 'maghreb');
 
     if ($isSurtaxe) {
@@ -364,22 +409,41 @@ function simcity_inv_add_conso(array &$r, string $label, int $count, int $second
 // Factures 9T : terminaux et accessoires (« Autres prestations »).
 function simcity_invoice_parse_devices(string $text): array {
     $out = [];
+    // Un article multi-quantité liste un IMEI par exemplaire : une ligne par
+    // IMEI (sinon seul le dernier serait rapproché du parc), le montant total
+    // réparti au centime près.
+    $flush = function(?array $cur) use (&$out): void {
+        if (!$cur) return;
+        $imeis = $cur['imeis']; unset($cur['imeis']);
+        if (count($imeis) <= 1) {
+            $cur['imei'] = $imeis[0] ?? null;
+            $out[] = $cur;
+            return;
+        }
+        $n = count($imeis); $reste = $cur['total_ht'];
+        foreach ($imeis as $i => $im) {
+            $part = $i === $n - 1 ? round($reste, 2) : round($cur['total_ht'] / $n, 2);
+            $reste -= $part;
+            $out[] = ['label' => $cur['label'], 'imei' => $im, 'qty' => 1,
+                      'unit_ht' => $cur['unit_ht'], 'total_ht' => $part];
+        }
+    };
     $lines = preg_split('/\R/u', $text);
     $cur = null;
     foreach ($lines as $line) {
         // « 558160 - APPLE IPHONE 17 256GO BLANC   1   799,00   799,00 »
         if (preg_match('/^\s+(\d{4,8})\s*-\s*(.+?)\s{2,}(\d+)\s+(-?[\d\s]*\d,\d{2})\s+(-?[\d\s]*\d,\d{2})\s*$/u', $line, $m)) {
-            if ($cur) $out[] = $cur;
-            $cur = ['label' => trim($m[2]), 'imei' => null, 'qty' => (int)$m[3],
+            $flush($cur);
+            $cur = ['label' => trim($m[2]), 'imei' => null, 'imeis' => [], 'qty' => (int)$m[3],
                     'unit_ht' => simcity_inv_amount($m[4]), 'total_ht' => simcity_inv_amount($m[5])];
             continue;
         }
-        // Ligne suivante éventuelle : « IMEI 358843989542106 Garantie 12 mois »
+        // Ligne(s) suivante(s) : « IMEI 358843989542106 Garantie 12 mois »
         if ($cur && preg_match('/IMEI\s+(\d{14,16})/u', $line, $m)) {
-            $cur['imei'] = $m[1];
+            $cur['imeis'][] = $m[1];
         }
     }
-    if ($cur) $out[] = $cur;
+    $flush($cur);
     return $out;
 }
 
@@ -404,27 +468,35 @@ function simcity_invoice_import(PDO $pdo, string $pdfTmpPath, string $origName, 
         return ['status' => 'duplicate', 'file' => $origName, 'invoice_number' => $h['invoice_number']];
     }
 
-    // Archivage du PDF (pièce justificative) sous uploads/invoices/.
-    $dir = __DIR__ . '/uploads/invoices';
-    if (!is_dir($dir)) @mkdir($dir, 0775, true);
-    $safe = preg_replace('/[^A-Za-z0-9_\-]/', '', $h['invoice_number']);
-    $dest = "uploads/invoices/$safe.pdf";
-    @copy($pdfTmpPath, __DIR__ . '/' . $dest);
-
     $pdo->prepare("INSERT INTO invoices (invoice_number, invoice_type, billing_account, invoice_date,
             period_start, period_end, month_key, total_ht, total_ttc, nb_lines, pdf_path, file_name, imported_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?,?)")
         ->execute([$h['invoice_number'], $h['invoice_type'], $h['billing_account'], $h['invoice_date'],
             $h['period_start'], $h['period_end'], $h['month_key'], $h['total_ht'], $h['total_ttc'],
-            count($parsed['lines']), is_file(__DIR__ . '/' . $dest) ? $dest : null, $origName, $author]);
+            count($parsed['lines']), $origName, $author]);
     $invId = (int)$pdo->lastInsertId();
 
     simcity_invoice_store_detail($pdo, $invId, $parsed);
 
+    // Archivage du PDF (pièce justificative) APRÈS les écritures : un échec
+    // d'insertion ne laisse pas de PDF orphelin sur le disque, et un échec de
+    // copie laisse pdf_path à NULL avec un avertissement explicite (plutôt
+    // qu'une facture « archivée » dont la ré-analyse échouera plus tard).
+    $dir = __DIR__ . '/uploads/invoices';
+    if (!is_dir($dir)) @mkdir($dir, 0775, true);
+    $safe = preg_replace('/[^A-Za-z0-9_\-]/', '', $h['invoice_number']);
+    $dest = "uploads/invoices/$safe.pdf";
+    $warn = null;
+    if (@copy($pdfTmpPath, __DIR__ . '/' . $dest) && is_file(__DIR__ . '/' . $dest)) {
+        $pdo->prepare("UPDATE invoices SET pdf_path=? WHERE id=?")->execute([$dest, $invId]);
+    } else {
+        $warn = "importée, mais PDF non archivé (droits sur uploads/invoices/ ?) — la ré-analyse sera impossible";
+    }
+
     return ['status' => 'ok', 'file' => $origName, 'invoice_number' => $h['invoice_number'],
             'invoice_id' => $invId, 'type' => $h['invoice_type'], 'month_key' => $h['month_key'],
             'nb_lines' => count($parsed['lines']), 'nb_devices' => count($parsed['devices']),
-            'total_ttc' => $h['total_ttc']];
+            'total_ttc' => $h['total_ttc'], 'message' => $warn];
 }
 
 // Insère le détail (lignes + matériels) d'une facture déjà enregistrée.
@@ -435,8 +507,7 @@ function simcity_invoice_store_detail(PDO $pdo, int $invId, array $parsed): void
                 abo_ht, conso_ht, total_ht, calls_count, calls_seconds, sms_count, mms_count, data_ko,
                 surtaxe_count, surtaxe_seconds, surtaxe_ht, intl_count, intl_seconds, intl_ht, hf_ht,
                 catalog_ht, remise_pct)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON DUPLICATE KEY UPDATE sfr_user=VALUES(sfr_user)");
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
         foreach ($parsed['lines'] as $l) {
             $mk = $l['period_start'] ? substr($l['period_start'], 0, 7) : ($h['month_key'] ?? '');
             $ins->execute([$invId, $mk, $h['billing_account'], $l['phone_number'], $l['sfr_user'] ?: null, $l['plan_name'],

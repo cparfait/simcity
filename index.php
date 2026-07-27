@@ -2503,7 +2503,7 @@ if (!isset($_SESSION['user_id'])) {
         button:hover{background:var(--primary-dark);}
     </style></head>
     <body>
-        <div class="login-box"><img src="index.php?logo=1" alt="SimCity" class="login-logo"><h2>SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI</p>
+        <div class="login-box"><img src="index.php?logo=1" alt="SimCity" class="login-logo"><h2>SimCity</h2><p style="text-align:center;opacity:.7;margin-bottom:2rem;font-size:.9rem;">Gestion du Parc Mobile — DSI<?php if(ldap_auth_enabled()) echo '<br><span style="font-size:.78rem;color:var(--text-light);">Comptes locaux ou Active Directory</span>'; ?></p>
             <?php if(isset($login_error)) echo "<div style='color:var(--danger);text-align:center;margin-bottom:1rem;'>".h($login_error)."</div>"; ?>
             <form method="post" autocomplete="off">
                 <?=csrf_field()?>
@@ -3839,12 +3839,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } elseif ($err !== '') {
                     flash('error', $err);
                 } else {
+                    // Ménage : fichiers d'analyse abandonnés (session expirée,
+                    // onglet fermé) — ils contiennent des données nominatives.
+                    foreach (glob(sys_get_temp_dir() . '/simcity_import_*') ?: [] as $old)
+                        if (is_file($old) && @filemtime($old) < time() - 86400) @unlink($old);
                     // Le fichier téléversé est mis de côté le temps du contrôle.
                     if (!empty($_SESSION['import_pending']['file'])) @unlink($_SESSION['import_pending']['file']);
                     $tmp = tempnam(sys_get_temp_dir(), 'simcity_import_');
-                    move_uploaded_file($_FILES['file_data']['tmp_name'], $tmp);
-                    $_SESSION['import_pending'] = ['file' => $tmp, 'name' => (string)($_FILES['file_data']['name'] ?? 'import.csv'), 'purge' => $purge];
-                    header('Location: index.php?page=refs&tab=settings&sub=maintenance#import-review'); exit;
+                    if (!@move_uploaded_file($_FILES['file_data']['tmp_name'], $tmp) || (int)@filesize($tmp) === 0) {
+                        // Sans ce contrôle, un déplacement raté donnerait un
+                        // fichier vide : écran de contrôle à zéro, et une purge
+                        // cochée viderait la base pour importer... rien.
+                        @unlink($tmp);
+                        flash('error', "Le fichier n'a pas pu être mis de côté (espace disque / droits) — importation abandonnée.");
+                    } else {
+                        $_SESSION['import_pending'] = ['file' => $tmp, 'name' => (string)($_FILES['file_data']['name'] ?? 'import.csv'),
+                                                       'purge' => $purge, 'sha1' => (string)sha1_file($tmp)];
+                        header('Location: index.php?page=refs&tab=settings&sub=maintenance#import-review'); exit;
+                    }
                 }
             } elseif ($act !== 'run') {
                 flash('error', 'Action inconnue.');
@@ -3852,6 +3864,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pend = $_SESSION['import_pending'] ?? null;
                 if (!$pend || !is_file($pend['file'])) {
                     flash('error', "Fichier d'import introuvable — relancez l'analyse du CSV.");
+                } elseif (($d['pend_sha1'] ?? '') !== ($pend['sha1'] ?? '')) {
+                    // L'écran de contrôle d'où vient ce POST décrivait un AUTRE
+                    // fichier (nouvelle analyse lancée dans un second onglet) :
+                    // appliquer ses cases cochées à ce fichier-ci serait faux.
+                    flash('error', "Le fichier analysé a changé depuis cet écran de contrôle — relancez l'analyse.");
                 } else {
                     $purge = !empty($pend['purge']);
                     // Associations décidées à l'étape de contrôle (clé « nom|prénom »
@@ -3867,10 +3884,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     // MySQL) : on sort de la transaction globale, comme la restauration.
                     if ($pdo->inTransaction()) $pdo->commit();
                     try {
-                        // Filet de sécurité avant une purge : l'opération est irréversible.
+                        // Filet de sécurité avant une purge : l'opération est
+                        // irréversible et l'écran PROMET cette sauvegarde — si
+                        // elle échoue, on refuse de purger plutôt que de
+                        // continuer en silence sans filet.
                         $safety = '';
                         if ($purge) {
-                            try { $safety = simcity_backup_to_disk($pdo); } catch (Throwable $e) { $safety = ''; }
+                            try { $safety = simcity_backup_to_disk($pdo); }
+                            catch (Throwable $e) {
+                                flash('error', "Purge annulée : la sauvegarde de sécurité n'a pas pu être créée ("
+                                    . $e->getMessage() . "). Aucune donnée supprimée.");
+                                header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
+                            }
                             simcity_import_purge($pdo);
                         }
                         $st = simcity_import_csv($pdo, $pend['file'], $agentMap);
@@ -3878,6 +3903,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 . "{$st['services']} service(s), {$st['models']} modèle(s), {$st['plans']} forfait(s), "
                                 . "{$st['operators']} opérateur(s), {$st['billings']} compte(s) de facturation";
                         if (count($agentMap)) $resume .= ", " . count($agentMap) . " rapprochement(s) d'utilisateur";
+                        // Journal : écrit APRÈS l'import (la purge recrée
+                        // history_logs) — jusqu'ici l'import CSV était le seul
+                        // import à ne laisser aucune trace au journal.
+                        logHistory($pdo, 'admin', (int)$_SESSION['user_id'],
+                            ($purge ? "Purge de la base puis import CSV ({$pend['name']}) : " : "Import CSV ({$pend['name']}) : ") . $resume);
                         $prefix = $purge
                             ? 'Base purgée' . ($safety !== '' ? " (sauvegarde de sécurité : $safety)" : '') . ', puis import terminé — '
                             : 'Import terminé — ';
@@ -3930,24 +3960,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $err = simcity_parc_validate($_FILES['file_data'] ?? []);
                 if ($err !== '') { flash('error', $err); }
                 else {
+                    // Ménage : fichiers d'analyse abandonnés (ils contiennent
+                    // des PIN/PUK en clair — ne pas les laisser traîner).
+                    foreach (glob(sys_get_temp_dir() . '/simcity_parc_*') ?: [] as $old)
+                        if (is_file($old) && @filemtime($old) < time() - 86400) @unlink($old);
                     if (!empty($_SESSION['parc_pending']['file'])) @unlink($_SESSION['parc_pending']['file']);
                     $tmp = tempnam(sys_get_temp_dir(), 'simcity_parc_');
-                    move_uploaded_file($_FILES['file_data']['tmp_name'], $tmp);
+                    if (!@move_uploaded_file($_FILES['file_data']['tmp_name'], $tmp) || (int)@filesize($tmp) === 0) {
+                        @unlink($tmp);
+                        flash('error', "Le fichier n'a pas pu être mis de côté (espace disque / droits) — contrôle abandonné.");
+                    } else {
                     try {
                         $probe = simcity_parc_parse($tmp);          // valide le format tout de suite
                         $_SESSION['parc_pending'] = ['file' => $tmp,
                             'name' => (string)($_FILES['file_data']['name'] ?? 'parc.xlsx'),
-                            'nb'   => count($probe['records'])];
+                            'nb'   => count($probe['records']),
+                            'sha1' => (string)sha1_file($tmp)];
+                        if (!empty($probe['truncated'])) {
+                            flash('error', "Attention : classeur tronqué à 20 000 lignes — les lignes au-delà passeraient pour « absentes du fichier ». Scindez l'export avant d'appliquer quoi que ce soit.");
+                        }
                         header('Location: index.php?page=refs&tab=settings&sub=maintenance#parc-review'); exit;
                     } catch (Throwable $e) {
                         @unlink($tmp);
-                        flash('error', "Lecture impossible : " . h($e->getMessage()));
+                        flash('error', "Lecture impossible : " . $e->getMessage());
+                    }
                     }
                 }
             } elseif ($act === 'run') {
                 $pend = $_SESSION['parc_pending'] ?? null;
                 if (!$pend || !is_file($pend['file'])) {
                     flash('error', "Fichier introuvable — relancez l'analyse de l'export.");
+                } elseif (($d['pend_sha1'] ?? '') !== ($pend['sha1'] ?? '')) {
+                    // Nouvelle analyse lancée dans un autre onglet : les postes
+                    // cochés ici décrivent un autre fichier que celui en session.
+                    flash('error', "Le fichier analysé a changé depuis cet écran de contrôle — relancez l'analyse.");
                 } else {
                     $opts = ['billing' => !empty($d['apply_billing']), 'plan' => !empty($d['apply_plan']),
                              'status'  => !empty($d['apply_status']),  'iccid' => !empty($d['apply_iccid']),
@@ -4011,18 +4057,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     foreach ($list as $one) {
                         $v = simcity_invoice_validate($one);
                         if ($v !== '') {
-                            $err++; $msgs[] = h($one['name']) . ' : ' . $v;
+                            $err++; $msgs[] = $one['name'] . ' : ' . $v;
                             $report[] = ['file' => (string)$one['name'], 'status' => 'error', 'message' => $v];
                             continue;
                         }
+                        // Savepoint par fichier : tout le POST partage une seule
+                        // transaction, or l'échec d'un PDF est rattrapé ici sans
+                        // faire échouer le lot. Sans savepoint, une facture dont
+                        // l'insertion casse à mi-parcours resterait en base,
+                        // partielle, et serait commitée avec le reste — avec un
+                        // « déjà présente » au re-dépôt.
+                        $pdo->exec("SAVEPOINT sp_invoice_file");
                         try {
                             $res = simcity_invoice_import($pdo, $one['tmp_name'], (string)$one['name'], $author);
                             if ($res['status'] === 'ok') $ok++;
                             elseif ($res['status'] === 'duplicate') $dup++;
-                            else { $err++; $msgs[] = h($one['name']) . ' : ' . h($res['message'] ?? 'erreur'); }
+                            else { $err++; $msgs[] = $one['name'] . ' : ' . ($res['message'] ?? 'erreur'); }
+                            if ($res['status'] !== 'ok') $pdo->exec("ROLLBACK TO SAVEPOINT sp_invoice_file");
                             $report[] = $res;
                         } catch (Throwable $e) {
-                            $err++; $msgs[] = h($one['name']) . ' : ' . h($e->getMessage());
+                            $pdo->exec("ROLLBACK TO SAVEPOINT sp_invoice_file");
+                            $err++; $msgs[] = $one['name'] . ' : ' . $e->getMessage();
                             $report[] = ['file' => (string)$one['name'], 'status' => 'error', 'message' => $e->getMessage()];
                         }
                     }
@@ -4569,7 +4624,7 @@ if ($page === 'dashboard') {
         if ($invLastMonth) {
             $serie = [];
             $stZ = $pdo->prepare("SELECT phone_number, month_key, total_ht,
-                        calls_count + sms_count + mms_count + data_ko AS conso
+                        calls_count + sms_count + mms_count + data_ko + intl_count + surtaxe_count AS conso
                     FROM invoice_lines WHERE month_key <= ? ORDER BY month_key");
             $stZ->execute([$invLastMonth]);
             foreach ($stZ as $z) $serie[$z['phone_number']][$z['month_key']] = $z;
@@ -5531,14 +5586,19 @@ elseif ($page === 'invoices') {
     // Lignes du référentiel indexées par numéro (rapprochement / affichage).
     // « acct » = compte de facturation du référentiel, pour pouvoir restreindre
     // le rapprochement au même compte que la facture.
+    // Clé = numéro CANONIQUE (simcity_phone_canon, +33 compris) : la même
+    // normalisation que le SQL de l'onglet Consommations — sinon une ligne
+    // saisie « +33 6… » est reconnue dans un onglet et « hors SimCity » dans
+    // les autres. À numéro égal, la ligne active écrase l'archivée.
     $appLines = [];
     foreach ($pdo->query("SELECT l.phone_number, l.archived, l.status, l.agent_id, COALESCE(l.sim_vierge,0) sim_vierge,
             IFNULL(a.first_name,'') fn, IFNULL(a.last_name,'') ln, IFNULL(s.name,'') service_name,
             REPLACE(IFNULL(b.account_number,''), ' ', '') acct
         FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id
              LEFT JOIN billing_accounts b ON l.billing_id=b.id
-        WHERE l.phone_number IS NOT NULL AND l.phone_number != ''") as $al) {
-        $appLines[preg_replace('/\D/', '', $al['phone_number'])] = $al;
+        WHERE l.phone_number IS NOT NULL AND l.phone_number != ''
+        ORDER BY l.archived DESC, l.id") as $al) {
+        $appLines[simcity_phone_canon($al['phone_number'])] = $al;
     }
 
     // Seuils d'alerte.
@@ -5556,7 +5616,16 @@ elseif ($page === 'invoices') {
     // Chaque alerte porte un « impact » en € HT/mois : c'est lui qui permet de
     // trier et de totaliser l'enjeu, tous types confondus.
     $alertGroups = ['missing'=>[], 'zero'=>[], 'hf'=>[], 'surtaxe'=>[], 'intl'=>[], 'remise'=>[], 'var'=>[], 'global'=>[]];
+    // Mois de référence : le mois d'arrivée s'il est facturé, sinon le dernier
+    // mois facturé qui le précède. Un ?to= pointant un mois « trou » (URL
+    // tapée, marque-page) rendrait sinon toutes les alertes muettes et ferait
+    // déclarer tout le parc « absent de la facture » au rapprochement.
     $latestMonth = $axisTo;
+    if ($latestMonth !== null && !isset($byKey[$latestMonth])) {
+        $prev = null;
+        foreach ($byKey as $bk => $_) if ($bk <= $axisTo && ($prev === null || $bk > $prev)) $prev = $bk;
+        $latestMonth = $prev;
+    }
     if ($latestMonth) {
         // Séries par numéro, limitées au mois d'arrivée (une période qui
         // s'arrête en mars ne doit pas voir les consommations d'avril).
@@ -5605,7 +5674,10 @@ elseif ($page === 'invoices') {
             $zero = 0;
             foreach (array_reverse(array_keys($byMonth)) as $mk) {
                 $x = $byMonth[$mk];
-                if ((int)$x['calls_count'] + (int)$x['sms_count'] + (int)$x['mms_count'] + (int)$x['data_ko'] === 0) $zero++;
+                // Itinérance et surtaxés compris : une ligne utilisée
+                // uniquement à l'étranger n'est pas « sans consommation ».
+                if ((int)$x['calls_count'] + (int)$x['sms_count'] + (int)$x['mms_count'] + (int)$x['data_ko']
+                    + (int)$x['intl_count'] + (int)$x['surtaxe_count'] === 0) $zero++;
                 else break;
             }
             if ($zero >= $thr['zero_months']) {
@@ -6243,15 +6315,33 @@ elseif ($page === 'invoices') {
         <?php if(!$zeroDist): ?>
           <p class="muted" style="margin:0;">Toutes les lignes facturées en <?=h($fmtMois($curKey))?> ont consommé au moins une fois sur la période de référence.</p>
         <?php else: ?>
+        <?php
+          // Lignes groupées par ancienneté, pour le déroulé au clic sur la tranche.
+          $zeroByMonths = [];
+          foreach ($alertGroups['zero'] as $z) $zeroByMonths[(int)($z['months'] ?? 0)][] = $z;
+        ?>
         <table class="data-table" style="font-size:.85rem;">
           <thead><tr><th>Ancienneté du silence</th><th style="text-align:right;">Lignes</th><th>Lecture</th></tr></thead>
           <tbody>
           <?php foreach($zeroDist as $mois => $n): ?>
-          <tr>
-            <td><strong><?=$mois?> mois</strong> consécutifs sans appel, SMS ni data</td>
+          <tr onclick="const c=this.querySelector('.zb-chev');c.classList.toggle('bi-chevron-right');c.classList.toggle('bi-chevron-down');document.querySelectorAll('.zero-det-<?=$mois?>').forEach(r=>r.style.display=r.style.display==='none'?'':'none')"
+              style="cursor:pointer;" title="Afficher / masquer les lignes concernées">
+            <td><i class="bi bi-chevron-right zb-chev" style="font-size:.7rem;color:var(--text-muted);"></i>
+              <strong><?=$mois?> mois</strong> consécutifs sans appel, SMS ni data</td>
             <td style="text-align:right;font-weight:600;"><?=$n?></td>
             <td class="muted"><?=$mois >= 4 ? 'Résiliation à envisager' : ($mois >= 2 ? 'Suspension ou résiliation à étudier' : 'À surveiller')?></td>
           </tr>
+          <?php foreach(($zeroByMonths[$mois] ?? []) as $z): ?>
+          <tr class="zero-det-<?=$mois?>" style="display:none;">
+            <td style="padding-left:1.9rem;">
+              <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($z['phone'])?>" style="font-family:var(--font-mono);white-space:nowrap;" title="Historique de la ligne" onclick="event.stopPropagation()"><?=h(formatPhone($z['phone']))?></a>
+              <?php if($z['who']): ?> <span class="muted"><?=h($z['who'])?></span><?php endif; ?>
+              <?php if($z['plan']): ?> <span class="muted" style="font-size:.76rem;">· <?=h($z['plan'])?></span><?php endif; ?>
+            </td>
+            <td style="text-align:right;font-family:var(--font-mono);"><?=$fmtEur((float)$z['impact'])?></td>
+            <td><?php if(!empty($appLines[$z['phone']])): ?><a class="muted" style="font-size:.78rem;" href="?page=lines&tab=active&q=<?=urlencode(formatPhone($z['phone']))?>" onclick="event.stopPropagation()">voir la fiche →</a><?php endif; ?></td>
+          </tr>
+          <?php endforeach; ?>
           <?php endforeach; ?>
           </tbody>
         </table>
@@ -6401,6 +6491,7 @@ elseif ($page === 'invoices') {
             <?php if(($rp['status'] ?? '') === 'ok'): ?>
               <?=(int)($rp['nb_lines'] ?? 0)?> ligne(s)<?php if(!empty($rp['nb_devices'])): ?>, <?=(int)$rp['nb_devices']?> matériel(s)<?php endif; ?>
               <?php if(isset($rp['total_ttc'])): ?> · <?=$fmtEur($rp['total_ttc'])?> TTC<?php endif; ?>
+              <?php if(!empty($rp['message'])): ?><br><span style="color:var(--warning);"><i class="bi bi-exclamation-triangle"></i> <?=h($rp['message'])?></span><?php endif; ?>
             <?php elseif(($rp['status'] ?? '') === 'duplicate'): ?>
               déjà en base<?php if(!empty($rp['existing']['imported_at'])): ?> depuis le <?=date('d/m/Y', strtotime($rp['existing']['imported_at']))?>
               <?php if(!empty($rp['existing']['imported_by'])): ?>(<?=h($rp['existing']['imported_by'])?>)<?php endif; ?><?php endif; ?>
@@ -6653,8 +6744,8 @@ elseif ($page === 'invoices') {
         // filtrée, pas seulement sur la page affichée.
         $ph = implode(',', array_fill(0, count($axis), '?'));
         // Le service vient du référentiel : rapprochement sur le numéro
-        // normalisé (le référentiel peut contenir espaces, points ou tirets).
-        $norm = "REPLACE(REPLACE(REPLACE(REPLACE(ml.phone_number,' ',''),'.',''),'-',''),'+33','0')";
+        // canonique (règle unique de l'application, +33 compris).
+        $norm = sprintf(SIMCITY_SQL_PHONE_CANON, 'ml.phone_number');
         $derived = "SELECT l.phone_number, COUNT(*) nbm,
                 SUM(l.calls_count) calls_count, SUM(l.calls_seconds) calls_seconds,
                 SUM(l.sms_count) sms_count, SUM(l.mms_count) mms_count, SUM(l.data_ko) data_ko,
@@ -6667,7 +6758,7 @@ elseif ($page === 'invoices') {
                 (SELECT IFNULL(s.name,'') FROM mobile_lines ml LEFT JOIN agents a2 ON ml.agent_id=a2.id
                     LEFT JOIN services s ON COALESCE(ml.service_id, a2.service_id)=s.id
                     WHERE $norm = l.phone_number AND ml.archived=0 LIMIT 1) service_name,
-                (SELECT COUNT(*) FROM mobile_lines ml WHERE $norm = l.phone_number) in_app
+                (SELECT COUNT(*) FROM mobile_lines ml WHERE $norm = l.phone_number AND ml.archived=0) in_app
             FROM invoice_lines l WHERE l.month_key IN ($ph) $accWhere
             GROUP BY l.phone_number";
         $baseArgs = array_merge([$axisTo, $axisTo], $axis, $accArgs);
@@ -6697,7 +6788,7 @@ elseif ($page === 'invoices') {
         if ($fflag === 'hf')      $where[] = "t.hf_ht > 0";
         if ($fflag === 'intl')    $where[] = "t.intl_ht > 0";
         if ($fflag === 'surtaxe') $where[] = "t.surtaxe_ht > 0";
-        if ($fflag === 'zero')    $where[] = "(t.calls_count + t.sms_count + t.mms_count + t.data_ko) = 0";
+        if ($fflag === 'zero')    $where[] = "(t.calls_count + t.sms_count + t.mms_count + t.data_ko + t.intl_count + t.surtaxe_count) = 0";
         if ($fflag === 'unknown') $where[] = "t.in_app = 0";
         if ($fflag === 'nosvc')   $where[] = "t.in_app > 0 AND t.service_name = ''";
         $wSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
@@ -6892,7 +6983,23 @@ elseif ($page === 'invoices') {
             $impacts[$gk] = array_sum(array_map(fn($a) => (float)$a['impact'], $alertGroups[$gk]));
         }
         $filter = isset($_GET['type'], $groupMeta[$_GET['type']]) ? $_GET['type'] : '';
-        $totalImpact = array_sum($impacts);
+        // Enjeu global SANS double comptage : les groupes se recouvrent (un
+        // hors-forfait inhabituel compte dans « hors-forfait » ET dans
+        // « variation » ; une facture manquante alimente aussi « montant
+        // global »). Sommer tous les groupes pouvait approcher le double de
+        // l'enjeu réel. On retient donc, par ligne, la plus coûteuse de ses
+        // alertes, et on écarte les indicateurs de parc (facture manquante,
+        // montant global) qui sont des signaux, pas des économies mensuelles.
+        $lineImpact = [];
+        foreach ($alertGroups as $gk => $garows) {
+            if ($gk === 'missing' || $gk === 'global') continue;
+            foreach ($garows as $ga) {
+                $gp = (string)($ga['phone'] ?? '');
+                if ($gp === '') continue;
+                $lineImpact[$gp] = max($lineImpact[$gp] ?? 0.0, (float)$ga['impact']);
+            }
+        }
+        $totalImpact = array_sum($lineImpact);
         $shownImpact = $filter === '' ? $totalImpact : $impacts[$filter];
     ?>
     <?=$periodPicker('alerts', $filter !== '' ? ['type' => $filter] : [])?>
@@ -8095,6 +8202,7 @@ elseif ($page === 'refs') {
         <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
         <input type="hidden" name="_entity" value="import">
         <input type="hidden" name="_action" value="run">
+        <input type="hidden" name="pend_sha1" value="<?=h($pendImp['sha1'] ?? '')?>">
 
         <?php if(!empty($pendImp['purge'])): ?>
         <p style="background:var(--danger-dim);border:1px solid var(--danger);border-radius:var(--radius-sm);padding:.75rem 1rem;font-size:.85rem;margin-bottom:1.25rem;">
@@ -8348,6 +8456,7 @@ elseif ($page === 'refs') {
           <input type="hidden" name="<?=CSRF_TOKEN_NAME?>" value="<?=h($CSRF_TOKEN)?>">
           <input type="hidden" name="_entity" value="parc">
           <input type="hidden" name="_action" value="run">
+          <input type="hidden" name="pend_sha1" value="<?=h($pendParc['sha1'] ?? '')?>">
           <h4 style="font-size:.8rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text2);margin-bottom:.6rem;">
             <i class="bi bi-sliders"></i> Que voulez-vous mettre à jour ?</h4>
           <p class="muted" style="font-size:.82rem;margin-bottom:.9rem;">
@@ -9391,12 +9500,16 @@ elseif ($page === 'stats') {
     $sReqOpen     = (int)$pdo->query("SELECT COUNT(*) FROM requests WHERE status IN ('a_qualifier','en_validation','validee')")->fetchColumn();
 
     // ── 1. Parc & stock ──
-    $statBrand   = $pdo->query("SELECT m.brand AS k, COUNT(d.id) AS c FROM devices d JOIN models m ON d.model_id=m.id WHERE d.archived=0 GROUP BY m.brand ORDER BY c DESC")->fetchAll();
+    // LEFT JOIN : un matériel sans modèle (import CSV, IMEI seul) compte dans
+    // « Matériels actifs » — il doit aussi apparaître dans le camembert.
+    $statBrand   = $pdo->query("SELECT IFNULL(m.brand,'(sans modèle)') AS k, COUNT(d.id) AS c FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE d.archived=0 GROUP BY k ORDER BY c DESC")->fetchAll();
     $devStatusMap = ['Deployed'=>'Déployé', 'Stock'=>'En stock', 'Repair'=>'Réparation', 'HS'=>'HS / Rebut', 'Lost'=>'Perdu / Volé'];
     $statDevStat = $pdo->query("SELECT status AS k, COUNT(*) AS c FROM devices WHERE archived=0 GROUP BY status ORDER BY c DESC")->fetchAll();
     $statOper    = $pdo->query("SELECT IFNULL(o.name,'Sans opérateur') AS k, COUNT(l.id) AS c FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id LEFT JOIN operators o ON p.operator_id=o.id WHERE l.archived=0 AND l.sim_vierge=0 GROUP BY o.name ORDER BY c DESC")->fetchAll();
     $statPlan    = $pdo->query("SELECT IFNULL(p.name,'Sans forfait') AS k, COUNT(l.id) AS c FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.archived=0 AND l.sim_vierge=0 GROUP BY p.name ORDER BY c DESC LIMIT 8")->fetchAll();
-    $sEsim    = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND esim=1")->fetchColumn();
+    // Les deux cartes forment un couple : mêmes filtres de part et d'autre
+    // (les SIM vierges en stock — physiques OU eSIM — n'y figurent pas).
+    $sEsim    = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND esim=1 AND sim_vierge=0")->fetchColumn();
     $sPhysSim = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND esim=0 AND sim_vierge=0")->fetchColumn();
     $sByod    = (int)$pdo->query("SELECT COUNT(*) FROM mobile_lines WHERE archived=0 AND personal_device=1")->fetchColumn();
 
@@ -9407,30 +9520,83 @@ elseif ($page === 'stats') {
             FROM invoice_lines GROUP BY month_key ORDER BY month_key DESC LIMIT 12")->fetchAll();
     $statInvMonths = array_reverse($statInvMonths);
     $statInvLastTotal = 0.0; $statInvHf = 0.0; $statInvUnit = 0.0; $statInvSvc = [];
+    $statInvAxis = []; $statInvByKey = []; $statInvMissingAcc = [];
     if ($statInvMonths) {
         $last = end($statInvMonths);
         $statInvLastTotal = (float)$last['t'];
         $statInvHf        = (float)$last['hf'];
         $statInvUnit      = (int)$last['n'] > 0 ? (float)$last['t'] / (int)$last['n'] : 0.0;
-        // Coût par service : rapprochement sur le numéro normalisé.
-        $stSvcInv = $pdo->prepare("SELECT IFNULL(s.name,'(sans service)') svc, SUM(l.total_ht) t
-            FROM invoice_lines l
-            JOIN mobile_lines ml ON REPLACE(REPLACE(REPLACE(ml.phone_number,' ',''),'.',''),'-','') = l.phone_number
-            LEFT JOIN agents a ON ml.agent_id = a.id
-            LEFT JOIN services s ON COALESCE(ml.service_id, a.service_id) = s.id
-            WHERE l.month_key = ? GROUP BY svc ORDER BY t DESC LIMIT 10");
+
+        // Axe des mois CONTINU, comme le module Facturation : un mois sans
+        // facture doit se lire comme un trou du tracé, pas être escamoté de
+        // l'axe (deux barres voisines séparées de plusieurs mois sans indice).
+        $statInvByKey = array_column($statInvMonths, null, 'month_key');
+        for ($i = 11; $i >= 0; $i--) $statInvAxis[] = date('Y-m', strtotime($last['month_key'] . "-01 -$i months"));
+        while ($statInvAxis && !isset($statInvByKey[$statInvAxis[0]])) array_shift($statInvAxis);
+
+        // Le dernier mois est-il complet ? Un compte facturé les 3 mois
+        // précédents mais absent du dernier laisse un total partiel — le
+        // module lève une alerte « facture manquante », la carte doit au
+        // moins prévenir.
+        $stAcc = $pdo->prepare("SELECT DISTINCT IFNULL(billing_account,'') FROM invoice_lines WHERE month_key = ?");
+        $stAcc->execute([$last['month_key']]);
+        $accLastSet = $stAcc->fetchAll(PDO::FETCH_COLUMN);
+        $stAccPrev = $pdo->prepare("SELECT DISTINCT IFNULL(billing_account,'') FROM invoice_lines WHERE month_key < ? AND month_key >= ?");
+        $stAccPrev->execute([$last['month_key'], date('Y-m', strtotime($last['month_key'] . '-01 -3 months'))]);
+        $statInvMissingAcc = array_values(array_diff($stAccPrev->fetchAll(PDO::FETCH_COLUMN), $accLastSet));
+
+        // Coût par service : rapprochement en PHP sur le numéro CANONIQUE
+        // (règle commune, +33 compris), référentiel restreint aux lignes
+        // actives — la jointure SQL naïve dupliquait les montants quand un
+        // numéro existait en double (ligne archivée + ligne recréée) et
+        // rangeait les archivées dans un faux « (sans service) ». Les numéros
+        // facturés inconnus du référentiel sont regroupés « (hors SimCity) »
+        // au lieu de disparaître du total.
+        $svcOfPhone = [];
+        foreach ($pdo->query("SELECT " . sprintf(SIMCITY_SQL_PHONE_CANON, 'l.phone_number') . " ph, IFNULL(s.name,'') svc
+                FROM mobile_lines l
+                LEFT JOIN agents a ON l.agent_id = a.id
+                LEFT JOIN services s ON COALESCE(l.service_id, a.service_id) = s.id
+                WHERE l.archived = 0 AND l.phone_number IS NOT NULL AND l.phone_number != ''") as $r) {
+            if ($r['ph'] !== '') $svcOfPhone[$r['ph']] = (string)$r['svc'];
+        }
+        $stSvcInv = $pdo->prepare("SELECT phone_number, SUM(total_ht) t FROM invoice_lines WHERE month_key = ? GROUP BY phone_number");
         $stSvcInv->execute([$last['month_key']]);
-        $statInvSvc = $stSvcInv->fetchAll();
+        $svcAgg = [];
+        foreach ($stSvcInv as $r) {
+            $ph  = simcity_phone_canon((string)$r['phone_number']);
+            $svc = array_key_exists($ph, $svcOfPhone)
+                 ? ($svcOfPhone[$ph] !== '' ? $svcOfPhone[$ph] : '(sans service)')
+                 : '(hors SimCity)';
+            $svcAgg[$svc] = ($svcAgg[$svc] ?? 0.0) + (float)$r['t'];
+        }
+        arsort($svcAgg);
+        foreach (array_slice($svcAgg, 0, 10, true) as $svc => $t) $statInvSvc[] = ['svc' => $svc, 't' => $t];
     }
 
     // ── 2. Par service ──
+    // Même définition du « service d'une ligne » que le graphique facturation
+    // de cette page : service de la ligne, à défaut celui de l'agent — sinon
+    // un service pouvait afficher 0 ligne ici et un coût réel juste au-dessus.
     $statSvc = $pdo->query("SELECT s.name AS k,
-            (SELECT COUNT(*) FROM mobile_lines l WHERE l.service_id=s.id AND l.archived=0) AS lignes,
-            (SELECT COUNT(*) FROM devices d WHERE d.service_id=s.id AND d.archived=0)      AS mats
+            (SELECT COUNT(*) FROM mobile_lines l LEFT JOIN agents ag ON l.agent_id=ag.id
+                WHERE COALESCE(l.service_id, ag.service_id)=s.id AND l.archived=0)     AS lignes,
+            (SELECT COUNT(*) FROM devices d WHERE d.service_id=s.id AND d.archived=0)  AS mats
         FROM services s HAVING lignes+mats > 0 ORDER BY lignes+mats DESC LIMIT 10")->fetchAll();
 
     // ── 3. Demandes de téléphone ──
-    $statReqMonth  = $pdo->query("SELECT DATE_FORMAT(created_at,'%Y-%m') AS k, COUNT(*) AS c FROM requests WHERE created_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) GROUP BY k ORDER BY k")->fetchAll();
+    // 12 mois CALENDAIRES pleins (le mois courant compris) : borner à « il y a
+    // 12 mois jour pour jour » affichait un 13e mois amputé de ses premiers
+    // jours, présenté comme un mois entier. Les mois à zéro sont réinjectés :
+    // sans eux, un creux de plusieurs mois disparaissait de l'axe.
+    $statReqMonth  = $pdo->query("SELECT DATE_FORMAT(created_at,'%Y-%m') AS k, COUNT(*) AS c FROM requests
+            WHERE created_at >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 11 MONTH),'%Y-%m-01') GROUP BY k ORDER BY k")->fetchAll();
+    $reqByMonth = array_column($statReqMonth, 'c', 'k');
+    $statReqMonth = [];
+    for ($i = 11; $i >= 0; $i--) {
+        $k = date('Y-m', strtotime(date('Y-m-01') . " -$i months"));
+        $statReqMonth[] = ['k' => $k, 'c' => (int)($reqByMonth[$k] ?? 0)];
+    }
     $reqStatusMap  = ['a_qualifier'=>'À qualifier','en_validation'=>'En validation','validee'=>'Validée','livree'=>'Livrée','refusee'=>'Refusée','annulee'=>'Annulée'];
     $statReqStatus = $pdo->query("SELECT status AS k, COUNT(*) AS c FROM requests GROUP BY status")->fetchAll();
     $statReqType   = $pdo->query("SELECT type AS k, COUNT(*) AS c FROM requests GROUP BY type")->fetchAll();
@@ -9440,11 +9606,25 @@ elseif ($page === 'stats') {
     $sReqAvgDays   = $pdo->query("SELECT ROUND(AVG(DATEDIFF(closed_at, launched_at)),1) FROM requests WHERE status IN ('validee','livree') AND launched_at IS NOT NULL AND closed_at IS NOT NULL")->fetchColumn();
 
     // ── 4. Incidents & renouvellement ──
-    // Matériels archivés par motif (extrait des journaux « Archivé — Motif : X »)
-    $archLogs = $pdo->query("SELECT action_desc FROM history_logs WHERE entity_type='device' AND action_desc LIKE '%Motif :%'")->fetchAll(PDO::FETCH_COLUMN);
+    // Matériels archivés par motif : un motif par matériel ACTUELLEMENT
+    // archivé, pris sur son dernier journal d'archivage. Couvre aussi les
+    // archivages en cascade (« archivé automatiquement — ligne associée
+    // archivée (X) »), et ne compte ni les matériels restaurés depuis, ni
+    // deux fois un matériel archivé-restauré-réarchivé.
+    $archLogs = $pdo->query("SELECT h.entity_id, h.action_desc
+            FROM history_logs h
+            JOIN devices d ON d.id = h.entity_id AND d.archived = 1
+            WHERE h.entity_type='device'
+              AND (h.action_desc LIKE '%Motif :%' OR h.action_desc LIKE '%archivé automatiquement%')
+            ORDER BY h.id")->fetchAll();
+    $archLast = [];
+    foreach ($archLogs as $al) $archLast[(int)$al['entity_id']] = (string)$al['action_desc'];   // le plus récent gagne
     $motifCounts = [];
-    foreach ($archLogs as $desc) {
-        if (preg_match('/Motif\s*:\s*([^—\-]+)/u', $desc, $mm)) { $mo = trim($mm[1]); if ($mo !== '') $motifCounts[$mo] = ($motifCounts[$mo] ?? 0) + 1; }
+    foreach ($archLast as $desc) {
+        if (preg_match('/Motif\s*:\s*([^—\-]+)/u', $desc, $mm)) $mo = trim($mm[1]);
+        elseif (preg_match('/archivé automatiquement.*\(([^)]+)\)/u', $desc, $mm)) $mo = trim($mm[1]) . ' (via ligne)';
+        else $mo = '';
+        if ($mo !== '') $motifCounts[$mo] = ($motifCounts[$mo] ?? 0) + 1;
     }
     arsort($motifCounts);
     // Vieillissement du parc (matériels actifs par tranche d'âge)
@@ -9456,7 +9636,9 @@ elseif ($page === 'stats') {
         elseif ($y < 3) $ageBuckets['2–3 ans']++; elseif ($y < 4) $ageBuckets['3–4 ans']++;
         else $ageBuckets['> 4 ans']++;
     }
-    $statSimReason = $pdo->query("SELECT IFNULL(NULLIF(reason,''),'Non précisé') AS k, COUNT(*) AS c FROM sim_history GROUP BY reason ORDER BY c DESC LIMIT 8")->fetchAll();
+    // GROUP BY sur l'expression affichée : sinon reason='' et « Non précisé »
+    // formaient deux barres homonymes.
+    $statSimReason = $pdo->query("SELECT IFNULL(NULLIF(reason,''),'Non précisé') AS k, COUNT(*) AS c FROM sim_history GROUP BY k ORDER BY c DESC LIMIT 8")->fetchAll();
 
     // Rendu d'une carte-graphique (canvas + état vide)
     $chartCard = function($title, $icon, $canvasId, $hasData, $empty = 'Aucune donnée pour l\'instant.') {
@@ -9512,7 +9694,7 @@ elseif ($page === 'stats') {
         <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--primary);"><div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--primary);"><?=$sReqAvgDays !== null && $sReqAvgDays !== false ? h($sReqAvgDays) . ' j' : '—'?></div><div style="font-size:.78rem;color:var(--text2);">Délai moyen du circuit</div></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;">
-        <?php $chartCard('Demandes par mois (12 mois)', 'calendar3', 'stReqMonth', (bool)$statReqMonth); ?>
+        <?php $chartCard('Demandes par mois (12 mois)', 'calendar3', 'stReqMonth', (bool)array_filter($col($statReqMonth, 'c'))); ?>
         <?php $chartCard('Répartition par statut', 'pie-chart', 'stReqStatus', (bool)$statReqStatus); ?>
         <?php $chartCard('Par type de demande', 'tags', 'stReqType', (bool)$statReqType); ?>
         <?php $chartCard('Motifs de remplacement', 'exclamation-triangle', 'stReqMotif', (bool)$statReqMotif, 'Aucun renouvellement avec motif.'); ?>
@@ -9525,7 +9707,11 @@ elseif ($page === 'stats') {
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
         <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--primary);">
           <div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--primary);"><?=number_format($statInvLastTotal, 0, ',', ' ')?> €</div>
-          <div style="font-size:.78rem;color:var(--text2);">Dernier mois facturé (HT)</div></div>
+          <div style="font-size:.78rem;color:var(--text2);">Dernier mois facturé (HT)</div>
+          <?php if($statInvMissingAcc): ?>
+          <div style="font-size:.72rem;color:var(--warning);margin-top:.25rem;" title="Compte(s) facturé(s) les mois précédents mais absent(s) du dernier mois : <?=h(implode(', ', $statInvMissingAcc))?>">
+            <i class="bi bi-exclamation-triangle"></i> total probablement partiel — <?=count($statInvMissingAcc)?> compte(s) sans facture</div>
+          <?php endif; ?></div>
         <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--warning);">
           <div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--warning);"><?=number_format($statInvHf, 2, ',', ' ')?> €</div>
           <div style="font-size:.78rem;color:var(--text2);">Hors-forfait du mois</div></div>
@@ -9581,16 +9767,17 @@ elseif ($page === 'stats') {
       doughnut('stReqType', <?=json_encode(array_map(fn($k)=>$k==='renouvellement'?'Renouvellement':'Attribution', $col($statReqType,'k')))?>, <?=json_encode(array_map('intval',$col($statReqType,'c')))?>);
       bars('stReqMotif', <?=json_encode($col($statReqMotif,'k'))?>, [{label:'Demandes',data:<?=json_encode(array_map('intval',$col($statReqMotif,'c')))?>,backgroundColor:'#dc2626',borderRadius:4}]);
 
-      // Facturation
+      // Facturation — axe continu : un mois sans facture est un TROU du tracé
+      // (barre absente), jamais un mois escamoté de l'axe.
       <?php if($statInvMonths):
         $moisCourt = function(string $mk): string {
             $n = [1=>'janv.',2=>'févr.',3=>'mars',4=>'avr.',5=>'mai',6=>'juin',7=>'juil.',8=>'août',9=>'sept.',10=>'oct.',11=>'nov.',12=>'déc.'];
-            [$y, $m] = explode('-', $mk);
+            [$y, $m] = array_pad(explode('-', $mk), 2, '0');   // month_key malformé → « ? »
             return ($n[(int)$m] ?? '?') . ' ' . substr($y, 2);
         }; ?>
-      bars('stInvMonth', <?=json_encode(array_map($moisCourt, array_column($statInvMonths, 'month_key')))?>,
-           [{label:'Total € HT',data:<?=json_encode(array_map(fn($r) => round((float)$r['t'], 2), $statInvMonths))?>,backgroundColor:'#4f46e5',borderRadius:4},
-            {label:'Hors-forfait € HT',data:<?=json_encode(array_map(fn($r) => round((float)$r['hf'], 2), $statInvMonths))?>,backgroundColor:'#d97706',borderRadius:4}]);
+      bars('stInvMonth', <?=json_encode(array_map($moisCourt, $statInvAxis))?>,
+           [{label:'Total € HT',data:<?=json_encode(array_map(fn($k) => isset($statInvByKey[$k]) ? round((float)$statInvByKey[$k]['t'], 2) : null, $statInvAxis))?>,backgroundColor:'#4f46e5',borderRadius:4},
+            {label:'Hors-forfait € HT',data:<?=json_encode(array_map(fn($k) => isset($statInvByKey[$k]) ? round((float)$statInvByKey[$k]['hf'], 2) : null, $statInvAxis))?>,backgroundColor:'#d97706',borderRadius:4}]);
       bars('stInvSvc', <?=json_encode($col($statInvSvc,'svc'))?>,
            [{label:'€ HT',data:<?=json_encode(array_map(fn($v) => round((float)$v, 2), $col($statInvSvc,'t')))?>,backgroundColor:'#0891b2',borderRadius:4}], true);
       <?php endif; ?>

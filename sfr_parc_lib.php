@@ -120,7 +120,9 @@ function simcity_zip_read(string $zipPath, string $entry): ?string {
                         substr($raw, $lo + 4, 26));
             $blob = substr($raw, $lo + 30 + $l['namelen'] + $l['extralen'], $h['csize']);
             if ($h['method'] === 0) return $blob;                          // stocké
-            if ($h['method'] === 8) { $out = @gzinflate($blob); return $out === false ? null : $out; }
+            // Taille décompressée plafonnée : une « bombe » ZIP de quelques Mo
+            // ne doit pas pouvoir épuiser la mémoire du serveur.
+            if ($h['method'] === 8) { $out = @gzinflate($blob, 256 * 1024 * 1024); return $out === false ? null : $out; }
             return null;                                                   // méthode exotique
         }
         $pos += 46 + $h['namelen'] + $h['extralen'] + $h['commentlen'];
@@ -145,10 +147,36 @@ function simcity_parc_col_index(string $ref): int {
     return $n - 1;
 }
 
+// Chemin de la première feuille du classeur, résolu via workbook.xml et ses
+// relations : elle ne s'appelle pas forcément « sheet1.xml » (feuilles
+// réordonnées, fichier ré-enregistré par un autre outil). Null si introuvable.
+function simcity_xlsx_first_sheet(string $path): ?string {
+    $wb   = simcity_zip_read($path, 'xl/workbook.xml');
+    $rels = simcity_zip_read($path, 'xl/_rels/workbook.xml.rels');
+    if ($wb === null || $rels === null) return null;
+    $xw = @simplexml_load_string($wb);
+    $xr = @simplexml_load_string($rels);
+    if ($xw === false || $xr === false || !isset($xw->sheets->sheet[0])) return null;
+    $rid = (string)($xw->sheets->sheet[0]->attributes('http://schemas.openxmlformats.org/officeDocument/2006/relationships')['id'] ?? '');
+    foreach ($xr->Relationship as $rel) {
+        if ((string)$rel['Id'] === $rid) {
+            $target = (string)$rel['Target'];
+            return str_starts_with($target, '/') ? ltrim($target, '/') : 'xl/' . $target;
+        }
+    }
+    return null;
+}
+
 // Lit la première feuille d'un .xlsx et retourne un tableau de lignes
 // (chaque ligne = tableau indexé par numéro de colonne).
-function simcity_xlsx_rows(string $path, int $maxRows = 20000): array {
-    $sheet = simcity_zip_read($path, 'xl/worksheets/sheet1.xml');
+// $truncated est mis à true si le classeur dépasse $maxRows : l'appelant doit
+// le dire à l'utilisateur, sinon les lignes non lues passeraient pour
+// « absentes du fichier ».
+function simcity_xlsx_rows(string $path, int $maxRows = 20000, ?bool &$truncated = null): array {
+    $truncated = false;
+    $entry = simcity_xlsx_first_sheet($path) ?? 'xl/worksheets/sheet1.xml';
+    $sheet = simcity_zip_read($path, $entry)
+          ?? ($entry !== 'xl/worksheets/sheet1.xml' ? simcity_zip_read($path, 'xl/worksheets/sheet1.xml') : null);
     if ($sheet === null) throw new RuntimeException("Feuille de calcul illisible dans le classeur.");
 
     // Chaînes partagées (les exports SFR utilisent surtout des chaînes en ligne,
@@ -182,7 +210,7 @@ function simcity_xlsx_rows(string $path, int $maxRows = 20000): array {
             $r[simcity_parc_col_index((string)$c['r'])] = trim($v);
         }
         $rows[] = $r;
-        if (count($rows) >= $maxRows) break;
+        if (count($rows) >= $maxRows) { $truncated = true; break; }
     }
     return $rows;
 }
@@ -191,9 +219,9 @@ function simcity_xlsx_rows(string $path, int $maxRows = 20000): array {
 // LECTURE DE L'EXPORT
 // ─────────────────────────────────────────────────────────────
 
-// Parse l'export : retourne ['records' => [...], 'ignored' => n, 'columns' => [...]]
+// Parse l'export : retourne ['records' => [...], 'ignored' => n, 'columns' => [...], 'truncated' => bool]
 function simcity_parc_parse(string $path): array {
-    $rows = simcity_xlsx_rows($path);
+    $rows = simcity_xlsx_rows($path, 20000, $truncated);
     if (count($rows) < 2) throw new RuntimeException("Le classeur ne contient aucune donnée.");
 
     // Repérage des colonnes par en-tête (l'ordre du portail peut changer).
@@ -211,7 +239,7 @@ function simcity_parc_parse(string $path): array {
     $records = []; $ignored = 0;
     foreach (array_slice($rows, 1) as $r) {
         $get = fn(string $k) => isset($map[$k]) ? trim((string)($r[$map[$k]] ?? '')) : '';
-        $phone = preg_replace('/\D/', '', $get('phone'));
+        $phone = simcity_phone_canon($get('phone'));
         if (strlen($phone) < 9) { $ignored++; continue; }
         $records[] = [
             'phone'         => $phone,
@@ -229,11 +257,11 @@ function simcity_parc_parse(string $path): array {
             'plan'          => $get('plan'),
             'device_used'   => $get('device_used'),
             'device_bought' => $get('device_bought'),
-            'imei_used'     => preg_replace('/\D/', '', $get('imei_used')),
-            'imei_bought'   => preg_replace('/\D/', '', $get('imei_bought')),
+            'imei_used'     => simcity_parc_digits($get('imei_used')),
+            'imei_bought'   => simcity_parc_digits($get('imei_bought')),
             'sim_format'    => $get('sim_format'),
-            'eid'           => preg_replace('/\D/', '', $get('eid')),
-            'iccid'         => preg_replace('/\D/', '', $get('iccid')),
+            'eid'           => simcity_parc_digits($get('eid')),
+            'iccid'         => simcity_parc_digits($get('iccid')),
             'offer'         => $get('offer'),
             // Codes SIM : uniquement des chiffres, longueurs plausibles.
             'pin'           => simcity_parc_code($get('pin'), 4, 8),
@@ -245,7 +273,16 @@ function simcity_parc_parse(string $path): array {
             'rio'           => preg_match('/^[A-Za-z0-9]{12}$/', $get('rio')) ? strtoupper($get('rio')) : '',
         ];
     }
-    return ['records' => $records, 'ignored' => $ignored, 'columns' => array_keys($map)];
+    return ['records' => $records, 'ignored' => $ignored, 'columns' => array_keys($map),
+            'truncated' => (bool)$truncated];
+}
+
+// Identifiant numérique long (ICCID, IMEI, EID) : chiffres seuls. Une cellule
+// convertie en notation scientifique par Excel (« 8.90331E+19 ») a perdu des
+// chiffres — mieux vaut l'écarter que de retenir un identifiant faux.
+function simcity_parc_digits(string $s): string {
+    if (preg_match('/\dE\+?\d/i', $s)) return '';
+    return preg_replace('/\D/', '', $s);
 }
 
 // Code SIM : chiffres uniquement, dans une longueur plausible, sinon ''.
@@ -256,8 +293,16 @@ function simcity_parc_code(string $s, int $min, int $max): string {
 }
 
 // « 18/06/2019 » → « Y-m-d » (null si vide ou invalide).
+// Gère aussi le nombre de série Excel (cellule typée date/nombre, cas d'un
+// fichier ré-enregistré dans Excel) : jours écoulés depuis le 30/12/1899.
 function simcity_parc_date(string $s): ?string {
-    if (!preg_match('#^(\d{2})/(\d{2})/(\d{4})$#', trim($s), $m)) return null;
+    $s = trim($s);
+    if (preg_match('/^\d+(?:\.\d+)?$/', $s)) {
+        $n = (int)$s;
+        if ($n < 20000 || $n > 80000) return null;      // hors 1954–2119 : pas une date
+        return gmdate('Y-m-d', ($n - 25569) * 86400);   // 25569 = 01/01/1970
+    }
+    if (!preg_match('#^(\d{2})/(\d{2})/(\d{4})$#', $s, $m)) return null;
     return checkdate((int)$m[2], (int)$m[1], (int)$m[3]) ? "$m[3]-$m[2]-$m[1]" : null;
 }
 
@@ -281,7 +326,8 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
     $app = [];
     $sql = "SELECT l.id, l.phone_number, l.iccid, l.status, l.archived, l.sim_vierge, l.agent_id,
                    l.plan_id, l.billing_id, l.device_id, l.activation_date,
-                   IFNULL(l.pin,'') pin, IFNULL(l.puk,'') puk,
+                   IFNULL(l.pin,'') pin, IFNULL(l.pin2,'') pin2,
+                   IFNULL(l.puk,'') puk, IFNULL(l.puk2,'') puk2, IFNULL(l.rio,'') rio,
                    IFNULL(a.last_name,'') ln, IFNULL(a.first_name,'') fn,
                    IFNULL(p.name,'') plan_name, REPLACE(IFNULL(b.account_number,''),' ','') acct,
                    IFNULL(d.imei,'') imei, IFNULL(m.brand,'') brand, IFNULL(m.name,'') model
@@ -290,9 +336,13 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
             LEFT JOIN plan_types p     ON l.plan_id = p.id
             LEFT JOIN billing_accounts b ON l.billing_id = b.id
             LEFT JOIN devices d        ON l.device_id = d.id
-            LEFT JOIN models m         ON d.model_id = m.id";
+            LEFT JOIN models m         ON d.model_id = m.id
+            ORDER BY l.archived DESC, l.id";
+    // Clé = numéro canonique (règle commune, +33 compris). En cas de doublon
+    // de numéro (ligne archivée + ligne recréée), la ligne ACTIVE gagne :
+    // l'ORDER BY fait passer les archivées d'abord, elles sont donc écrasées.
     foreach ($pdo->query($sql) as $r) {
-        $app[preg_replace('/\D/', '', (string)$r['phone_number'])] = $r;
+        $app[simcity_phone_canon((string)$r['phone_number'])] = $r;
     }
     // IMEI présents au parc, pour dire si le terminal utilisé est connu.
     $imeis = [];
@@ -337,9 +387,15 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
                 $issues[] = 'imei'; $counts['imei']++;
             }
             // Codes SIM : on signale un écart, jamais les valeurs. « Absent
-            // dans SimCity » compte aussi comme un écart à compléter.
-            if (($rec['pin'] !== '' && $rec['pin'] !== trim((string)$a['pin']))
-                || ($rec['puk'] !== '' && $rec['puk'] !== trim((string)$a['puk']))) {
+            // dans SimCity » compte aussi comme un écart à compléter. Le
+            // périmètre est exactement celui de l'application du poste
+            // (simcity_parc_apply) : PIN 1/2, PUK 1/2 et RIO — sinon le badge
+            // annoncerait « 0 écart » puis l'application écrirait quand même.
+            $codesDiff = false;
+            foreach (['pin', 'pin2', 'puk', 'puk2', 'rio'] as $ck) {
+                if ($rec[$ck] !== '' && $rec[$ck] !== trim((string)$a[$ck])) { $codesDiff = true; break; }
+            }
+            if ($codesDiff) {
                 $issues[] = 'codes'; $counts['codes']++;
             }
             if (!$issues) $counts['ok']++;
@@ -381,10 +437,13 @@ function simcity_parc_apply(PDO $pdo, array $records, array $opts): array {
     $planId = [];
     foreach ($pdo->query("SELECT id, name FROM plan_types") as $r) $planId[simcity_parc_norm_header((string)$r['name'])] = (int)$r['id'];
 
-    $findLine = $pdo->prepare("SELECT id, iccid, status, plan_id, billing_id,
+    // Même normalisation que le contrôle (+33 compris) ; à numéro égal, la
+    // ligne active est préférée à une ancienne ligne archivée.
+    $findLine = $pdo->prepare("SELECT id, iccid, status, archived, plan_id, billing_id,
             IFNULL(pin,'') pin, IFNULL(pin2,'') pin2, IFNULL(puk,'') puk, IFNULL(puk2,'') puk2, IFNULL(rio,'') rio
         FROM mobile_lines
-        WHERE REPLACE(REPLACE(REPLACE(phone_number,' ',''),'.',''),'-','') = ? LIMIT 1");
+        WHERE " . sprintf(SIMCITY_SQL_PHONE_CANON, 'phone_number') . " = ?
+        ORDER BY archived ASC, id DESC LIMIT 1");
 
     foreach ($records as $rec) {
         $findLine->execute([$rec['phone']]);
@@ -421,6 +480,10 @@ function simcity_parc_apply(PDO $pdo, array $records, array $opts): array {
         if (!$line) {
             // Création : ligne en stock, sans agent — l'affectation reste manuelle.
             if (empty($opts['create'])) continue;
+            // Une ligne résiliée chez SFR et inconnue de SimCity n'a rien à
+            // faire dans le référentiel : la créer « en stock » ferait
+            // apparaître une SIM morte comme disponible.
+            if ($status === 'Resiliated') continue;
             $withCodes = !empty($opts['codes']);
             $pdo->prepare("INSERT INTO mobile_lines (phone_number, iccid, plan_id, billing_id, status,
                     activation_date, pin, pin2, puk, puk2, rio, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
@@ -446,7 +509,11 @@ function simcity_parc_apply(PDO $pdo, array $records, array $opts): array {
             $pdo->prepare("UPDATE mobile_lines SET plan_id=? WHERE id=?")->execute([$pid, $line['id']]);
             $done['plan']++;
         }
-        if (!empty($opts['status']) && $status !== '' && $status !== $line['status'] && $line['status'] !== 'Stock') {
+        // Jamais sur une ligne archivée : l'écran de contrôle les exclut du
+        // décompte des écarts de statut — appliquer ici réactiverait en
+        // silence une ligne résiliée/archivée jamais montrée à l'utilisateur.
+        if (!empty($opts['status']) && $status !== '' && empty($line['archived'])
+            && $status !== $line['status'] && $line['status'] !== 'Stock') {
             $pdo->prepare("UPDATE mobile_lines SET status=? WHERE id=?")->execute([$status, $line['id']]);
             $done['status']++;
         }

@@ -81,17 +81,42 @@ function simcity_import_guess_category(string $brand, string $model): string {
     return 'Smartphone';
 }
 
+// Ouvre le CSV et détecte son dialecte, au lieu de le supposer :
+//  - séparateur « ; » ou « , » (le plus fréquent dans l'échantillon de tête —
+//    un export à virgules lu en « ; » donnerait une seule cellule par ligne,
+//    importée comme un numéro tronqué, sans aucune erreur visible) ;
+//  - encodage : un fichier déjà en UTF-8 est conservé tel quel (le convertir
+//    depuis Windows-1252 mojibakerait tous les accents), sinon Windows-1252.
+// Retourne [ressource, séparateur, estUtf8].
+function simcity_import_csv_open(string $csvPath): array {
+    $file = fopen($csvPath, 'r');
+    if (!$file) throw new RuntimeException("Fichier CSV illisible.");
+    $probe = (string)fread($file, 65536);
+    rewind($file);
+    $sep  = substr_count($probe, ';') >= substr_count($probe, ',') ? ';' : ',';
+    $utf8 = preg_match('//u', $probe) === 1;   // séquence invalide → 1252
+    return [$file, $sep, $utf8];
+}
+
+// Lit une ligne du CSV ouvert par simcity_import_csv_open. Longueur non
+// bornée : un champ Notes très long ne doit pas couper la ligne en deux.
+// Le BOM UTF-8 éventuel de la première cellule est retiré.
+function simcity_import_csv_row($file, string $sep, bool $utf8) {
+    $row = fgetcsv($file, 0, $sep);
+    if ($row === false) return false;
+    if (isset($row[0]) && strncmp((string)$row[0], "\xEF\xBB\xBF", 3) === 0) $row[0] = substr((string)$row[0], 3);
+    return array_map(fn($v) => $utf8 ? (string)$v : mb_convert_encoding((string)$v, 'UTF-8', 'Windows-1252'), $row);
+}
+
 // Analyse le CSV sans rien écrire : liste les utilisateurs distincts du
 // fichier et les rapproche du référentiel (nom + prénom, insensible à la
 // casse). Sert à l'étape de contrôle avant importation : l'opérateur peut
 // associer manuellement les non-correspondances à un agent existant.
 function simcity_import_scan_users(PDO $pdo, string $csvPath): array {
-    $file = fopen($csvPath, 'r');
-    if (!$file) throw new RuntimeException("Fichier CSV illisible.");
+    [$file, $sep, $utf8] = simcity_import_csv_open($csvPath);
     $startReading = false;
     $users = [];
-    while (($row = fgetcsv($file, 4000, ";")) !== false) {
-        $row = array_map(fn($v) => mb_convert_encoding((string)$v, 'UTF-8', 'Windows-1252'), $row);
+    while (($row = simcity_import_csv_row($file, $sep, $utf8)) !== false) {
         if (!$startReading) {
             if (isset($row[0]) && stripos($row[0], 'LIGNE') !== false) $startReading = true;
             continue;
@@ -135,17 +160,15 @@ require_once __DIR__ . '/lib_format.php';
 // le contrôle avant import est le même écran et les mêmes règles.
 // Le CSV ne porte pas de statut de ligne : ce contrôle-là est donc neutre.
 function simcity_import_csv_records(string $csvPath): array {
-    $file = fopen($csvPath, 'r');
-    if (!$file) throw new RuntimeException("Fichier CSV illisible.");
+    [$file, $sep, $utf8] = simcity_import_csv_open($csvPath);
     $startReading = false;
     $records = [];
-    while (($row = fgetcsv($file, 4000, ";")) !== false) {
-        $row = array_map(fn($v) => mb_convert_encoding((string)$v, 'UTF-8', 'Windows-1252'), $row);
+    while (($row = simcity_import_csv_row($file, $sep, $utf8)) !== false) {
         if (!$startReading) {
             if (isset($row[0]) && stripos($row[0], 'LIGNE') !== false) $startReading = true;
             continue;
         }
-        $phone = preg_replace('/\D/', '', $row[0] ?? '');
+        $phone = simcity_phone_canon($row[0] ?? '');
         if (strlen($phone) < 9) continue;
         $imei  = preg_replace('/\D/', '', $row[10] ?? '');
         $model = trim($row[11] ?? '');
@@ -207,7 +230,12 @@ function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): ar
                 $pdo->prepare("INSERT INTO `$table` (`$col`) VALUES (?)")->execute([$val]);
             }
             $id = $pdo->lastInsertId();
-            if (isset($stats[$table])) $stats[$table]++;
+            // La clé de stats ne porte pas toujours le nom de la table
+            // (billing_accounts → « billings ») : sans la carte, le compte
+            // rendu affichait « 0 compte(s) de facturation » à chaque import.
+            $statKey = ['services'=>'services','models'=>'models','agents'=>'agents',
+                        'operators'=>'operators','billing_accounts'=>'billings','plan_types'=>'plans'][$table] ?? null;
+            if ($statKey !== null) $stats[$statKey]++;
         }
         $caches[$table][$key] = $id;
         return $id;
@@ -221,12 +249,10 @@ function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): ar
         return $d ? $d->format('Y-m-d') : null;
     };
 
-    $file = fopen($csvPath, 'r');
-    if (!$file) throw new RuntimeException("Fichier CSV illisible.");
+    [$file, $sep, $utf8] = simcity_import_csv_open($csvPath);
     $startReading = false;
 
-    while (($row = fgetcsv($file, 4000, ";")) !== false) {
-        $row = array_map(fn($v) => mb_convert_encoding((string)$v, 'UTF-8', 'Windows-1252'), $row);
+    while (($row = simcity_import_csv_row($file, $sep, $utf8)) !== false) {
 
         // Tout ce qui précède la ligne d'en-tête « LIGNE » est ignoré :
         // les exports comportent souvent des lignes de titre.
@@ -235,7 +261,10 @@ function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): ar
             continue;
         }
 
-        $phone = preg_replace('/\s+/', '', $row[0] ?? '');
+        // Mêmes normalisations que l'écran de contrôle (simcity_import_csv_records) :
+        // ce qui a été montré à l'opérateur est exactement ce qui est écrit.
+        $phone = simcity_phone_canon($row[0] ?? '');
+        if (strlen($phone) < 9) $phone = '';
         $imei  = preg_replace('/[^0-9]/', '', $row[10] ?? '');
         if ($phone === '' && $imei === '') continue;
 
@@ -248,12 +277,12 @@ function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): ar
         $dateAct   = $formatDate($row[9] ?? '');
         $rawMod    = trim($row[11] ?? '');
         $plan      = trim($row[12] ?? '');
-        $iccid     = preg_replace('/[^a-zA-Z0-9]/', '', $row[13] ?? '');
-        $pin       = trim($row[14] ?? '');
+        $iccid     = simcity_parc_digits((string)($row[13] ?? ''));
+        $pin       = simcity_parc_code((string)($row[14] ?? ''), 4, 8);
         // Colonne 15 = PUK 1 (mobile_lines.puk). Les codes secondaires
         // (pin2 / puk2) ne sont pas dans ce format : ils viennent de l'export
         // de parc SFR.
-        $puk       = trim($row[15] ?? '');
+        $puk       = simcity_parc_code((string)($row[15] ?? ''), 8, 12);
         $operateur = trim($row[16] ?? '');
 
         $brand = 'Inconnu'; $modelName = $rawMod;
@@ -328,14 +357,26 @@ function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): ar
                 $devId = $pdo->lastInsertId(); $stats['devices']++;
                 if ($agtId) $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, author) VALUES ('device',?,?,?)")
                     ->execute([$devId, "Import initial — attribué à $prenom $nom", 'Import CSV']);
-            } else {
-                $pdo->prepare("UPDATE devices SET status='Deployed', service_id=?, agent_id=? WHERE id=?")
+            } elseif ($phone !== '' || $agtId) {
+                // La ligne du CSV porte une affectation (ligne mobile et/ou
+                // agent) : on l'aligne. Une ligne « IMEI seul » ne touche PAS
+                // un matériel déjà connu — sans ce garde-fou, rejouer le même
+                // CSV repassait en « Deployed » sans utilisateur du matériel
+                // rangé en stock depuis, et la seconde occurrence d'un IMEI
+                // écrasait l'affectation posée par la première.
+                $pdo->prepare("UPDATE devices SET status='Deployed', service_id=COALESCE(?, service_id), agent_id=? WHERE id=?")
                     ->execute([$svcId, $agtId, $devId]);
             }
         }
 
-        if ($phone !== '' && strlen($phone) >= 8) {
+        if ($phone !== '') {
             try {
+                // Doublon contrôlé sur le numéro CANONIQUE : l'UNIQUE de la
+                // table ne voit pas qu'une saisie « 06.11.22.33.44 » existante
+                // et « 0611223344 » sont la même ligne.
+                $stL = $pdo->prepare("SELECT id FROM mobile_lines WHERE " . sprintf(SIMCITY_SQL_PHONE_CANON, 'phone_number') . " = ? LIMIT 1");
+                $stL->execute([$phone]);
+                if ($stL->fetchColumn()) continue;
                 $pdo->prepare("INSERT IGNORE INTO mobile_lines
                     (phone_number, agent_id, billing_id, plan_id, service_id, activation_date, device_id, iccid, pin, puk, options_details, status, notes)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,'Active',?)")
