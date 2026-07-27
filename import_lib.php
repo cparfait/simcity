@@ -46,11 +46,28 @@ function simcity_import_validate(array $upload): string {
 // d'administration déconnecterait l'opérateur au milieu de son import.
 // Les demandes de téléphone sont en revanche supprimées — elles référencent
 // agents et services, et survivraient à la purge en pointant dans le vide.
+// Les factures opérateur sont comprises : elles décrivent le parc qu'on efface
+// et survivraient sinon à une « réinitialisation complète », laissant le module
+// Facturation analyser des numéros qui n'existent plus.
 function simcity_import_purge(PDO $pdo): void {
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-    $pdo->exec("DROP TABLE IF EXISTS request_steps, requests, bons, signatures, sign_tokens, sim_history, attachments, mobile_lines, devices, history_logs, agents, billing_accounts, plan_types, operators, models, services, settings");
+    $pdo->exec("DROP TABLE IF EXISTS invoice_lines, invoice_devices, invoices, request_steps, requests, bons, signatures, sign_tokens, sim_history, attachments, mobile_lines, devices, history_logs, agents, billing_accounts, plan_types, operators, models, services, settings");
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
     simcity_apply_schema($pdo);
+    simcity_purge_invoice_pdfs();
+}
+
+// Supprime les PDF de factures archivés sous uploads/invoices/. Appelé avec la
+// purge des tables : sans cela les justificatifs restent sur le disque, sans
+// plus aucune ligne en base pour y renvoyer.
+function simcity_purge_invoice_pdfs(): int {
+    $dir = __DIR__ . '/uploads/invoices';
+    if (!is_dir($dir)) return 0;
+    $n = 0;
+    foreach (glob($dir . '/*.pdf') ?: [] as $f) {
+        if (is_file($f) && @unlink($f)) $n++;
+    }
+    return $n;
 }
 
 // Devine la catégorie d'un matériel depuis son libellé : sans colonne « type »
@@ -233,7 +250,10 @@ function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): ar
         $plan      = trim($row[12] ?? '');
         $iccid     = preg_replace('/[^a-zA-Z0-9]/', '', $row[13] ?? '');
         $pin       = trim($row[14] ?? '');
-        $puk2      = trim($row[15] ?? '');
+        // Colonne 15 = PUK 1 (mobile_lines.puk). Les codes secondaires
+        // (pin2 / puk2) ne sont pas dans ce format : ils viennent de l'export
+        // de parc SFR.
+        $puk       = trim($row[15] ?? '');
         $operateur = trim($row[16] ?? '');
 
         $brand = 'Inconnu'; $modelName = $rawMod;
@@ -319,7 +339,7 @@ function simcity_import_csv(PDO $pdo, string $csvPath, array $agentMap = []): ar
                 $pdo->prepare("INSERT IGNORE INTO mobile_lines
                     (phone_number, agent_id, billing_id, plan_id, service_id, activation_date, device_id, iccid, pin, puk, options_details, status, notes)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,'Active',?)")
-                    ->execute([$phone, $agtId, $billId, $planId, $svcId, $dateAct, $devId, $iccid, $pin, $puk2, $options, $notes]);
+                    ->execute([$phone, $agtId, $billId, $planId, $svcId, $dateAct, $devId, $iccid, $pin, $puk, $options, $notes]);
                 $lineId = $pdo->lastInsertId();
                 if ($lineId) {
                     $stats['lines']++;

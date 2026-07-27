@@ -254,13 +254,17 @@ Le module compare ce que l'opérateur **facture** à ce que contient le référe
 
 **Onglets :**
 
-- **Tableau de bord** — compteurs de la période, évolution du coût et du nombre de lignes, top 10 multi-critères (coût, SMS, hors-forfait, international, surtaxés, data, appels), et des sections repliables : historique mensuel, répartition par forfait, remise marché, répartition par service, terminaux facturés, activité du parc
+- **Tableau de bord** — compteurs de la période, évolution du coût et du nombre de lignes, top 10 multi-critères (coût, SMS, hors-forfait, international, surtaxés, data, appels), et des sections repliables : historique mensuel, répartition par forfait, remise marché, répartition par service, terminaux facturés, **régularisations et avoirs**, activité du parc. **Toutes** ces sections sont bornées à la période retenue
 - **Import des factures** — dépôt multi-fichiers, contrôle des doublons par numéro de facture avec compte rendu fichier par fichier, et bouton de **ré-analyse** qui relit les PDF archivés avec la version courante du parseur (utile après une mise à jour, sans re-téléverser)
 - **Consommations** — une ligne par numéro, cumulée sur la période, avec recherche, filtres (forfait, service, signalement), tri par colonne et pagination. **Les totaux du pied de tableau portent sur toute la sélection filtrée, pas sur la page affichée**
 - **Alertes** — un tableau unique trié par impact en € HT/mois : facture manquante, ligne sans consommation, hors-forfait, surtaxés, international, remise marché, variations de volume. Les seuils sont réglables (super-admins)
 - **Rapprochement des noms** — facture ↔ référentiel, par statut de concordance
 
 **Ce que le parseur lit dans les factures SFR :** le détail par ligne (utilisateur, forfait, appels, SMS/MMS, data, surtaxés, international, hors-forfait), et la **remise marché** écrite en clair dans chaque bloc (`Remise sur abonnement (96,00% de 20,00€ HT)`) — d'où le prix catalogue, le taux appliqué et l'économie réelle du marché. Types reconnus : `9A…` mensuelle, `9T…` terminaux, `9AF…` régularisation, `9AA…` avoir.
+
+**Ce que couvrent les compteurs.** Le chiffre « Lignes mobiles facturées » et tout ce qui en découle (graphiques, tops, alertes, consommations) sont construits sur le **détail par ligne** des factures `9A…`. Les `9T…` (terminaux) et les `9AF…` / `9AA…` (régularisations et avoirs) n'ont pas ce détail : elles ont leur propre section repliable, et la carte principale rappelle le montant qu'elle ne comprend pas. Un net de régularisations proche de zéro signifie qu'une régularisation a été compensée par son avoir.
+
+> Le **vidage des données de test** et la **réinitialisation complète** suppriment aussi les factures et leurs PDF archivés : elles décrivent le parc effacé, et le module analyserait sinon des numéros qui n'existent plus.
 
 > 🔒 Les PDF archivés ne sont **pas** servis directement par le serveur web : une facture mensuelle contient la liste nominative complète du parc. Le `.htaccess` bloque `uploads/invoices/` et la diffusion passe par l'application, après contrôle de session. Il en va de même pour les pièces jointes des fiches agents.
 
@@ -307,9 +311,18 @@ simcity/
 │   └── fonts/                # Fichiers woff/woff2 (icônes + polices Plex)
 ├── js/
 │   └── qrcode.min.js # Génération QR codes (client-side)
-├── uploads/          # Pièces jointes — créé automatiquement
+├── tests/            # Tests unitaires + recette HTTP (hors image Docker)
+├── htaccess          # Protections Apache — renommé « .htaccess » au build
+├── Dockerfile        # Image PHP 8.3 + Apache (pdo_mysql, ldap, pdftotext)
+├── docker-compose.yml
+├── uploads/          # Pièces jointes et logo — créé automatiquement, servi
+│   └── invoices/     #   par index.php seulement ; PDF de factures archivés
 └── backups/          # Sauvegardes .sql — créé automatiquement, protégé du web
 ```
+
+> ⚠️ `.dockerignore` doit rester aligné sur `.gitignore` : le `COPY .` du Dockerfile
+> embarque tout ce qui traîne dans le répertoire de travail. Un dossier de factures
+> réelles déposé pour analyse se retrouverait dans l'image, servi par Apache.
 
 ---
 

@@ -2278,7 +2278,11 @@ if (isset($_GET['page']) && $_GET['page'] === 'import_template') {
     header('Content-Type: text/csv; charset=windows-1252');
     header('Content-Disposition: attachment; filename="simcity_modele_import.csv"');
     $rows = [
-        ['LIGNE','(non importé)','NOM','PRENOM','NOTES','COMPTE FACTURATION','SERVICE','OPTIONS','(non importé)','DATE ACTIVATION','IMEI','MODELE','FORFAIT','ICCID','PIN','PUK2','OPERATEUR'],
+        // La colonne 15 alimente mobile_lines.puk (PUK 1) : elle s'intitulait
+        // « PUK2 » alors que l'écran d'import documente « [15] PUK ». Depuis que
+        // pin2 / puk2 existent vraiment, ce libellé faisait écrire le PUK 2 dans
+        // le PUK 1. Les codes secondaires viennent de l'export de parc SFR.
+        ['LIGNE','(non importé)','NOM','PRENOM','NOTES','COMPTE FACTURATION','SERVICE','OPTIONS','(non importé)','DATE ACTIVATION','IMEI','MODELE','FORFAIT','ICCID','PIN','PUK','OPERATEUR'],
         ['0612345678','','DUPONT','Marie','Remplacement écran 2025','CF123456','DSI','Multi-SIM','','01/09/2024','356789104563218','APPLE IPHONE 13','Forfait 20 Go','89330126112233445566','0000','12345678','Orange'],
         ['','','','','','','DSI','','','','356789104563219','SAMSUNG GALAXY A54','','','','',''],
     ];
@@ -3787,8 +3791,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     foreach ($pdo->query("SELECT file_path FROM attachments")->fetchAll() as $af) {
                         if (!empty($af['file_path']) && is_file($af['file_path'])) @unlink($af['file_path']);
                     }
+                    // Les factures opérateur décrivent le parc qu'on efface :
+                    // les laisser en base ferait analyser au module Facturation
+                    // des numéros qui n'existent plus, et l'alerte « lignes
+                    // facturées sans consommation » du tableau de bord
+                    // continuerait de compter des lignes fantômes.
                     $tables = ['request_steps', 'requests', 'bons', 'signatures', 'sign_tokens', 'sim_history',
-                               'attachments', 'history_logs', 'login_attempts', 'mobile_lines', 'devices', 'agents'];
+                               'attachments', 'history_logs', 'login_attempts', 'mobile_lines', 'devices', 'agents',
+                               'invoice_lines', 'invoice_devices', 'invoices'];
                     $keepRefs = !empty($d['keep_refs']);
                     if (!$keepRefs) {
                         $tables = array_merge($tables, ['billing_accounts', 'plan_types', 'operators', 'models', 'services']);
@@ -3796,8 +3806,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
                     foreach ($tables as $t) $pdo->exec("TRUNCATE TABLE `$t`");
                     $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                    // Les PDF archivés suivent leurs lignes en base.
+                    $nbPdf = simcity_purge_invoice_pdfs();
                     // Journalisé APRÈS la purge : la trace de l'opération survit
-                    logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "🧹 Données vidées (tests) — référentiels " . ($keepRefs ? 'conservés' : 'compris'));
+                    logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "🧹 Données vidées (tests) — référentiels " . ($keepRefs ? 'conservés' : 'compris')
+                        . ($nbPdf ? ", $nbPdf PDF de facture supprimé(s)" : ''));
                     flash('success', 'Données vidées' . ($keepRefs ? ' — référentiels conservés' : ' (référentiels compris)')
                         . '. Paramètres, circuits de validation et comptes admin intacts.'
                         . ($safety !== '' ? " Sauvegarde de sécurité : $safety." : ''));
@@ -5712,10 +5725,15 @@ elseif ($page === 'invoices') {
     <?php endif; ?>
 
     <?php if($tab === 'dash' && $months):
-        // Tous les compteurs portent sur la période choisie. $cur = mois
-        // d'arrivée, qui sert de « photo » pour les indicateurs instantanés
-        // (nombre de lignes, coût moyen par ligne).
-        $cur = $byKey[$axisTo] ?? end($monthly);
+        // Tous les compteurs portent sur la période choisie. $cur = « photo »
+        // pour les indicateurs instantanés (nombre de lignes, coût moyen par
+        // ligne) : le mois d'arrivée s'il a une facture, sinon le dernier mois
+        // facturé DANS la période. Le repli sur le dernier mois connu tous
+        // mois confondus affichait un chiffre venu d'ailleurs sous l'étiquette
+        // du mois d'arrivée.
+        $curKey = isset($byKey[$axisTo]) ? $axisTo
+                : ($monthsInPeriod ? end($monthsInPeriod)['month_key'] : null);
+        $cur    = $curKey !== null ? $byKey[$curKey] : null;
         $periodTotal = array_sum(array_map(fn($r) => (float)$r['t'],  $monthsInPeriod));
         $periodHF    = array_sum(array_map(fn($r) => (float)$r['hf'], $monthsInPeriod));
         $periodSx    = array_sum(array_map(fn($r) => (float)$r['s'],  $monthsInPeriod));
@@ -5724,10 +5742,29 @@ elseif ($page === 'invoices') {
         $periodSms   = array_sum(array_map(fn($r) => (int)$r['sms'],  $monthsInPeriod));
         $lineMonths  = array_sum(array_map(fn($r) => (int)$r['n'],    $monthsInPeriod));
         $nbMois      = max(1, count($monthsInPeriod));
-        $stDev = $pdo->prepare("SELECT IFNULL(SUM(total_ht),0) FROM invoices
-                WHERE invoice_type='devices'" . ($acct !== '' ? ' AND billing_account = ?' : ''));
-        $stDev->execute($acct !== '' ? [$acct] : []);
-        $devTotal = $stDev->fetchColumn();
+
+        // ── Régularisations (9AF) et avoirs (9AA) depuis le début de période ──
+        // Elles n'ont pas de détail par ligne : aucun des compteurs ci-dessus,
+        // tous bâtis sur invoice_lines, ne les voit. Sans ce bloc, une facture
+        // de régularisation était lue par le parseur, stockée, affichée dans
+        // l'onglet Import — puis absente de tous les euros du module.
+        //
+        // Pas de borne haute, volontairement. Ces documents corrigent toujours
+        // du passé et sont émis après coup : sur le jeu réel, les douze
+        // régularisations de juillet portent sur des mois antérieurs, alors que
+        // la période s'arrête au dernier mois ayant un détail par ligne (juin).
+        // Les borner en haut ne ferait que les cacher — le mois d'émission est
+        // affiché dans le tableau, le lecteur situe lui-même chaque document.
+        $stAdj = $pdo->prepare("SELECT invoice_number, invoice_type, invoice_date, month_key, total_ht, billing_account
+                FROM invoices WHERE invoice_type IN ('manual','credit')
+                  AND month_key IS NOT NULL AND month_key >= ?"
+            . ($acct !== '' ? ' AND billing_account = ?' : '')
+            . " ORDER BY invoice_date DESC, invoice_number");
+        $stAdj->execute(array_merge([(string)$axisFrom], $acct !== '' ? [$acct] : []));
+        $adjRows   = $stAdj->fetchAll();
+        $adjManual = array_sum(array_map(fn($r) => (float)$r['total_ht'], array_filter($adjRows, fn($r) => $r['invoice_type'] === 'manual')));
+        $adjCredit = array_sum(array_map(fn($r) => (float)$r['total_ht'], array_filter($adjRows, fn($r) => $r['invoice_type'] === 'credit')));
+        $adjNet    = $adjManual + $adjCredit;   // les avoirs sont déjà négatifs
 
         // Lignes dormantes à la fin de la période (même règle que les alertes).
         $nbZero = count($alertGroups['zero']);
@@ -5757,9 +5794,12 @@ elseif ($page === 'invoices') {
 
         // ── Statistiques thématiques (sections repliables) ────────────
         // Photo du mois d'arrivée : forfaits, remise, prix unitaires.
-        $snap = $accQuery("SELECT l.phone_number, l.plan_name, l.abo_ht, l.total_ht, l.data_ko,
+        // Même mois de référence que la carte « Lignes facturées » ($curKey) :
+        // un mois d'arrivée sans facture aurait rendu ces sections vides sans
+        // dire pourquoi.
+        $snap = $curKey === null ? [] : $accQuery("SELECT l.phone_number, l.plan_name, l.abo_ht, l.total_ht, l.data_ko,
                 l.catalog_ht, l.remise_pct FROM invoice_lines l
-                WHERE l.month_key = ? $accWhere", [$axisTo])->fetchAll();
+                WHERE l.month_key = ? $accWhere", [$curKey])->fetchAll();
 
         // 1. Par forfait : effectif, prix médian, et lignes hors médiane (une
         //    ligne facturée autrement que ses jumelles est une anomalie).
@@ -5817,14 +5857,22 @@ elseif ($page === 'invoices') {
         uasort($svcStats, fn($a, $b) => $b['ht'] <=> $a['ht']);
 
         // 4. Terminaux et accessoires facturés (factures 9T) + présence au parc.
-        $devRows = $pdo->prepare("SELECT d.label, d.imei, d.qty, d.unit_ht, d.total_ht,
-                i.invoice_number, i.invoice_date, i.billing_account,
+        // Bornées à la période comme tout le reste de l'onglet : le mois d'une
+        // facture 9T est celui de sa date d'émission (elle n'a pas de période
+        // de consommation). Le décompte hors période est affiché à part, pour
+        // que le repli ne paraisse pas amputé.
+        $stDevAll = $pdo->prepare("SELECT d.label, d.imei, d.qty, d.unit_ht, d.total_ht,
+                i.invoice_number, i.invoice_date, i.month_key, i.billing_account,
                 (SELECT COUNT(*) FROM devices dv WHERE dv.imei = d.imei) in_parc
             FROM invoice_devices d JOIN invoices i ON i.id = d.invoice_id"
             . ($acct !== '' ? ' WHERE i.billing_account = ?' : '')
             . " ORDER BY i.invoice_date DESC, d.id");
-        $devRows->execute($acct !== '' ? [$acct] : []);
-        $devRows = $devRows->fetchAll();
+        $stDevAll->execute($acct !== '' ? [$acct] : []);
+        $devAll     = $stDevAll->fetchAll();
+        $devRows    = array_values(array_filter($devAll,
+            fn($d) => $d['month_key'] !== null && $d['month_key'] >= $axisFrom && $d['month_key'] <= $axisTo));
+        $devOutside = count($devAll) - count($devRows);
+        $devTotal   = array_sum(array_map(fn($d) => (float)$d['total_ht'], $devRows));
         $devNoImei = count(array_filter($devRows, fn($d) => empty($d['imei'])));
         $devOrphan = count(array_filter($devRows, fn($d) => !empty($d['imei']) && !(int)$d['in_parc']));
 
@@ -5840,9 +5888,18 @@ elseif ($page === 'invoices') {
     <?php endif; ?>
     <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:1rem;margin-bottom:1.5rem;">
       <a href="#inv-hist" class="card" style="padding:1.1rem 1.3rem;text-decoration:none;color:inherit;" title="Voir l'historique mensuel détaillé">
-        <div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Total facturé <i class="bi bi-clock-history"></i></div>
+        <div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Lignes mobiles facturées <i class="bi bi-clock-history"></i></div>
         <div style="font-size:1.5rem;font-weight:700;"><?=$fmtEur($periodTotal)?> <span style="font-size:.8rem;color:var(--text2);">HT</span></div>
         <div class="muted"><?=h($periodLabel)?> · <?=$fmtEur($periodTotal / $nbMois)?>/mois en moyenne</div>
+        <?php if($devTotal || $adjRows): // ce chiffre porte sur le détail par ligne : le dire plutôt que le laisser croire ?>
+        <div class="muted" style="font-size:.75rem;margin-top:.35rem;padding-top:.35rem;border-top:1px dashed var(--border);">
+          hors <?php $extra = [];
+            if($devTotal) $extra[] = $fmtEur($devTotal) . ' de terminaux';
+            // Le net peut être nul (régularisation compensée par son avoir) :
+            // annoncer le décompte évite un « hors 0,00 € » incompréhensible.
+            if($adjRows)  $extra[] = count($adjRows) . ' régularisation(s) / avoir(s), net ' . $fmtEur($adjNet);
+            echo h(implode(' et ', $extra)); ?> — voir plus bas</div>
+        <?php endif; ?>
       </a>
       <a href="#inv-hist" class="card" style="padding:1.1rem 1.3rem;text-decoration:none;color:inherit;" title="Voir l'historique mensuel détaillé">
         <div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Hors-forfait <i class="bi bi-clock-history"></i></div>
@@ -5851,8 +5908,14 @@ elseif ($page === 'invoices') {
       </a>
       <div class="card" style="padding:1.1rem 1.3rem;">
         <div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Lignes facturées</div>
+        <?php if($cur): ?>
         <div style="font-size:1.5rem;font-weight:700;color:var(--primary);"><?=(int)$cur['n']?></div>
-        <div class="muted">en <?=h($fmtMois($axisTo))?> · <?=$fmtEur((float)$cur['t'] / max(1, (int)$cur['n']))?> HT/ligne</div>
+        <div class="muted">en <?=h($fmtMois($curKey))?><?php if($curKey !== $axisTo): ?> <span title="Aucune facture importée pour <?=h($fmtMois($axisTo))?>">(dernier mois facturé)</span><?php endif; ?>
+          · <?=$fmtEur((float)$cur['t'] / max(1, (int)$cur['n']))?> HT/ligne</div>
+        <?php else: ?>
+        <div style="font-size:1.5rem;font-weight:700;color:var(--text3);">—</div>
+        <div class="muted">aucune facture importée sur <?=h($periodLabel)?></div>
+        <?php endif; ?>
       </div>
       <a href="?page=invoices&tab=alerts&<?=$qsPeriod?>&type=zero" class="card" style="padding:1.1rem 1.3rem;text-decoration:none;color:inherit;" title="Voir les lignes concernées">
         <div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Lignes sans consommation</div>
@@ -5984,7 +6047,7 @@ elseif ($page === 'invoices') {
 
     <details class="acc">
       <summary><i class="bi bi-globe2"></i> Répartition par forfait
-        <span class="acc-hint"><?=count($planStats)?> forfaits en <?=h($fmtMois($axisTo))?><?php
+        <span class="acc-hint"><?=count($planStats)?> forfaits en <?=h($fmtMois($curKey))?><?php
           $nbOut = array_sum(array_map(fn($p) => count($p['out']), $planStats));
           if($nbOut): ?> · <?=$nbOut?> ligne(s) hors prix médian<?php endif; ?></span><i class="bi bi-chevron-down acc-chev"></i></summary>
       <div class="acc-body flush" style="overflow-x:auto;">
@@ -6095,12 +6158,17 @@ elseif ($page === 'invoices') {
 
     <details class="acc">
       <summary><i class="bi bi-phone"></i> Terminaux et accessoires facturés
-        <span class="acc-hint"><?php if($devRows): ?><?=count($devRows)?> lignes d'achat · <?=$fmtEur($devTotal)?> HT<?php if($devOrphan): ?> · <?=$devOrphan?> IMEI absent(s) du parc<?php endif; ?><?php else: ?>aucune facture 9T importée<?php endif; ?></span><i class="bi bi-chevron-down acc-chev"></i></summary>
+        <span class="acc-hint"><?php if($devRows): ?><?=count($devRows)?> lignes d'achat · <?=$fmtEur($devTotal)?> HT sur <?=h($periodLabel)?><?php if($devOrphan): ?> · <?=$devOrphan?> IMEI absent(s) du parc<?php endif; ?><?php elseif($devOutside): ?>aucun achat sur la période<?php else: ?>aucune facture 9T importée<?php endif; ?></span><i class="bi bi-chevron-down acc-chev"></i></summary>
       <div class="acc-body flush">
         <?php if(!$devRows): ?>
           <p class="muted" style="padding:1.1rem 1.4rem;margin:0;"><i class="bi bi-info-circle"></i>
+            <?php if($devOutside): ?>
+            Aucun achat de terminal facturé sur <strong><?=h($periodLabel)?></strong> —
+            <?=$devOutside?> ligne(s) d'achat existent en dehors de cette période. Élargissez les bornes pour les voir.
+            <?php else: ?>
             Les factures d'achat de terminaux (numéro <code>9T…</code>) contiennent le libellé, la quantité, le prix et l'IMEI de chaque matériel.
-            Déposez-les dans l'onglet Import : ce tableau les rapprochera automatiquement du parc matériel par IMEI.</p>
+            Déposez-les dans l'onglet Import : ce tableau les rapprochera automatiquement du parc matériel par IMEI.
+            <?php endif; ?></p>
         <?php else: ?>
         <table class="data-table" style="font-size:.85rem;">
           <thead><tr><th>Matériel</th><th>IMEI</th><th style="text-align:right;">Qté</th><th style="text-align:right;">PU HT</th>
@@ -6123,7 +6191,47 @@ elseif ($page === 'invoices') {
         </table>
         <p class="muted" style="padding:.8rem 1.4rem 0;font-size:.79rem;"><i class="bi bi-lightbulb"></i>
           Un IMEI facturé mais absent du parc, c'est un matériel payé et jamais enregistré dans SimCity.
-          <?php if($devNoImei): ?><?=$devNoImei?> ligne(s) d'achat sans IMEI (accessoires, prestations) ne sont pas rapprochables.<?php endif; ?></p>
+          <?php if($devNoImei): ?><?=$devNoImei?> ligne(s) d'achat sans IMEI (accessoires, prestations) ne sont pas rapprochables.<?php endif; ?>
+          <?php if($devOutside): ?><?=$devOutside?> ligne(s) d'achat hors de la période retenue ne sont pas listées ici.<?php endif; ?></p>
+        <?php endif; ?>
+      </div>
+    </details>
+
+    <!-- Régularisations (9AF) et avoirs (9AA) : sans détail par ligne, donc
+         invisibles de tous les compteurs bâtis sur invoice_lines. -->
+    <details class="acc">
+      <summary><i class="bi bi-arrow-left-right"></i> Régularisations et avoirs
+        <span class="acc-hint"><?php if($adjRows): ?><?=count($adjRows)?> facture(s) · <?=$fmtEur($adjNet)?> HT net depuis <?=h($fmtMois($axisFrom))?><?php else: ?>aucune depuis <?=h($fmtMois($axisFrom))?><?php endif; ?></span><i class="bi bi-chevron-down acc-chev"></i></summary>
+      <div class="acc-body flush">
+        <?php if(!$adjRows): ?>
+          <p class="muted" style="padding:1.1rem 1.4rem;margin:0;"><i class="bi bi-info-circle"></i>
+            Aucune facture de régularisation (<code>9AF…</code>) ni avoir (<code>9AA…</code>) depuis <strong><?=h($fmtMois($axisFrom))?></strong>.
+            Ces documents n'ont pas de détail par ligne : ils ne peuvent pas être ventilés par numéro, seulement suivis à part.</p>
+        <?php else: ?>
+        <table class="data-table" style="font-size:.85rem;">
+          <thead><tr><th>N° de facture</th><th>Type</th><th>Compte</th><th>Date</th><th>Mois</th><th style="text-align:right;">Montant HT</th><th></th></tr></thead>
+          <tbody>
+          <?php foreach($adjRows as $aj): $isCredit = $aj['invoice_type'] === 'credit'; ?>
+          <tr>
+            <td style="font-family:var(--font-mono);font-size:.82rem;"><?=h($aj['invoice_number'])?></td>
+            <td><span class="badge <?=$isCredit ? 'badge-danger' : 'badge-warning'?>" style="font-size:.68rem;"><?=$isCredit ? 'Avoir' : 'Régularisation'?></span></td>
+            <td class="muted"><?=h($aj['billing_account'] ?: '—')?></td>
+            <td><?=$aj['invoice_date'] ? date('d/m/Y', strtotime($aj['invoice_date'])) : '—'?></td>
+            <td class="muted"><?=h($fmtMois($aj['month_key']))?></td>
+            <td style="text-align:right;font-family:var(--font-mono);font-weight:600;color:<?=(float)$aj['total_ht'] < 0 ? 'var(--success)' : 'var(--warning)'?>;"><?=$fmtEur($aj['total_ht'])?></td>
+            <td class="actions"><a class="btn-icon" title="Voir la facture dans l'onglet Import" href="?page=invoices&tab=import<?=$acct !== '' ? '&acct=' . urlencode($acct) : ''?>" style="text-decoration:none;"><i class="bi bi-box-arrow-up-right"></i></a></td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+          <tfoot><tr style="border-top:2px solid var(--border);font-weight:700;">
+            <td colspan="5">Net depuis <?=h($fmtMois($axisFrom))?> — <?=$fmtEur($adjManual)?> de régularisations, <?=$fmtEur($adjCredit)?> d'avoirs</td>
+            <td style="text-align:right;font-family:var(--font-mono);"><?=$fmtEur($adjNet)?></td><td></td>
+          </tr></tfoot>
+        </table>
+        <p class="muted" style="padding:.8rem 1.4rem 0;font-size:.79rem;"><i class="bi bi-lightbulb"></i>
+          Ces montants ne sont <strong>pas</strong> compris dans les compteurs ci-dessus : ceux-ci sont construits à partir du
+          détail par ligne des factures mensuelles, que les régularisations et les avoirs n'ont pas.
+          Un net proche de zéro signifie qu'une régularisation a bien été compensée par son avoir.</p>
         <?php endif; ?>
       </div>
     </details>
@@ -6133,7 +6241,7 @@ elseif ($page === 'invoices') {
         <span class="acc-hint"><?=$nbZero?> ligne(s) sans consommation · <?=$fmtEur($eurZero)?> HT/mois</span><i class="bi bi-chevron-down acc-chev"></i></summary>
       <div class="acc-body">
         <?php if(!$zeroDist): ?>
-          <p class="muted" style="margin:0;">Toutes les lignes facturées en <?=h($fmtMois($axisTo))?> ont consommé au moins une fois sur la période de référence.</p>
+          <p class="muted" style="margin:0;">Toutes les lignes facturées en <?=h($fmtMois($curKey))?> ont consommé au moins une fois sur la période de référence.</p>
         <?php else: ?>
         <table class="data-table" style="font-size:.85rem;">
           <thead><tr><th>Ancienneté du silence</th><th style="text-align:right;">Lignes</th><th>Lecture</th></tr></thead>
@@ -6832,9 +6940,22 @@ elseif ($page === 'invoices') {
       </div>
       <div class="card" style="padding:1.1rem 1.3rem;">
         <div style="font-size:.75rem;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;">Premier poste</div>
-        <?php $best = array_keys($impacts, max($impacts))[0]; ?>
+        <?php
+          // Le poste au plus fort impact. Quand aucune alerte ne coûte d'euros
+          // (variations de volume seules), il n'y a pas de « premier poste » :
+          // max() renvoyait alors 0 et array_keys() désignait le premier groupe
+          // du tableau — « Facture manquante · 0 ligne(s) », qui n'existe pas.
+          $best = null;
+          foreach ($impacts as $gk => $v) if ($v > 0 && ($best === null || $v > $impacts[$best])) $best = $gk;
+          if ($best === null) foreach ($counts as $gk => $n) if ($n > 0) { $best = $gk; break; }
+        ?>
+        <?php if($best !== null && $impacts[$best] > 0): ?>
         <div style="font-size:1.5rem;font-weight:700;color:var(--info);"><?=$fmtEur($impacts[$best])?></div>
         <div class="muted"><?=h($groupMeta[$best][0])?> · <?=$counts[$best]?> ligne(s)</div>
+        <?php else: ?>
+        <div style="font-size:1.5rem;font-weight:700;color:var(--success);">—</div>
+        <div class="muted">aucune alerte chiffrable<?=$best !== null ? ' · ' . h($groupMeta[$best][0]) . ' seulement' : ''?></div>
+        <?php endif; ?>
       </div>
     </div>
 
@@ -8271,7 +8392,7 @@ elseif ($page === 'refs') {
     <div class="card" style="margin-top:1.5rem;">
       <div class="card-header"><i class="bi bi-trash3"></i> Vider les données (tests)</div>
       <form method="post" style="padding:1.5rem;"
-            onsubmit="return confirm('Vider toutes les données (utilisateurs, lignes, matériels, bons, demandes, historiques) ? Une sauvegarde de sécurité sera créée avant. Les paramètres, circuits de validation et comptes admin sont conservés.')">
+            onsubmit="return confirm('Vider toutes les données (utilisateurs, lignes, matériels, bons, demandes, historiques, factures opérateur) ? Une sauvegarde de sécurité sera créée avant. Les paramètres, circuits de validation et comptes admin sont conservés.')">
         <?=csrf_field()?>
         <input type="hidden" name="_entity" value="wipe_data">
         <input type="hidden" name="_action" value="run">
@@ -8279,6 +8400,8 @@ elseif ($page === 'refs') {
           Repartez d'une base propre après une phase de tests : supprime les <strong>utilisateurs (agents), lignes & SIM,
           matériels, bons et signatures, demandes de téléphone, pièces jointes et historiques</strong> — les numéros
           (bons, demandes) repartent de zéro.<br>
+          Les <strong>factures opérateur</strong> sont comprises, PDF archivés inclus : elles décrivent le parc qu'on
+          efface, et le module Facturation analyserait sinon des numéros qui n'existent plus.<br>
           <strong>Sont toujours conservés :</strong> les paramètres (SMTP, LDAP, textes du formulaire, valideurs par
           défaut…), les circuits de validation et les comptes admin. Une <strong>sauvegarde de sécurité</strong> est
           créée automatiquement avant l'opération.
@@ -8293,6 +8416,49 @@ elseif ($page === 'refs') {
           <button type="submit" class="btn-secondary" style="color:var(--danger);border-color:rgba(220,38,38,.35);display:inline-flex;align-items:center;gap:6px;"><i class="bi bi-trash3"></i> Vider les données</button>
         </div>
       </form>
+    </div>
+
+    <!-- Journal des opérations d'administration.
+         Les imports (CSV, SFR, factures), suppressions de factures, purges et
+         effacements de secrets appelaient déjà logHistory() : ces entrées
+         portent un entity_type sans fiche (« admin », « invoice », « import »)
+         et n'étaient donc affichées nulle part. La trace existait sans être
+         consultable ; ce bloc la rend lisible. -->
+    <?php
+      $opsLog = $pdo->query("SELECT h.action_date, h.entity_type, h.action_desc, h.author
+              FROM history_logs h WHERE h.entity_type IN ('admin','invoice','import')
+              ORDER BY h.action_date DESC LIMIT 50")->fetchAll();
+      $opsMeta = ['admin' => ['Administration', 'bi-shield-lock', 'badge-muted'],
+                  'invoice' => ['Facturation',  'bi-receipt',     'badge-info'],
+                  'import'  => ['Import',       'bi-box-arrow-in-down', 'badge-warning']];
+    ?>
+    <div class="card" style="margin-top:1.5rem;">
+      <div class="card-header"><i class="bi bi-journal-text"></i> Journal des opérations d'administration
+        <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0;font-size:.78rem;margin-left:.5rem;">50 dernières</span></div>
+      <?php if(!$opsLog): ?>
+      <p class="muted" style="padding:1.5rem;margin:0;"><i class="bi bi-info-circle"></i>
+        Aucune opération enregistrée pour l'instant. Les imports, les suppressions de factures, les purges
+        et les effacements de secrets sont tracés ici.</p>
+      <?php else: ?>
+      <div style="max-height:340px;overflow-y:auto;">
+        <table class="data-table" style="font-size:.84rem;">
+          <thead><tr><th style="width:140px;">Date</th><th style="width:130px;">Domaine</th><th>Opération</th><th style="width:140px;">Auteur</th></tr></thead>
+          <tbody>
+          <?php foreach($opsLog as $ol): [$ollbl, $olico, $olcls] = $opsMeta[$ol['entity_type']] ?? $opsMeta['admin']; ?>
+          <tr>
+            <td class="muted" style="white-space:nowrap;"><?=date('d/m/Y H:i', strtotime($ol['action_date']))?></td>
+            <td><span class="badge <?=$olcls?>" style="font-size:.68rem;"><i class="bi <?=$olico?>"></i> <?=$ollbl?></span></td>
+            <td><?=h($ol['action_desc'])?></td>
+            <td class="muted"><?=h($ol['author'] ?: '—')?></td>
+          </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="padding:.75rem 1.4rem 1rem;margin:0;font-size:.79rem;"><i class="bi bi-shield-check"></i>
+        Les valeurs sensibles ne sont jamais consignées : un effacement de secret note la clé, un import de codes SIM
+        note un décompte. Ce journal est vidé avec les données (il vit dans <code>history_logs</code>).</p>
+      <?php endif; ?>
     </div>
 
     <!-- Bloc reset — super-admin uniquement -->

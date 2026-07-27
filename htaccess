@@ -53,8 +53,20 @@
     # courriers, photos) : elles ne sont servies que par index.php
     # (?page=attachment&id=…), après contrôle de session. Seul le logo, affiché
     # dans les pages et les PDF, reste accessible directement.
-    RewriteCond %{REQUEST_URI} !^/uploads/pdf_logo_
+    # L'exception porte sur le nom de fichier, pas sur un chemin absolu : une
+    # installation en sous-répertoire (http://serveur/simcity/) donne un
+    # REQUEST_URI « /simcity/uploads/pdf_logo_… », qu'une ancre « ^/uploads/ »
+    # ne reconnaîtrait pas — le logo disparaîtrait alors de tous les e-mails.
+    RewriteCond %{REQUEST_URI} !/uploads/pdf_logo_
     RewriteRule ^uploads/[^/]+$ - [F,L]
+
+    # Défense en profondeur : aucun document bureautique n'est servi
+    # statiquement par l'application (les PDF sont générés à la volée, le
+    # modèle CSV et les factures archivées passent par index.php). Interdire
+    # ces extensions à la racine du webroot couvre les fichiers de travail
+    # qu'un déploiement pourrait y laisser — un dossier de factures réelles
+    # déposé pour analyse, par exemple.
+    RewriteRule \.(pdf|csv|xlsx|xls|sql)$ - [F,L]
 </IfModule>
 
 # ─── En-têtes de sécurité HTTP ────────────────────────────────

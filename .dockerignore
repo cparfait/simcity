@@ -6,3 +6,9 @@ tests
 uploads
 backups
 db_data
+
+# Données réelles déposées localement pour analyse (factures opérateur, relevés
+# d'appels) : ignorées par git, elles seraient sinon copiées dans l'image par
+# « COPY . » et servies par Apache. Doit rester aligné sur .gitignore.
+Factures SFR
+.claude
