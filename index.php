@@ -4847,7 +4847,7 @@ if ($page === 'dashboard') {
 
     </div>
     
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="vendor/chart.umd.min.js"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
         // Chaque graphique est indépendant : un canvas absent (aucune donnée →
@@ -6352,7 +6352,7 @@ elseif ($page === 'invoices') {
       </div>
     </details>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="vendor/chart.umd.min.js"></script>
     <script>
     (function(){
       // Couleurs prises sur le thème courant (clair/sombre) plutôt qu'en dur.
@@ -6718,7 +6718,7 @@ elseif ($page === 'invoices') {
           </tbody>
         </table>
       </div>
-      <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+      <script src="vendor/chart.umd.min.js"></script>
       <script>
       (function(){
         const el = document.getElementById('invLine'); if(!el) return;
@@ -9734,7 +9734,7 @@ elseif ($page === 'stats') {
       </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="vendor/chart.umd.min.js"></script>
     <script>
     document.addEventListener('DOMContentLoaded', function() {
       const PAL = ['#4f46e5','#2563eb','#7c3aed','#d97706','#059669','#dc2626','#0891b2','#db2777','#65a30d','#ea580c'];

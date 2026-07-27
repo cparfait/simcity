@@ -308,6 +308,7 @@ simcity/
 ├── vendor/
 │   ├── bootstrap-icons.css   # Icônes Bootstrap Icons hors-ligne (thème…)
 │   ├── plex.css              # Polices IBM Plex Sans/Mono auto-hébergées (RGPD : aucune requête vers Google Fonts)
+│   ├── chart.umd.min.js      # Chart.js auto-hébergé (graphiques stats & facturation, MIT)
 │   └── fonts/                # Fichiers woff/woff2 (icônes + polices Plex)
 ├── js/
 │   └── qrcode.min.js # Génération QR codes (client-side)
