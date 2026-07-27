@@ -6718,16 +6718,16 @@ elseif ($page === 'invoices') {
         $tot->execute(array_merge($baseArgs, $wArgs));
         $tot = $tot->fetch();
 
-        // Pagination
-        $per  = (int)($_GET['per'] ?? 50);
-        if (!in_array($per, [25, 50, 100, 500], true)) $per = 50;
+        // Pagination — « per=all » (0 en interne) affiche toute la sélection d'un coup
+        $per  = ($_GET['per'] ?? '') === 'all' ? 0 : (int)($_GET['per'] ?? 50);
+        if (!in_array($per, [0, 25, 50, 100, 500], true)) $per = 50;
         $nbRows = (int)$tot['n'];
-        $pages  = max(1, (int)ceil($nbRows / $per));
+        $pages  = $per ? max(1, (int)ceil($nbRows / $per)) : 1;
         $pageNo = max(1, min($pages, (int)($_GET['p'] ?? 1)));
         $off    = ($pageNo - 1) * $per;
 
         $st = $pdo->prepare("SELECT t.* FROM ($derived) t $wSql
-                ORDER BY {$sortDefs[$sort]} $dir, t.phone_number LIMIT $per OFFSET $off");
+                ORDER BY {$sortDefs[$sort]} $dir, t.phone_number" . ($per ? " LIMIT $per OFFSET $off" : ''));
         $st->execute(array_merge($baseArgs, $wArgs));
         $consoRows = $st->fetchAll();
 
@@ -6747,7 +6747,7 @@ elseif ($page === 'invoices') {
                 + ($acct !== '' ? ['acct' => $acct] : [])
                 + ($fq !== '' ? ['q' => $fq] : []) + ($fplan !== '' ? ['plan' => $fplan] : [])
                 + ($fsvc !== '' ? ['svc' => $fsvc] : []) + ($fflag !== '' ? ['flag' => $fflag] : [])
-                + ['sort' => $sort, 'dir' => strtolower($dir), 'per' => $per];
+                + ['sort' => $sort, 'dir' => strtolower($dir), 'per' => $per ?: 'all'];
         $lnk = fn(array $over = []) => '?' . http_build_query(array_merge($keepQs, $over));
         $sortLnk = fn(string $col) => $lnk(['sort' => $col, 'dir' => ($sort === $col && $dir === 'DESC') ? 'asc' : 'desc', 'p' => 1]);
         $sortIco = fn(string $col) => $sort === $col ? ' <i class="bi bi-caret-' . ($dir === 'DESC' ? 'down' : 'up') . '-fill" style="font-size:.7rem;"></i>' : '';
@@ -6788,6 +6788,7 @@ elseif ($page === 'invoices') {
           <label style="font-size:.78rem;">Par page</label>
           <select name="per" style="width:auto;">
             <?php foreach([25,50,100,500] as $pp): ?><option value="<?=$pp?>" <?=$pp===$per?'selected':''?>><?=$pp?></option><?php endforeach; ?>
+            <option value="all" <?=$per===0?'selected':''?>>Tout</option>
           </select>
         </div>
         <button type="submit" class="btn-primary" style="font-size:.85rem;"><i class="bi bi-funnel"></i> Filtrer</button>
