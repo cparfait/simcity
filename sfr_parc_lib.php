@@ -367,7 +367,8 @@ function simcity_parc_compare(PDO $pdo, array $records): array {
             // Nom : règle commune à tous les rapprochements de l'application.
             $sfrName = trim($rec['last_name'] . ' ' . $rec['first_name']);
             $appName = trim($a['ln'] . ' ' . $a['fn']);
-            if ($sfrName !== '' && $appName !== '' && !simcity_name_matches($sfrName, $appName)) {
+            if ($sfrName !== '' && $appName !== '' && !simcity_name_matches($sfrName, $appName)
+                && !simcity_name_found_in($sfrName, (string)$a['ln'], (string)$a['fn'])) {
                 $issues[] = 'name'; $counts['name']++;
             }
             if ($rec['plan'] !== '' && simcity_parc_norm_header($rec['plan']) !== simcity_parc_norm_header($a['plan_name'])) {

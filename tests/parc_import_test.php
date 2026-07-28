@@ -128,6 +128,26 @@ check('accents et civilité',           true,  simcity_name_matches('Mme CAZAUX 
 check('faute de frappe légère',        true,  simcity_name_matches('MARTIN Claire', 'MARTAN Claire'));
 check('personnes différentes',         false, simcity_name_matches('DURAND Paul', 'LEFEBVRE Sophie'));
 check('nom vide',                      false, simcity_name_matches('', 'DURAND Paul'));
+check('patronyme composé, prénoms différents', false, simcity_name_matches('CAZAUX RIBEIRE Anaïs', 'CAZAUX RIBEIRE Bertrand'));
+
+echo "── Nom/prénom du référentiel retrouvés dans un libellé SFR chargé\n";
+check('texte en plus côté SFR',        true,  simcity_name_found_in('DURAND Jean SERVICE DES SPORTS', 'DURAND', 'Jean'));
+check('prénom composé abrégé',         true,  simcity_name_found_in('DURAND JEAN ASTREINTE', 'DURAND', 'Jean Pierre'));
+check('prénom absent du libellé',      false, simcity_name_found_in('CAZAUX RIBEIRE Bertrand', 'CAZAUX RIBEIRE', 'Anaïs'));
+check('nom incomplet dans le libellé', false, simcity_name_found_in('CAZAUX Anaïs LIGNE 2', 'CAZAUX RIBEIRE', 'Anaïs'));
+check('libellé vide',                  false, simcity_name_found_in('', 'DURAND', 'Jean'));
+
+echo "── Numéro canonique (règle unique de rapprochement)\n";
+check('international +33',   '0612345678', simcity_phone_canon('+33 6 12 34 56 78'));
+check('points et tirets',    '0612345678', simcity_phone_canon('06.12.34-56.78'));
+check('déjà canonique',      '0612345678', simcity_phone_canon('0612345678'));
+check('33 sans le +',        '0612345678', simcity_phone_canon('33612345678'));
+
+echo "── Dates et identifiants dégradés par Excel\n";
+check('nombre de série Excel',      '2019-06-18', simcity_parc_date('43634'));
+check('série hors plage écartée',   null,         simcity_parc_date('123'));
+check('notation scientifique écartée', '',        simcity_parc_digits('8.90331E+19'));
+check('identifiant normal conservé', '8933106112345678901', simcity_parc_digits('8933 1061 1234 5678 901'));
 
 echo "── Convertisseur CSV → même forme que l'export SFR\n";
 $csv = tempnam(sys_get_temp_dir(), 'zzc') . '.csv';

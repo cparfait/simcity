@@ -6676,8 +6676,11 @@ elseif ($page === 'invoices') {
         $factPhones = [];
         $rows = [];
         // Similarité de noms : règle unique de l'application (invoice_lib.php),
-        // partagée avec le contrôle de l'état de parc SFR.
-        $nameMatch = fn(string $sfr, string $app): bool => simcity_name_matches($sfr, $app);
+        // partagée avec le contrôle de l'état de parc SFR. Le libellé SFR peut
+        // contenir du texte en plus : si le nom et le prénom du référentiel
+        // s'y retrouvent, c'est une concordance.
+        $nameMatch = fn(string $sfr, string $ln, string $fn): bool =>
+            simcity_name_matches($sfr, trim($ln . ' ' . $fn)) || simcity_name_found_in($sfr, $ln, $fn);
         foreach ($factLines as $fl) {
             $phone = $fl['phone_number'];
             $factPhones[$phone] = true;
@@ -6692,7 +6695,7 @@ elseif ($page === 'invoices') {
                 // peut comparer aucun nom nominal — signalé neutre.
                 $status = ($isGeneric && trim($app['ln'] . $app['fn']) === '') ? 'ok' : 'neutral';
             } else {
-                $status = $nameMatch((string)$fl['sfr_user'], $app['ln'] . ' ' . $app['fn']) ? 'ok' : 'diff';
+                $status = $nameMatch((string)$fl['sfr_user'], (string)$app['ln'], (string)$app['fn']) ? 'ok' : 'diff';
             }
             $rows[] = ['phone'=>$phone, 'sfr'=>$fl['sfr_user'], 'plan'=>$fl['plan_name'], 'ht'=>$fl['total_ht'],
                        'app'=>$app, 'status'=>$status];

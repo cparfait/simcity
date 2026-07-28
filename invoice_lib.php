@@ -132,6 +132,23 @@ function simcity_name_matches(?string $a, ?string $b): bool {
     return levenshtein(implode(' ', $wa), implode(' ', $wb)) <= 3;   // tolérance typo
 }
 
+// Complément DIRECTIONNEL de la règle ci-dessus, quand l'appelant connaît le
+// nom et le prénom du référentiel séparément : le champ « Utilisateur » côté
+// SFR charrie souvent du texte en plus (service, mention d'astreinte, résidu
+// de mise en page). Si le NOM complet du référentiel s'y retrouve, ainsi que
+// le prénom usuel (1er mot — les factures abrègent les prénoms composés),
+// c'est la même personne : le surplus ne doit pas déclarer un « titulaire
+// différent ». L'inverse reste discriminant : « CAZAUX RIBEIRE Bertrand »
+// ne contient pas le prénom « Anaïs » → écart signalé.
+function simcity_name_found_in(?string $sfrText, ?string $lastName, ?string $firstName): bool {
+    $hay = array_flip(array_filter(explode(' ', simcity_inv_normalize_name($sfrText))));
+    $ln  = array_values(array_filter(explode(' ', simcity_inv_normalize_name($lastName))));
+    $fn  = array_values(array_filter(explode(' ', simcity_inv_normalize_name($firstName))));
+    if (!$hay || !$ln) return false;
+    foreach ($ln as $w) if (!isset($hay[$w])) return false;   // nom complet requis
+    return !$fn || isset($hay[$fn[0]]);                       // prénom usuel requis s'il existe
+}
+
 // ─────────────────────────────────────────────────────────────
 // PARSEUR PRINCIPAL
 // ─────────────────────────────────────────────────────────────
