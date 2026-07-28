@@ -4732,7 +4732,7 @@ if ($page === 'dashboard') {
               <li><strong>Stock Smartphones bas :</strong> Il ne reste que <strong style="color:var(--danger)"><?=$cDevStk?></strong> terminal(aux) disponible(s) (seuil : <?=$threshDevice?>). <a href="?page=refs&tab=settings" style="color:var(--primary);font-size:.82rem;">Modifier le seuil →</a></li>
               <?php endif; ?>
               <?php if($alertSuspended > 0): ?>
-              <li><strong><a href="?page=lines&tab=suspended" style="color:inherit;">Lignes Suspendues</a> :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$alertSuspended?></span> ligne(s) hors service (pensez à les résilier si inactives).</li>
+              <li><strong>Lignes Suspendues :</strong> <span style="color:var(--warning);font-weight:bold;"><?=$alertSuspended?></span> ligne(s) hors service (pensez à les résilier si inactives). <a href="?page=lines&tab=suspended" style="color:var(--primary);font-size:.82rem;">Voir les lignes →</a></li>
               <?php endif; ?>
               <?php if($invZeroNb > 0): ?>
               <li><strong><a href="?page=invoices&tab=alerts&type=zero" style="color:inherit;">Lignes facturées sans consommation</a> :</strong>
