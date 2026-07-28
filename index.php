@@ -9127,6 +9127,13 @@ elseif ($page === 'history') {
     }
     ?>
 
+    <div class="search-bar-wrap">
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span>
+        <input type="text" id="history-search" placeholder="Rechercher agent, service, numéro de ligne..." oninput="historySearch(this.value)">
+      </div>
+      <div class="search-count" id="count-history"></div>
+    </div>
+
     <?php if($pairs): ?>
     <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem;">
       <button type="button" class="hist-chip badge badge-info" data-state="" onclick="historyState('')" style="border:0;cursor:pointer;font-family:inherit;">Tout (<?=count($pairs)?>)</button>
@@ -9135,13 +9142,6 @@ elseif ($page === 'history') {
       <?php endforeach; ?>
     </div>
     <?php endif; ?>
-
-    <div class="search-bar-wrap">
-      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span>
-        <input type="text" id="history-search" placeholder="Rechercher agent, service, numéro de ligne..." oninput="historySearch(this.value)">
-      </div>
-      <div class="search-count" id="count-history"></div>
-    </div>
 
     <div id="history-pairs-container">
     <?php if(empty($pairs)): ?>
