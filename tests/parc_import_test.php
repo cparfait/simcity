@@ -132,6 +132,7 @@ check('patronyme composé, prénoms différents', false, simcity_name_matches('C
 
 echo "── Nom/prénom du référentiel retrouvés dans un libellé SFR chargé\n";
 check('texte en plus côté SFR',        true,  simcity_name_found_in('DURAND Jean SERVICE DES SPORTS', 'DURAND', 'Jean'));
+check('matériel accolé au nom (ipad)', true,  simcity_name_found_in('PIERRE Henri ipad', 'PIERRE', 'Henri'));
 check('prénom composé abrégé',         true,  simcity_name_found_in('DURAND JEAN ASTREINTE', 'DURAND', 'Jean Pierre'));
 check('prénom absent du libellé',      false, simcity_name_found_in('CAZAUX RIBEIRE Bertrand', 'CAZAUX RIBEIRE', 'Anaïs'));
 check('nom incomplet dans le libellé', false, simcity_name_found_in('CAZAUX Anaïs LIGNE 2', 'CAZAUX RIBEIRE', 'Anaïs'));
