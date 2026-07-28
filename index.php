@@ -5057,6 +5057,7 @@ elseif ($page === 'lines') {
             <?php if(!$isArchive): ?>
                 <button class="btn-icon btn-edit" data-line-id="<?=$l['id']?>" title="Modifier" onclick='openEditModal(<?=json_encode($l, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"line")'><i class="bi bi-pencil"></i></button>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
+                <a href="?page=invoices&tab=conso&line=<?=h(simcity_phone_canon($l['phone_number']))?>" class="btn-icon" title="Consommations facturées de cette ligne" style="text-decoration:none;"><i class="bi bi-bar-chart-line"></i></a>
                 <?php if($l['agent_id']): ?>
                 <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Voir / générer le bon de remise" style="text-decoration:none;"><i class="bi bi-printer"></i></a>
                 <?php endif; ?>
@@ -5065,6 +5066,7 @@ elseif ($page === 'lines') {
                 <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>, <?=(int)$l['device_id']?>, <?=json_encode($l['device_id'] ? ($l['brand'].' '.$l['model_name'].' — S/N: '.($l['serial_number']?:($l['imei']?:'—'))) : '')?>)"><i class="bi bi-archive"></i></button>
             <?php else: ?>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
+                <a href="?page=invoices&tab=conso&line=<?=h(simcity_phone_canon($l['phone_number']))?>" class="btn-icon" title="Consommations facturées de cette ligne" style="text-decoration:none;"><i class="bi bi-bar-chart-line"></i></a>
                 <form method="post" style="display:inline"><input type="hidden" name="_entity" value="line"><input type="hidden" name="_action" value="restore"><input type="hidden" name="_id" value="<?=$l['id']?>"><button type="submit" class="btn-icon" title="Restaurer" style="color:var(--success)"><i class="bi bi-arrow-counterclockwise"></i></button></form>
             <?php endif; ?>
           </td>
@@ -6757,6 +6759,10 @@ elseif ($page === 'invoices') {
           <td><span class="badge <?=$cls?>"><i class="bi <?=$ico?>"></i> <?=$lbl?></span></td>
           <td class="actions">
             <?php if($app): ?><a class="btn-icon" title="Voir la ligne dans SimCity" href="?page=lines&tab=active&q=<?=urlencode(formatPhone($r['phone']))?>" style="text-decoration:none;"><i class="bi bi-telephone"></i></a><?php endif; ?>
+            <?php if($r['status'] === 'unknown_app'): /* Ligne facturée absente du parc : la créer sans ressaisir le numéro */ ?>
+            <a class="btn-icon" title="Ajouter cette ligne dans SimCity" style="text-decoration:none;color:var(--success);"
+               href="?page=lines&tab=active&open=modal-add-line&phone=<?=urlencode($r['phone'])?>"><i class="bi bi-plus-circle"></i></a>
+            <?php endif; ?>
             <?php if($app && $app['agent_id']): ?><button class="btn-icon" title="Fiche utilisateur" onclick="viewAgent(<?=$app['agent_id']?>, '<?=h(addslashes($app['fn'].' '.$app['ln']))?>')"><i class="bi bi-person"></i></button><?php endif; ?>
           </td>
         </tr>
@@ -6766,14 +6772,18 @@ elseif ($page === 'invoices') {
     </div>
     <p class="muted" style="margin-top:.75rem;font-size:.8rem;"><i class="bi bi-info-circle"></i>
       « Nom différent » : mettez à jour la fiche SimCity, ou faites corriger le nom chez SFR (espace client / commercial) pour retrouver un rapprochement propre.
-      « Facturée mais inconnue » : ligne payée qui n'est pas dans votre parc — à vérifier en priorité (résiliation oubliée ?).<br>
+      « Facturée mais inconnue » : ligne payée qui n'est pas dans votre parc — à vérifier en priorité (résiliation oubliée ?).
+      Le bouton <i class="bi bi-plus-circle" style="color:var(--success);"></i> ouvre la création de la ligne dans SimCity, numéro déjà rempli.<br>
       <i class="bi bi-arrow-right-circle"></i> Ce rapprochement porte sur ce qui est <strong>facturé</strong>. Pour comparer avec l'état de parc
       de l'opérateur (forfaits, statuts, terminaux, IMEI), voir
       <a href="?page=refs&tab=settings&sub=maintenance">Référentiels et Paramètres → Maintenance → Import depuis SFR</a>.</p>
     <?php endif; ?>
 
     <?php if($tab === 'conso' && $months):
-        $detailPhone = preg_replace('/\D/', '', (string)($_GET['line'] ?? ''));
+        // Règle unique de l'application : le numéro reçu en paramètre peut venir
+        // du référentiel (« +33 6… », espaces, points) — il doit être canonisé
+        // comme partout ailleurs, sinon la ligne paraît sans facture.
+        $detailPhone = simcity_phone_canon((string)($_GET['line'] ?? ''));
         if ($detailPhone !== ''):
             $st = $pdo->prepare("SELECT * FROM invoice_lines WHERE phone_number=? ORDER BY month_key");
             $st->execute([$detailPhone]);
@@ -9077,8 +9087,36 @@ elseif ($page === 'history') {
         }
     }
 
-    // ── Couleurs de cycle pour les paires ──
-    $pairBorderColors = ['#059669','#4f46e5','#d97706','#7c3aed','#ec4899','#2563eb'];
+    // ── État du CYCLE (remise + restitution), pas du bon isolé ──
+    // Un bon de restitution signé clôt le cycle : plus rien n'est attendu.
+    // Tant qu'une signature manque, le cycle réclame une action — c'est ce qui
+    // commande l'ordre d'affichage, du plus urgent au plus classé.
+    $cycleMeta = [
+        'waiting'    => ['⏳', 'Remise à signer',        'badge-info',    '#2563eb'],
+        'returning'  => ['✍️', 'Restitution à signer',   'badge-warning', '#d97706'],
+        'active'     => ['📱', 'En dotation',            'badge-success', '#059669'],
+        'closed'     => ['✅', 'Terminé — restitué',     'badge-muted',   '#64748b'],
+        'superseded' => ['♻️', 'Clos — cycle remplacé',  'badge-muted',   '#94a3b8'],
+    ];
+    foreach ($pairs as &$p) {
+        $rem = $p['remise']; $res = $p['restitution'];
+        if     ($res && $res['status'] === 'signed')   $p['state'] = 'closed';
+        elseif ($res)                                  $p['state'] = 'returning';
+        elseif (!empty($p['superseded_by']))           $p['state'] = 'superseded';
+        elseif ($rem && $rem['status'] === 'signed')   $p['state'] = 'active';
+        else                                           $p['state'] = 'waiting';
+    }
+    unset($p);
+    $cycleOrder = array_flip(array_keys($cycleMeta));
+    usort($pairs, function($x, $y) use ($cycleOrder) {
+        $c = $cycleOrder[$x['state']] <=> $cycleOrder[$y['state']];
+        if ($c) return $c;
+        $dx = strtotime(($x['remise'] ?: $x['restitution'])['created_at']);
+        $dy = strtotime(($y['remise'] ?: $y['restitution'])['created_at']);
+        return $dy <=> $dx;                                  // le plus récent d'abord
+    });
+    $cycleCounts = array_fill_keys(array_keys($cycleMeta), 0);
+    foreach ($pairs as $p) $cycleCounts[$p['state']]++;
 
     $now = time();
     function bonStatusHtml(array $b, int $now): string {
@@ -9088,6 +9126,15 @@ elseif ($page === 'history') {
         return '<span style="background:rgba(37,99,235,.12);color:var(--info);font-size:.72rem;font-weight:700;padding:.15rem .5rem;border-radius:999px;white-space:nowrap;">⏳ En attente</span>';
     }
     ?>
+
+    <?php if($pairs): ?>
+    <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+      <button type="button" class="hist-chip badge badge-info" data-state="" onclick="historyState('')" style="border:0;cursor:pointer;font-family:inherit;">Tout (<?=count($pairs)?>)</button>
+      <?php foreach($cycleMeta as $k => [$ico, $lbl]): if(!$cycleCounts[$k]) continue; ?>
+      <button type="button" class="hist-chip badge badge-muted" data-state="<?=$k?>" onclick="historyState('<?=$k?>')" style="border:0;cursor:pointer;font-family:inherit;"><?=$ico?> <?=h($lbl)?> (<?=$cycleCounts[$k]?>)</button>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
 
     <div class="search-bar-wrap">
       <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span>
@@ -9101,10 +9148,10 @@ elseif ($page === 'history') {
       <div class="card" style="padding:2rem;text-align:center;color:var(--text3);">Aucun bon de remise généré.</div>
     <?php endif; ?>
     <?php foreach($pairs as $pi => $pair):
-        $borderColor = $pairBorderColors[$pi % count($pairBorderColors)];
+        [$stIco, $stLabel, $stCls, $borderColor] = $cycleMeta[$pair['state']];
         $agentName = trim($pair['agent_name']);
     ?>
-    <div class="history-pair-card" data-search="<?=h(strtolower($agentName.' '.$pair['service_name'].' '.($pair['phone_numbers']??'').' '.($pair['remise']['dsi_name']??'').' '.($pair['restitution']['dsi_name']??'').' '.($pair['remise']['numero']??'').' '.($pair['restitution']['numero']??'')))?>" style="background:var(--card);border:1px solid var(--border);border-left:4px solid <?=$borderColor?>;border-radius:var(--radius);margin-bottom:1rem;overflow:hidden;">
+    <div class="history-pair-card" data-state="<?=h($pair['state'])?>" data-search="<?=h(strtolower($agentName.' '.$pair['service_name'].' '.($pair['phone_numbers']??'').' '.($pair['remise']['dsi_name']??'').' '.($pair['restitution']['dsi_name']??'').' '.($pair['remise']['numero']??'').' '.($pair['restitution']['numero']??'')))?>" style="background:var(--card);border:1px solid var(--border);border-left:4px solid <?=$borderColor?>;border-radius:var(--radius);margin-bottom:1rem;overflow:hidden;">
       <!-- En-tête : Agent + Ligne -->
       <div style="padding:.75rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;background:var(--card2);">
         <div style="display:flex;align-items:center;gap:.75rem;">
@@ -9115,6 +9162,7 @@ elseif ($page === 'history') {
           <?php endif; ?>
           <span style="font-size:.8rem; color:var(--text3);"><i class="bi bi-building"></i> <?=h($pair['service_name'])?></span>
           <?php if($pair['agent_archived']): ?><span style="background:rgba(245,158,11,.15);color:var(--warning);font-size:.68rem;font-weight:600;padding:.1rem .4rem;border-radius:999px;"><i class="bi bi-archive"></i> Parti</span><?php endif; ?>
+          <span class="badge <?=$stCls?>" style="font-size:.7rem;"><?=$stIco?> <?=h($stLabel)?></span>
         </div>
         <?php if($pair['phone_numbers']): ?>
         <div style="font-family:var(--font-mono);font-size:.85rem;color:var(--primary);font-weight:600;">
@@ -9158,17 +9206,28 @@ elseif ($page === 'history') {
     </div>
 
     <script>
-    function historySearch(q) {
-      q = q.toLowerCase().trim();
-      const cards = document.querySelectorAll('.history-pair-card');
+    // Recherche texte et filtre d'état se cumulent : un seul point d'application.
+    let histQuery = '', histState = '';
+    function historySearch(q) { histQuery = q.toLowerCase().trim(); historyApply(); }
+    function historyState(s) {
+      histState = s;
+      document.querySelectorAll('.hist-chip').forEach(c => {
+        const on = c.dataset.state === s;
+        c.classList.toggle('badge-info', on);
+        c.classList.toggle('badge-muted', !on);
+      });
+      historyApply();
+    }
+    function historyApply() {
       let visible = 0;
-      cards.forEach(c => {
-        const match = !q || c.dataset.search.includes(q);
+      document.querySelectorAll('.history-pair-card').forEach(c => {
+        const match = (!histQuery || c.dataset.search.includes(histQuery))
+                   && (!histState || c.dataset.state === histState);
         c.style.display = match ? '' : 'none';
         if (match) visible++;
       });
       const el = document.getElementById('count-history');
-      if (el) el.textContent = q ? visible + ' résultat(s)' : '';
+      if (el) el.textContent = (histQuery || histState) ? visible + ' résultat(s)' : '';
     }
     </script>
     <?php
@@ -9983,6 +10042,11 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .data-table th{padding:.75rem 1.25rem;text-align:left;font-size:.68rem;font-weight:700;letter-spacing:.06em;color:var(--text2);text-transform:uppercase;background:var(--card2);border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none;transition:color 0.15s;}
 .data-table th:hover{color:var(--primary);}
 .data-table th.sorted{color:var(--primary);font-weight:700;}
+/* En-tête portant un lien de tri SERVEUR : le lien occupe toute la cellule,
+   sinon un clic à côté du texte ne déclenche rien (ou pire, un tri JS qui ne
+   porterait que sur la page affichée). */
+.data-table thead th>a{display:block;color:inherit;text-decoration:none;}
+.data-table thead th>a:hover{color:var(--primary);}
 
 .data-table td{padding:.8rem 1.25rem;border-bottom:1px solid var(--border);font-size:.875rem;line-height:1.4} .data-table tbody tr{transition:background-color .12s ease} .data-table tbody tr:hover{background:var(--bg3)}
 .empty-cell{text-align:center;color:var(--text3);padding:3rem!important;font-style:italic} .muted{color:var(--text2)!important;font-size:.82rem;}
@@ -10280,6 +10344,16 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.data-table').forEach(table => {
     const headers = table.querySelectorAll('thead th');
     const tbody = table.querySelector('tbody');
+
+    // Tableau DÉJÀ trié côté serveur (en-têtes = liens ?sort=…) : ne pas y
+    // superposer le tri JS. Il ne verrait que la page affichée — trier 50
+    // lignes sur 350 donne un classement faux — et la réécriture de
+    // l'innerHTML de l'en-tête détache le lien cliqué, ce qui annule la
+    // navigation dans les navigateurs.
+    if (table.querySelector('thead th a[href*="sort="]')) {
+      headers.forEach(th => { th.style.cursor = 'default'; });
+      return;
+    }
 
     headers.forEach((th, index) => {
       // Ne pas rendre triable la colonne « Actions » ni la colonne de sélection
@@ -11066,7 +11140,13 @@ async function loadSimHistory() {
   } catch(e) { panel.innerHTML = '<span style="color:var(--danger);font-size:.85rem;">❌ Erreur de chargement.</span>'; }
 }
 
-<?php if(!empty($_GET['open'])): ?>window.addEventListener('DOMContentLoaded', () => openModal('<?=h($_GET['open'])?>'));<?php endif; ?>
+<?php if(!empty($_GET['open'])): ?>window.addEventListener('DOMContentLoaded', () => {
+  openModal(<?=json_encode((string)$_GET['open'])?>);
+  <?php if(!empty($_GET['phone'])): /* Création préremplie depuis le rapprochement des factures */ ?>
+  const ph = document.getElementById('add-phone_number');
+  if (ph) { ph.value = <?=json_encode(formatPhone(simcity_phone_canon((string)$_GET['phone'])))?>; ph.focus(); }
+  <?php endif; ?>
+});<?php endif; ?>
 <?php if(!empty($_GET['open_line'])): ?>
 // Ouverture directe de la fiche d'une ligne (lien depuis le tableau de bord)
 window.addEventListener('DOMContentLoaded', () => {
