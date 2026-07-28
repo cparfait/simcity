@@ -132,21 +132,34 @@ function simcity_name_matches(?string $a, ?string $b): bool {
     return levenshtein(implode(' ', $wa), implode(' ', $wb)) <= 3;   // tolérance typo
 }
 
+// Mots de libellé qui ne sont PAS des morceaux de patronyme : matériel, type
+// de ligne, mention d'exploitation. SFR les accole au nom (« IPAD Lainee
+// Benjamin »), et le référentiel finit par en garder aussi. Ils ne doivent ni
+// être exigés côté facture, ni faire échouer le rapprochement.
+const SIMCITY_NAME_FILLERS = ['IPAD', 'IPHONE', 'TABLETTE', 'TABLET', 'TEL', 'TELEPHONE', 'PORTABLE',
+                              'MOBILE', 'LIGNE', 'SIM', 'CLE', 'BOX', 'ASTREINTE', 'AUTR', 'SERVICE'];
+
 // Complément DIRECTIONNEL de la règle ci-dessus, quand l'appelant connaît le
 // nom et le prénom du référentiel séparément : le champ « Utilisateur » côté
-// SFR charrie souvent du texte en plus (service, mention d'astreinte, résidu
-// de mise en page). Si le NOM complet du référentiel s'y retrouve, ainsi que
-// le prénom usuel (1er mot — les factures abrègent les prénoms composés),
-// c'est la même personne : le surplus ne doit pas déclarer un « titulaire
-// différent ». L'inverse reste discriminant : « CAZAUX RIBEIRE Bertrand »
-// ne contient pas le prénom « Anaïs » → écart signalé.
+// SFR charrie souvent du texte en plus (service, matériel, mention
+// d'astreinte, résidu de mise en page). Si le NOM DE FAMILLE complet du
+// référentiel s'y retrouve, c'est la même personne : le surplus ne doit pas
+// déclarer un « titulaire différent ».
+//
+// Décision du 28/07/2026 (demandée explicitement) : le PRÉNOM n'est plus
+// exigé. « M. LAINEE Martin » facturé pour la fiche « IPAD Lainee Benjamin »
+// est désormais un rapprochement OK — le numéro est le même, la famille est la
+// même, et l'écart de prénom relève de la saisie, pas d'un changement de
+// titulaire. Contrepartie assumée : un vrai transfert de ligne entre deux
+// personnes du même nom (« CAZAUX RIBEIRE Anaïs » → « … Bertrand ») n'est plus
+// signalé sur l'écran de rapprochement.
 function simcity_name_found_in(?string $sfrText, ?string $lastName, ?string $firstName): bool {
     $hay = array_flip(array_filter(explode(' ', simcity_inv_normalize_name($sfrText))));
-    $ln  = array_values(array_filter(explode(' ', simcity_inv_normalize_name($lastName))));
-    $fn  = array_values(array_filter(explode(' ', simcity_inv_normalize_name($firstName))));
-    if (!$hay || !$ln) return false;
-    foreach ($ln as $w) if (!isset($hay[$w])) return false;   // nom complet requis
-    return !$fn || isset($hay[$fn[0]]);                       // prénom usuel requis s'il existe
+    $ln  = array_values(array_diff(array_filter(explode(' ', simcity_inv_normalize_name($lastName))),
+                                   SIMCITY_NAME_FILLERS));
+    if (!$hay || !$ln) return false;      // sans patronyme exploitable : on ne conclut pas
+    foreach ($ln as $w) if (!isset($hay[$w])) return false;   // nom de famille complet requis
+    return true;
 }
 
 // ─────────────────────────────────────────────────────────────

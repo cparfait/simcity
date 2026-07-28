@@ -130,12 +130,17 @@ check('personnes différentes',         false, simcity_name_matches('DURAND Paul
 check('nom vide',                      false, simcity_name_matches('', 'DURAND Paul'));
 check('patronyme composé, prénoms différents', false, simcity_name_matches('CAZAUX RIBEIRE Anaïs', 'CAZAUX RIBEIRE Bertrand'));
 
-echo "── Nom/prénom du référentiel retrouvés dans un libellé SFR chargé\n";
+echo "── Nom du référentiel retrouvé dans un libellé SFR chargé\n";
 check('texte en plus côté SFR',        true,  simcity_name_found_in('DURAND Jean SERVICE DES SPORTS', 'DURAND', 'Jean'));
 check('matériel accolé au nom (ipad)', true,  simcity_name_found_in('PIERRE Henri ipad', 'PIERRE', 'Henri'));
 check('prénom composé abrégé',         true,  simcity_name_found_in('DURAND JEAN ASTREINTE', 'DURAND', 'Jean Pierre'));
-check('prénom absent du libellé',      false, simcity_name_found_in('CAZAUX RIBEIRE Bertrand', 'CAZAUX RIBEIRE', 'Anaïs'));
+// Décision du 28/07/2026 : le nom de famille suffit, le prénom n'est plus exigé.
+check('prénom différent (LAINEE)',     true,  simcity_name_found_in('M. LAINEE Martin', 'Lainee', 'Benjamin'));
+check('matériel côté référentiel',     true,  simcity_name_found_in('M. LAINEE Martin', 'IPAD Lainee', 'Benjamin'));
+check('prénom absent du libellé',      true,  simcity_name_found_in('CAZAUX RIBEIRE Bertrand', 'CAZAUX RIBEIRE', 'Anaïs'));
 check('nom incomplet dans le libellé', false, simcity_name_found_in('CAZAUX Anaïs LIGNE 2', 'CAZAUX RIBEIRE', 'Anaïs'));
+check('autre famille',                 false, simcity_name_found_in('M. LAINEE Martin', 'LEFEBVRE', 'Sophie'));
+check('référentiel sans patronyme',    false, simcity_name_found_in('IPAD MEDIATHEQUE', 'IPAD', ''));
 check('libellé vide',                  false, simcity_name_found_in('', 'DURAND', 'Jean'));
 
 echo "── Numéro canonique (règle unique de rapprochement)\n";
