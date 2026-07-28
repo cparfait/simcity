@@ -662,7 +662,14 @@ function requestAdvance($pdo, $reqId) {
     $st->execute([(int)$reqId]);
     if ($next = $st->fetch()) {
         $pdo->prepare("UPDATE requests SET status='en_validation', current_step=? WHERE id=?")->execute([(int)$next['ordre'], (int)$reqId]);
-        requestSendStepEmail($pdo, $req, $next);
+        // Un échec d'envoi ne doit pas passer sous silence : sans trace, un
+        // « mail jamais reçu » est indiagnosticable (la colonne Notifié reste
+        // à « — », mais personne ne sait pourquoi).
+        $res = requestSendStepEmail($pdo, $req, $next);
+        if ($res !== true) {
+            $pdo->prepare("INSERT INTO history_logs (entity_type, entity_id, action_desc, agent_id, author) VALUES ('request', ?, ?, ?, 'Système')")
+                ->execute([(int)$reqId, "⚠️ E-mail de visa « {$next['label']} » non envoyé : $res", $req['agent_id'] ?: null]);
+        }
         return;
     }
     // Plus d'étape en attente : la demande est validée
@@ -1914,9 +1921,13 @@ function smtpSendMail($pdo, $to, $subject, $htmlBody) {
         if (!$expect($cmd("MAIL FROM:<$from>"), 250)) return "Expéditeur refusé : $from";
         if (!$expect($cmd("RCPT TO:<$to>"), [250, 251])) return "Destinataire refusé : $to";
         if (!$expect($cmd("DATA"), 354)) return "Commande DATA refusée.";
+        // Message-ID obligatoire : sans lui, nombre de filtres (Exchange
+        // notamment) classent le message en spam ou le rejettent en silence.
+        $midDomain = substr(strrchr($from, '@') ?: '', 1) ?: 'localhost';
         $headers = "From: =?UTF-8?B?" . base64_encode($fromName) . "?= <$from>\r\n"
                  . "To: <$to>\r\n"
                  . "Subject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n"
+                 . "Message-ID: <" . bin2hex(random_bytes(16)) . "@" . $midDomain . ">\r\n"
                  . "MIME-Version: 1.0\r\n"
                  . "Content-Type: text/html; charset=UTF-8\r\n"
                  . "Content-Transfer-Encoding: base64\r\n"
@@ -4593,7 +4604,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $page = preg_replace('/[^a-z_]/', '', $_GET['page'] ?? 'dashboard');
 $tab = preg_replace('/[^a-z_]/', '', $_GET['tab'] ?? 'active');
 
-$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'invoices' => 'Facturation / Contrôle', 'refs' => 'Référentiels et Paramètres', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise', 'requests' => 'Demandes de téléphone', 'stats' => 'Statistiques'];
+$pageTitles = ['dashboard' => 'Tableau de bord', 'lines' => 'Gestion des Lignes & SIM', 'devices' => 'Parc Matériel & Terminaux', 'brands' => 'Parc par marque et modèle', 'invoices' => 'Facturation / Contrôle', 'refs' => 'Référentiels et Paramètres', 'settings' => 'Paramètres', 'history' => 'Historique des Bons de Remise', 'requests' => 'Demandes de téléphone', 'stats' => 'Statistiques'];
 ob_start();
 
 // ==================================================================
@@ -4810,7 +4821,7 @@ if ($page === 'dashboard') {
 
       <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1.5rem; margin-top:1rem; margin-bottom:1rem;">
           <div class="card" style="margin-bottom:0;">
-              <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;"><span><i class="bi bi-phone"></i> Répartition par marque</span><a href="?page=devices" class="card-see-all">Voir tout <i class="bi bi-arrow-right"></i></a></div>
+              <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;"><span><i class="bi bi-phone"></i> Répartition par marque</span><a href="?page=brands" class="card-see-all" title="Synthèse du parc par marque et modèle">Voir tout <i class="bi bi-arrow-right"></i></a></div>
               <div style="padding:1rem; height:250px;">
                 <?php if(empty($brands)): ?>
                 <div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:var(--text3);font-size:.88rem;gap:.35rem;"><i class="bi bi-bar-chart" style="font-size:1.6rem;opacity:.5;"></i>Aucun matériel enregistré.</div>
@@ -4854,17 +4865,23 @@ if ($page === 'dashboard') {
         // message affiché à la place) n'empêche pas l'autre de s'initialiser.
         const elBrand = document.getElementById('chartBrand');
         if(elBrand){
+            const brandLabels = <?php echo json_encode($brands); ?>;
             new Chart(elBrand, {
                 type: 'doughnut',
                 data: {
-                    labels: <?php echo json_encode($brands); ?>,
+                    labels: brandLabels,
                     datasets: [{
                         data: <?php echo json_encode($bCounts); ?>,
                         backgroundColor: ['#4f46e5', '#2563eb', '#7c3aed', '#d97706', '#059669', '#dc2626'],
                         borderWidth: 0
                     }]
                 },
-                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } } }
+                // Un clic sur une part ouvre la synthèse par marque/modèle,
+                // pré-filtrée sur la marque cliquée.
+                options: { responsive: true, maintainAspectRatio: false,
+                    onClick: (e, a) => { if(a.length) location = '?page=brands&q=' + encodeURIComponent(brandLabels[a[0].index]); },
+                    onHover: (e, a) => { e.native.target.style.cursor = a.length ? 'pointer' : 'default'; },
+                    plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } } }
             });
         }
         const elSvc = document.getElementById('chartSvc');
@@ -4880,7 +4897,12 @@ if ($page === 'dashboard') {
                         borderRadius: 5
                     }]
                 },
-                options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, grid: { color: 'rgba(148,163,184,0.18)' }, ticks: { color: '#94a3b8' } }, x: { ticks: { color: '#94a3b8' } } }, plugins: { legend: { display: false } } }
+                // Un clic sur une barre ouvre la liste des lignes actives
+                // filtrée sur le service cliqué.
+                options: { responsive: true, maintainAspectRatio: false,
+                    onClick: (e, a) => { const l = <?php echo json_encode($svcs); ?>; if(a.length) location = '?page=lines&tab=active&q=' + encodeURIComponent(l[a[0].index]); },
+                    onHover: (e, a) => { e.native.target.style.cursor = a.length ? 'pointer' : 'default'; },
+                    scales: { y: { beginAtZero: true, grid: { color: 'rgba(148,163,184,0.18)' }, ticks: { color: '#94a3b8' } }, x: { ticks: { color: '#94a3b8' } } }, plugins: { legend: { display: false } } }
             });
         }
     });
@@ -5446,6 +5468,78 @@ elseif ($page === 'devices') {
       </form></div>
     </div>
     <?php endforeach;
+}
+
+// ==================================================================
+// VUE : PARC PAR MARQUE ET MODÈLE (synthèse cliquable depuis les graphiques)
+// ==================================================================
+elseif ($page === 'brands') {
+    $bmRows = $pdo->query("SELECT IFNULL(m.brand,'(sans modèle)') brand, IFNULL(m.name,'—') model,
+            IFNULL(m.category,'') category, COUNT(*) total,
+            SUM(d.status='Deployed') deployed, SUM(d.status='Stock') stock, SUM(d.status='Repair') repair
+        FROM devices d LEFT JOIN models m ON d.model_id=m.id
+        WHERE d.archived=0
+        GROUP BY brand, model, category
+        ORDER BY brand, total DESC, model")->fetchAll();
+    // Regroupement par marque, avec sous-totaux.
+    $byBrand = [];
+    foreach ($bmRows as $r) $byBrand[$r['brand']][] = $r;
+    uasort($byBrand, fn($a, $b) => array_sum(array_column($b, 'total')) <=> array_sum(array_column($a, 'total')));
+    $gTot = array_sum(array_column($bmRows, 'total'));
+    ?>
+    <p class="muted" style="margin-bottom:1rem;font-size:.85rem;"><i class="bi bi-info-circle"></i>
+      Matériels <strong>actifs</strong> (archives exclues), regroupés par marque puis modèle.
+      Cliquez sur un modèle pour ouvrir la liste des matériels correspondants ; cette page s'ouvre
+      pré-filtrée depuis les graphiques « Répartition par marque » du tableau de bord et des statistiques.</p>
+    <div class="search-bar-wrap">
+      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Filtrer par marque, modèle, catégorie..." oninput="tableSearch(this,'tbody-brands','count-brands')"></div>
+      <div class="search-count" id="count-brands"></div>
+    </div>
+    <div class="card" style="overflow-x:auto;">
+      <table class="data-table" style="font-size:.87rem;">
+        <thead><tr><th>Marque</th><th>Modèle</th><th>Catégorie</th>
+          <th style="text-align:right;">Déployés</th><th style="text-align:right;">En stock</th>
+          <th style="text-align:right;">Réparation</th><th style="text-align:right;">Total</th><th style="width:50px;"></th></tr></thead>
+        <tbody id="tbody-brands">
+        <?php if(!$bmRows): ?><tr><td colspan="8" class="empty-cell">Aucun matériel actif au parc</td></tr><?php endif; ?>
+        <?php foreach($byBrand as $brand => $models): ?>
+          <tr style="background:var(--primary-dim);font-weight:700;">
+            <td><?=h($brand)?></td>
+            <td class="muted" style="font-weight:400;"><?=count($models)?> modèle(s)</td>
+            <td></td>
+            <td style="text-align:right;"><?=array_sum(array_column($models,'deployed'))?></td>
+            <td style="text-align:right;"><?=array_sum(array_column($models,'stock'))?></td>
+            <td style="text-align:right;"><?=array_sum(array_column($models,'repair'))?></td>
+            <td style="text-align:right;"><?=array_sum(array_column($models,'total'))?></td>
+            <td></td>
+          </tr>
+          <?php foreach($models as $m): ?>
+          <tr>
+            <td class="muted" style="font-size:.78rem;"><?=h($brand)?></td>
+            <td><a href="?page=devices&q=<?=urlencode($m['model'] !== '—' ? $m['model'] : $brand)?>" title="Voir ces matériels dans le parc"><?=h($m['model'])?></a></td>
+            <td class="muted"><?=h($m['category'] ?: '—')?></td>
+            <td style="text-align:right;"><?=(int)$m['deployed'] ?: '—'?></td>
+            <td style="text-align:right;"><?=(int)$m['stock'] ?: '—'?></td>
+            <td style="text-align:right;"><?=(int)$m['repair'] ?: '—'?></td>
+            <td style="text-align:right;font-weight:600;"><?=(int)$m['total']?></td>
+            <td class="actions"><a class="btn-icon" href="?page=devices&q=<?=urlencode($m['model'] !== '—' ? $m['model'] : $brand)?>" title="Voir dans le parc matériel" style="text-decoration:none;"><i class="bi bi-box-arrow-up-right"></i></a></td>
+          </tr>
+          <?php endforeach; ?>
+        <?php endforeach; ?>
+        </tbody>
+        <?php if($bmRows): ?>
+        <tfoot><tr style="border-top:2px solid var(--border);font-weight:700;">
+          <td colspan="3">Total du parc actif — <?=count($byBrand)?> marque(s), <?=count($bmRows)?> modèle(s)</td>
+          <td style="text-align:right;"><?=array_sum(array_column($bmRows,'deployed'))?></td>
+          <td style="text-align:right;"><?=array_sum(array_column($bmRows,'stock'))?></td>
+          <td style="text-align:right;"><?=array_sum(array_column($bmRows,'repair'))?></td>
+          <td style="text-align:right;"><?=$gTot?></td>
+          <td></td>
+        </tr></tfoot>
+        <?php endif; ?>
+      </table>
+    </div>
+    <?php
 }
 
 // ==================================================================
@@ -6209,9 +6303,16 @@ elseif ($page === 'invoices') {
             <th style="text-align:right;">Total HT sur la période</th><th style="text-align:right;">Hors-forfait</th>
             <th style="text-align:right;">€ HT / ligne / mois</th><th style="text-align:right;">Part</th></tr></thead>
           <tbody>
-          <?php foreach($svcStats as $sv => $d): $unknown = str_starts_with($sv, '('); ?>
+          <?php foreach($svcStats as $sv => $d): $unknown = str_starts_with($sv, '(');
+                // Chaque regroupement mène aux consommations filtrées : le
+                // service via svc=, les regroupements « (…) » via leur
+                // signalement équivalent.
+                $svHref = '?page=invoices&tab=conso&' . $qsPeriod . '&'
+                        . ($sv === '(ligne inconnue de SimCity)' ? 'flag=unknown'
+                        : ($sv === '(sans service dans SimCity)' ? 'flag=nosvc'
+                        : 'svc=' . urlencode($sv))); ?>
           <tr>
-            <td<?=$unknown ? ' class="muted"' : ''?>><?=h($sv)?></td>
+            <td<?=$unknown ? ' class="muted"' : ''?>><a href="<?=h($svHref)?>" style="color:inherit;" title="Voir les consommations de ce regroupement"><?=h($sv)?></a></td>
             <td style="text-align:right;font-weight:600;"><?=$d['n']?></td>
             <td style="text-align:right;font-family:var(--font-mono);"><?=$fmtEur($d['ht'])?></td>
             <td style="text-align:right;font-family:var(--font-mono);color:<?=$d['hf'] > 0 ? 'var(--warning)' : 'inherit'?>;"><?=$d['hf'] > 0 ? $fmtEur($d['hf']) : '—'?></td>
@@ -9331,6 +9432,7 @@ elseif ($page === 'requests') {
             <td style="max-width:280px;"><?=$s['avis'] ? '« ' . h($s['avis']) . ' »' : '<span class="muted">—</span>'?></td>
             <td class="muted" style="font-size:.75rem;">
               <?=$s['notified_at'] ? '📧 ' . date('d/m H:i', strtotime($s['notified_at'])) : '—'?>
+              <?php if($isCur && !$s['notified_at']): ?><br><span style="color:var(--warning);" title="L'e-mail n'a pas pu être envoyé (voir le journal de la demande). Transmettez le lien de visa manuellement.">⚠️ e-mail non parti</span><?php endif; ?>
               <?=$s['reminded_at'] ? '<br>🔔 ' . date('d/m H:i', strtotime($s['reminded_at'])) : ''?>
               <?php if ($isCur): ?><br><button type="button" class="btn-icon" style="font-size:.78rem;color:var(--primary);padding:0;" title="Copier le lien de visa" onclick="copySignLink(this, '<?=h(baseUrl($pdo) . '?page=valider&token=' . $s['token'])?>')">🔗 lien</button><?php endif; ?>
             </td>
@@ -9744,22 +9846,31 @@ elseif ($page === 'stats') {
       const _var  = (n, d) => (_css.getPropertyValue(n) || '').trim() || d;
       const AXIS  = _var('--text2', '#64748b');
       const GRID  = _var('--border', 'rgba(148,163,184,.15)');
-      function doughnut(id, labels, data){ const el=document.getElementById(id); if(!el||!labels.length)return;
-        new Chart(el,{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:PAL,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{color:AXIS,boxWidth:12,padding:10}}}}}); }
-      function bars(id, labels, datasets, horizontal){ const el=document.getElementById(id); if(!el||!labels.length)return;
-        new Chart(el,{type:'bar',data:{labels,datasets},options:{indexAxis:horizontal?'y':'x',responsive:true,maintainAspectRatio:false,scales:{x:{beginAtZero:true,ticks:{color:AXIS,precision:0},grid:{color:GRID}},y:{beginAtZero:true,ticks:{color:AXIS,precision:0},grid:{color:GRID}}},plugins:{legend:{display:datasets.length>1,labels:{color:AXIS}}}}}); }
+      // `link` (optionnel) : fonction libellé → URL. Rend le graphique
+      // cliquable — un clic sur une part/barre ouvre la vue filtrée.
+      const clickOpts = (labels, link) => link ? {
+        onClick: (e, a) => { if(a.length) location = link(labels[a[0].index]); },
+        onHover: (e, a) => { e.native.target.style.cursor = a.length ? 'pointer' : 'default'; },
+      } : {};
+      function doughnut(id, labels, data, link){ const el=document.getElementById(id); if(!el||!labels.length)return;
+        new Chart(el,{type:'doughnut',data:{labels,datasets:[{data,backgroundColor:PAL,borderWidth:0}]},options:{responsive:true,maintainAspectRatio:false,...clickOpts(labels,link),plugins:{legend:{position:'bottom',labels:{color:AXIS,boxWidth:12,padding:10}}}}}); }
+      function bars(id, labels, datasets, horizontal, link){ const el=document.getElementById(id); if(!el||!labels.length)return;
+        new Chart(el,{type:'bar',data:{labels,datasets},options:{indexAxis:horizontal?'y':'x',responsive:true,maintainAspectRatio:false,...clickOpts(labels,link),scales:{x:{beginAtZero:true,ticks:{color:AXIS,precision:0},grid:{color:GRID}},y:{beginAtZero:true,ticks:{color:AXIS,precision:0},grid:{color:GRID}}},plugins:{legend:{display:datasets.length>1,labels:{color:AXIS}}}}}); }
+      const toBrands = l => '?page=brands&q=' + encodeURIComponent(l);
+      const toLines  = l => '?page=lines&tab=active&q=' + encodeURIComponent(l);
 
-      // Parc & stock
-      doughnut('stBrand', <?=json_encode($col($statBrand,'k'))?>, <?=json_encode(array_map('intval',$col($statBrand,'c')))?>);
+      // Parc & stock — cliquables : marque → synthèse par marque/modèle,
+      // opérateur / forfait / service → liste des lignes pré-filtrée.
+      doughnut('stBrand', <?=json_encode($col($statBrand,'k'))?>, <?=json_encode(array_map('intval',$col($statBrand,'c')))?>, toBrands);
       doughnut('stDevStat', <?=json_encode(array_map(fn($k)=>$devStatusMap[$k]??$k, $col($statDevStat,'k')))?>, <?=json_encode(array_map('intval',$col($statDevStat,'c')))?>);
-      bars('stOper', <?=json_encode($col($statOper,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statOper,'c')))?>,backgroundColor:'#2563eb',borderRadius:4}]);
-      bars('stPlan', <?=json_encode($col($statPlan,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statPlan,'c')))?>,backgroundColor:'#7c3aed',borderRadius:4}], true);
+      bars('stOper', <?=json_encode($col($statOper,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statOper,'c')))?>,backgroundColor:'#2563eb',borderRadius:4}], false, toLines);
+      bars('stPlan', <?=json_encode($col($statPlan,'k'))?>, [{label:'Lignes',data:<?=json_encode(array_map('intval',$col($statPlan,'c')))?>,backgroundColor:'#7c3aed',borderRadius:4}], true, toLines);
 
       // Par service (barres groupées)
       bars('stSvc', <?=json_encode($svcNames)?>, [
         {label:'Lignes',   data:<?=json_encode($svcLines)?>, backgroundColor:'<?=uiPrimaryColor($pdo) ?: '#4f46e5'?>', borderRadius:4},
         {label:'Matériels',data:<?=json_encode($svcMats)?>,  backgroundColor:'#7c3aed', borderRadius:4}
-      ]);
+      ], false, toLines);
 
       // Demandes
       bars('stReqMonth', <?=json_encode($col($statReqMonth,'k'))?>, [{label:'Demandes',data:<?=json_encode(array_map('intval',$col($statReqMonth,'c')))?>,backgroundColor:'#d97706',borderRadius:4}]);
@@ -9779,7 +9890,10 @@ elseif ($page === 'stats') {
            [{label:'Total € HT',data:<?=json_encode(array_map(fn($k) => isset($statInvByKey[$k]) ? round((float)$statInvByKey[$k]['t'], 2) : null, $statInvAxis))?>,backgroundColor:'#4f46e5',borderRadius:4},
             {label:'Hors-forfait € HT',data:<?=json_encode(array_map(fn($k) => isset($statInvByKey[$k]) ? round((float)$statInvByKey[$k]['hf'], 2) : null, $statInvAxis))?>,backgroundColor:'#d97706',borderRadius:4}]);
       bars('stInvSvc', <?=json_encode($col($statInvSvc,'svc'))?>,
-           [{label:'€ HT',data:<?=json_encode(array_map(fn($v) => round((float)$v, 2), $col($statInvSvc,'t')))?>,backgroundColor:'#0891b2',borderRadius:4}], true);
+           [{label:'€ HT',data:<?=json_encode(array_map(fn($v) => round((float)$v, 2), $col($statInvSvc,'t')))?>,backgroundColor:'#0891b2',borderRadius:4}], true,
+           l => l === '(hors SimCity)'   ? '?page=invoices&tab=conso&flag=unknown'
+              : l === '(sans service)'   ? '?page=invoices&tab=conso&flag=nosvc'
+              : '?page=invoices&tab=conso&svc=' + encodeURIComponent(l));
       <?php endif; ?>
 
       // Incidents & renouvellement
@@ -10276,7 +10390,27 @@ function tableSearch(inp, tbodyId, countId) {
     tr.style.display = match ? '' : 'none';
     if (match) visible++;
   });
-  
+
+  // État vide DANS le tableau : quand la recherche masque toutes les lignes,
+  // un tableau réduit à ses seuls en-têtes semble cassé — on affiche une
+  // ligne explicite (créée à la volée, réutilisée ensuite).
+  let emptyRow = tbody.querySelector('tr.search-empty');
+  if (q && visible === 0 && rows.length) {
+    if (!emptyRow) {
+      emptyRow = document.createElement('tr');
+      emptyRow.className = 'search-empty';
+      const td = document.createElement('td');
+      td.className = 'empty-cell';
+      td.colSpan = (tbody.closest('table')?.querySelectorAll('thead th').length) || 12;
+      emptyRow.appendChild(td);
+      tbody.appendChild(emptyRow);
+    }
+    emptyRow.firstChild.textContent = 'Aucune ligne ne correspond à « ' + inp.value.trim() + ' »';
+    emptyRow.style.display = '';
+  } else if (emptyRow) {
+    emptyRow.style.display = 'none';
+  }
+
   if (count) {
     if (!q) count.textContent = '';
     else if (visible === 0) count.textContent = 'Aucun résultat.';
