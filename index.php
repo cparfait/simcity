@@ -7374,9 +7374,13 @@ elseif ($page === 'invoices') {
       </div>
       <div class="card" style="overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Mois</th><th>Titulaire</th><th>Forfait</th><th>Appels</th><th>Durée</th><th>SMS</th><th>MMS</th><th>Data</th><th>Surtaxés</th><th>International</th><th>Hors-forfait</th><th>Abo HT</th><th>Total HT</th></tr></thead>
+          <thead><tr><th>Mois</th><th title="Titulaire du référentiel SimCity, reconstruit depuis le journal">Titulaire (SimCity)</th><th title="Nom porté par la facture de l'opérateur, mois par mois">Nom sur la facture</th><th>Forfait</th><th>Appels</th><th>Durée</th><th>SMS</th><th>MMS</th><th>Data</th><th>Surtaxés</th><th>International</th><th>Hors-forfait</th><th>Abo HT</th><th>Total HT</th></tr></thead>
           <tbody>
-          <?php foreach(array_reverse($hist) as $hrow): $ow = $ownerAt($hrow['month_key']); ?>
+          <?php // Les deux noms côte à côte : le référentiel fait foi, mais le nom
+                // de la facture change parfois seul — c'est le signe d'un
+                // changement de titulaire que SimCity n'a jamais enregistré.
+                foreach(array_reverse($hist) as $hrow): $ow = $ownerAt($hrow['month_key']);
+                  $diff = $ow && $hrow['sfr_user'] && !simcity_name_matches($hrow['sfr_user'], $ow['name']); ?>
             <tr>
               <td style="font-weight:600;"><?=h($fmtMois($hrow['month_key']))?></td>
               <td style="font-size:.8rem;white-space:nowrap;<?=$ow && $ow['end'] !== null ? 'color:var(--text2);' : ''?>">
@@ -7385,6 +7389,8 @@ elseif ($page === 'invoices') {
                 <?php else: ?><?=h($ow['name'])?><?php endif; ?>
                 <?php if($ow && $ow['end'] !== null): ?><span class="badge badge-muted" style="font-size:.62rem;">ancien</span><?php endif; ?>
               </td>
+              <td style="font-size:.8rem;white-space:nowrap;<?=$diff ? 'color:var(--warning);' : 'color:var(--text2);'?>"
+                  <?=$diff ? 'title="Diffère du titulaire du référentiel"' : ''?>><?=h($hrow['sfr_user'] ?: '—')?></td>
               <td class="muted" style="font-size:.8rem;"><?=h($hrow['plan_name'] ?: '—')?></td>
               <td><?=(int)$hrow['calls_count']?></td>
               <td><?=$fmtDur((int)$hrow['calls_seconds'])?></td>
