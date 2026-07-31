@@ -5943,7 +5943,8 @@ elseif ($page === 'invoices') {
             $cur = $byMonth[$latestMonth] ?? null;
             if (!$cur) continue;
             $app  = $appLines[$phone] ?? null;
-            $who  = $cur['sfr_user'] ?: ($app ? trim($app['ln'] . ' ' . $app['fn']) : '');
+            // Titulaire du référentiel d'abord, nom de la facture en repli.
+            $who  = ($app ? trim($app['ln'] . ' ' . $app['fn']) : '') ?: (string)$cur['sfr_user'];
             $base = ['phone' => $phone, 'who' => $who, 'plan' => $cur['plan_name']];
 
             // Hors-forfait / surtaxés / international du mois de référence.
@@ -6357,12 +6358,16 @@ elseif ($page === 'invoices') {
           <span class="muted" style="font-size:.78rem;">sur <?=h($periodLabel)?></span>
         </form>
         <table class="data-table" style="font-size:.85rem;">
-          <thead><tr><th>Ligne</th><th>Utilisateur (SFR)</th><th>Service (SimCity)</th><th style="text-align:right;"><?=h($topCol)?></th><?php if($topCrit !== 'cost'): ?><th style="text-align:right;">Total HT</th><?php endif; ?></tr></thead>
+          <thead><tr><th>Ligne</th><th title="Titulaire du référentiel SimCity ; à défaut, le nom porté par la facture">Titulaire</th><th>Service (SimCity)</th><th style="text-align:right;"><?=h($topCol)?></th><?php if($topCrit !== 'cost'): ?><th style="text-align:right;">Total HT</th><?php endif; ?></tr></thead>
           <tbody>
           <?php if(!$top): ?><tr><td colspan="5" class="empty-cell">Aucune ligne concernée sur la période</td></tr><?php endif; ?>
-          <?php foreach($top as $t): $tapp = $appLines[$t['phone_number']] ?? null; ?>
+          <?php foreach($top as $t): $tapp = $appLines[$t['phone_number']] ?? null;
+                // Le référentiel prime sur le nom de la facture.
+                $tName = $tapp ? trim($tapp['ln'] . ' ' . $tapp['fn']) : ''; ?>
             <tr><td><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($t['phone_number'])?>" style="font-family:var(--font-mono);white-space:nowrap;"><?=h(formatPhone($t['phone_number']))?></a></td>
-                <td><?=h($t['sfr_user'] ?: '—')?></td>
+                <td><?php if($tName !== ''): ?><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$tapp['agent_id']?>" title="Toutes les lignes de cet utilisateur"><?=h($tName)?></a>
+                    <?php elseif($t['sfr_user']): ?><?=h($t['sfr_user'])?> <span class="muted" style="font-size:.72rem;" title="Nom repris de la facture, faute de titulaire au référentiel"><i class="bi bi-receipt"></i></span>
+                    <?php else: ?>—<?php endif; ?></td>
                 <td class="muted"><?=$tapp ? h($tapp['service_name'] ?: '—') : '<span class="badge badge-danger" style="font-size:.65rem;">hors SimCity</span>'?></td>
                 <td style="font-weight:600;text-align:right;font-family:var(--font-mono);"><?=$topFmt($t['val'])?></td>
                 <?php if($topCrit !== 'cost'): ?><td class="muted" style="text-align:right;font-family:var(--font-mono);"><?=$fmtEur($t['ht'])?></td><?php endif; ?></tr>
@@ -7326,16 +7331,25 @@ elseif ($page === 'invoices') {
         <div class="card" style="padding:2rem;text-align:center;color:var(--text2);">Aucune donnée de facturation pour <?=h(formatPhone($detailPhone))?>.</div>
       <?php else: $last = end($hist); ?>
       <div class="card" style="margin-bottom:1.5rem;padding:1.25rem 1.5rem;display:flex;gap:2rem;flex-wrap:wrap;align-items:center;">
+        <?php // Identité du titulaire : le référentiel fait foi. Le nom porté
+              // par la facture n'est qu'un repli, et reste affiché à part quand
+              // il diverge — c'est justement le signal du rapprochement. ?>
+        <?php $appName = $app ? trim($app['ln'] . ' ' . $app['fn']) : ''; ?>
         <div><div style="font-family:var(--font-mono);font-size:1.35rem;font-weight:700;color:var(--primary);"><?=h(formatPhone($detailPhone))?></div>
-             <div class="muted"><?=h($last['sfr_user'] ?: '—')?> <span style="opacity:.6;">(nom SFR)</span></div></div>
+             <div class="muted">
+               <?php if($appName !== ''): ?>
+                 <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$app['agent_id']?>" title="Toutes les lignes de cet utilisateur, passées et présentes"><?=h($appName)?></a>
+               <?php elseif($app): ?>Ligne non attribuée
+               <?php else: ?><span class="badge badge-danger" style="font-size:.65rem;"><i class="bi bi-question-circle"></i> Inconnue de SimCity</span><?php endif; ?>
+             </div></div>
         <?php if($app): ?>
-        <div><div style="font-weight:600;">
-             <?php if($app['agent_id']): ?>
-               <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$app['agent_id']?>" title="Toutes les lignes de cet utilisateur, passées et présentes"><?=h(trim($app['ln'].' '.$app['fn']))?></a>
-             <?php else: ?>Sans agent<?php endif; ?></div>
-             <div class="muted"><i class="bi bi-building"></i> <?=h($app['service_name'] ?: 'Aucun service')?> · statut <?=h($app['status'])?></div></div>
-        <?php else: ?>
-        <div><span class="badge badge-danger"><i class="bi bi-question-circle"></i> Inconnue de SimCity</span></div>
+        <div><div style="font-weight:600;"><i class="bi bi-building"></i> <?=h($app['service_name'] ?: 'Aucun service')?></div>
+             <div class="muted">statut <?=h($app['status'])?></div></div>
+        <?php endif; ?>
+        <?php if($last['sfr_user'] && ($appName === '' || !simcity_name_matches($last['sfr_user'], $appName))): ?>
+        <div><div class="muted">Nom sur la facture</div>
+             <div style="font-weight:600;"><i class="bi bi-receipt"></i> <?=h($last['sfr_user'])?></div>
+             <?php if($appName !== ''): ?><div class="muted" style="font-size:.78rem;">diffère du référentiel — <a href="?page=invoices&tab=reconcile&<?=$qsPeriod?>">rapprochement des noms</a></div><?php endif; ?></div>
         <?php endif; ?>
         <?php if($owner && $owner['start'] !== ''): ?>
         <div><div class="muted">Détenue par le titulaire actuel depuis</div>
@@ -7458,9 +7472,9 @@ elseif ($page === 'invoices') {
         if (!isset($flagDefs[$fflag])) $fflag = '';
         $where = []; $wArgs = [];
         if ($fq !== '') {
-            $where[] = "(t.phone_number LIKE ? OR t.sfr_user LIKE ? OR t.plan_name LIKE ? OR t.service_name LIKE ?)";
+            $where[] = "(t.phone_number LIKE ? OR t.agent_name LIKE ? OR t.sfr_user LIKE ? OR t.plan_name LIKE ? OR t.service_name LIKE ?)";
             $like = '%' . preg_replace('/\s+/', '%', $fq) . '%';
-            array_push($wArgs, $like, $like, $like, $like);
+            array_push($wArgs, $like, $like, $like, $like, $like);
         }
         if ($fplan !== '') { $where[] = "t.plan_name = ?";    $wArgs[] = $fplan; }
         if ($fsvc  !== '') { $where[] = "t.service_name = ?";  $wArgs[] = $fsvc; }
@@ -7473,7 +7487,10 @@ elseif ($page === 'invoices') {
         $wSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
         // Tri (colonnes en liste blanche)
-        $sortDefs = ['total' => 't.total_ht', 'phone' => 't.phone_number', 'user' => 't.sfr_user',
+        // Le tri « utilisateur » suit ce qui est AFFICHÉ : le titulaire du
+        // référentiel d'abord, le nom porté par la facture en repli.
+        $sortDefs = ['total' => 't.total_ht', 'phone' => 't.phone_number',
+                     'user' => "COALESCE(NULLIF(t.agent_name,''), t.sfr_user)",
                      'svc' => 't.service_name', 'plan' => 't.plan_name', 'hf' => 't.hf_ht',
                      'data' => 't.data_ko', 'sms' => 't.sms_count', 'calls' => 't.calls_seconds',
                      'intl' => 't.intl_ht', 'surtaxe' => 't.surtaxe_ht'];
@@ -7577,7 +7594,7 @@ elseif ($page === 'invoices') {
         <table class="data-table">
           <thead><tr>
             <th><a href="<?=h($sortLnk('phone'))?>">Ligne<?=$sortIco('phone')?></a></th>
-            <th><a href="<?=h($sortLnk('user'))?>">Utilisateur (SFR)<?=$sortIco('user')?></a></th>
+            <th><a href="<?=h($sortLnk('user'))?>" title="Titulaire du référentiel SimCity ; à défaut, le nom porté par la facture">Titulaire<?=$sortIco('user')?></a></th>
             <th><a href="<?=h($sortLnk('svc'))?>">Service (SimCity)<?=$sortIco('svc')?></a></th>
             <th><a href="<?=h($sortLnk('plan'))?>">Forfait<?=$sortIco('plan')?></a></th>
             <?php if($multi): ?><th style="text-align:right;">Mois</th><?php endif; ?>
@@ -7594,13 +7611,18 @@ elseif ($page === 'invoices') {
           <?php foreach($consoRows as $c): ?>
           <tr>
             <td style="font-family:var(--font-mono);white-space:nowrap;"><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($c['phone_number'])?>" title="Historique de la ligne"><?=h(formatPhone($c['phone_number']))?></a></td>
+            <?php // Le titulaire est celui du référentiel ; le nom de la facture
+                  // n'apparaît qu'à défaut, ou en second quand il diverge. ?>
             <td>
-              <?php if($c['agent_id']): ?>
-                <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$c['agent_id']?>" title="Toutes les lignes de cet utilisateur, passées et présentes"><?=h($c['sfr_user'] ?: $c['agent_name'])?></a>
-                <?php if($c['sfr_user'] && $c['agent_name'] && !simcity_name_matches($c['sfr_user'], $c['agent_name'])): ?>
-                <div class="muted" style="font-size:.72rem;"><?=h($c['agent_name'])?> <span style="opacity:.7;">(SimCity)</span></div>
+              <?php if($c['agent_id'] && (string)$c['agent_name'] !== ''): ?>
+                <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$c['agent_id']?>" title="Toutes les lignes de cet utilisateur, passées et présentes"><?=h($c['agent_name'])?></a>
+                <?php if($c['sfr_user'] && !simcity_name_matches($c['sfr_user'], $c['agent_name'])): ?>
+                <div class="muted" style="font-size:.72rem;" title="Nom porté par la facture de l'opérateur"><i class="bi bi-receipt"></i> <?=h($c['sfr_user'])?></div>
                 <?php endif; ?>
-              <?php else: ?><?=h($c['sfr_user'] ?: '—')?><?php endif; ?>
+              <?php elseif($c['sfr_user']): ?>
+                <?=h($c['sfr_user'])?>
+                <div class="muted" style="font-size:.72rem;" title="Aucun titulaire dans le référentiel : nom repris de la facture"><i class="bi bi-receipt"></i> nom de la facture</div>
+              <?php else: ?>—<?php endif; ?>
             </td>
             <td class="muted"><?=(int)$c['in_app'] ? h($c['service_name'] ?: '—') : '<span class="badge badge-danger" style="font-size:.65rem;">hors SimCity</span>'?></td>
             <td class="muted" style="font-size:.8rem;"><?=h($c['plan_name'] ?: '—')?></td>
