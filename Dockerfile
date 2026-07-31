@@ -31,6 +31,14 @@ RUN printf '<Directory /var/www/html>\n    AllowOverride All\n    Options -Index
 
 COPY . /var/www/html/
 
+# install.php ne sert qu'aux installations manuelles (LAMP / WAMP) : il crée la
+# base et le compte admin. En Docker, le schéma s'applique tout seul au premier
+# chargement (index.php → schema.php), donc le fichier n'a aucun usage — mais il
+# réinitialise le mot de passe du super-admin SANS authentification. On le retire
+# de l'image plutôt que de compter sur le .htaccess, qu'un Apache mal configuré
+# ou un reverse proxy servant le webroot autrement pourrait ignorer.
+RUN rm -f /var/www/html/install.php
+
 # Active la protection Apache (le dépôt versionne « htaccess » sans point)
 RUN mv /var/www/html/htaccess /var/www/html/.htaccess \
  && mkdir -p /var/www/html/uploads /var/www/html/backups \

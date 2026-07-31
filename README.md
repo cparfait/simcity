@@ -122,6 +122,11 @@ définie prime sur la base et verrouille 🔒 le champ dans l'interface.
 
 ### 3. Créer les tables
 
+> Étape réservée aux installations manuelles (LAMP / WAMP). **En Docker, il n'y a
+> rien à faire** : le schéma s'applique seul au premier chargement d'`index.php`,
+> et `install.php` est retiré de l'image (il réinitialise le mot de passe du
+> super-administrateur sans authentification).
+
 Accédez à `install.php` depuis votre navigateur :
 
 ```
@@ -309,7 +314,7 @@ simcity/
 ├── config.php        # Configuration (DB, sessions, uploads) — ne pas versionner en prod
 ├── index.php         # Application principale
 ├── schema.php        # Schéma et migrations de la base de données
-├── install.php       # Installation initiale — à supprimer après usage
+├── install.php       # Installation initiale (LAMP/WAMP) — retiré de l'image Docker
 ├── reset.php         # Réinitialisation complète — à supprimer après usage
 ├── import_lib.php    # Import CSV en masse (Paramètres → Maintenance)
 ├── invoice_lib.php   # Factures opérateur : parseur PDF, remise marché, noms
