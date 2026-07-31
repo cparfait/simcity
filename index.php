@@ -10727,7 +10727,10 @@ h1,h2,h3,h4,h5,h6{color:var(--text-strong)}
 .sidebar-section{padding:.85rem 1rem .3rem;font-size:.64rem;color:var(--text3);font-weight:700;text-transform:uppercase;letter-spacing:.13em;}
 .sidebar-nav{flex:1;padding:.5rem;overflow-y:auto;}
 .nav-item{display:flex;align-items:center;gap:.75rem;padding:.6rem 1rem;border-radius:var(--radius-sm);color:var(--text2);text-decoration:none;font-size:.875rem;font-weight:500;transition:all .18s ease;}
-.nav-item:hover{background:var(--bg3);color:var(--text-strong)} .nav-item.active{color:var(--primary);font-weight:600}
+.nav-item:hover{background:var(--bg3);color:var(--text-strong)}
+/* Page courante : pastille teintée en plus de la couleur, pour que le repère
+   tienne au coup d'œil et pas seulement au contraste du texte. */
+.nav-item.active,.nav-item.active:hover{background:var(--primary-dim);color:var(--primary);font-weight:600}
 .nav-icon{width:20px;text-align:center;font-size:1.02rem;flex-shrink:0} .nav-item.active .nav-icon{color:var(--primary)}
 .btn-hamburger{display:none;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:var(--radius-sm);width:38px;height:38px;font-size:1.25rem;align-items:center;justify-content:center;cursor:pointer}
 .btn-hamburger:hover{background:var(--bg3)}
