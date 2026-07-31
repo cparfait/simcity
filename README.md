@@ -282,6 +282,8 @@ Le module compare ce que l'opérateur **facture** à ce que contient le référe
 
 **Ce que le parseur lit dans les factures SFR :** le détail par ligne (utilisateur, forfait, appels, SMS/MMS, data, surtaxés, international, hors-forfait), et la **remise marché** écrite en clair dans chaque bloc (`Remise sur abonnement (96,00% de 20,00€ HT)`) — d'où le prix catalogue, le taux appliqué et l'économie réelle du marché. Types reconnus : `9A…` mensuelle, `9T…` terminaux, `9AF…` régularisation, `9AA…` avoir.
 
+Le **libellé du forfait est nettoyé de sa période de prorata** (`Forfait … du 02/06/2026 au 30/06/2026` → `Forfait …`) : une ligne activée ou résiliée en cours de mois est facturée au prorata et la facture accole alors les dates au nom du forfait, ce qui créait autant de faux forfaits que de prorata dans la liste de filtres. Les factures déjà importées sont nettoyées une fois au démarrage.
+
 **Ce que couvrent les compteurs.** Le chiffre « Lignes mobiles facturées » et tout ce qui en découle (graphiques, tops, alertes, consommations) sont construits sur le **détail par ligne** des factures `9A…`. Les `9T…` (terminaux) et les `9AF…` / `9AA…` (régularisations et avoirs) n'ont pas ce détail : elles ont leur propre section repliable, et la carte principale rappelle le montant qu'elle ne comprend pas. Un net de régularisations proche de zéro signifie qu'une régularisation a été compensée par son avoir.
 
 > Le **vidage des données de test** et la **réinitialisation complète** suppriment aussi les factures et leurs PDF archivés : elles décrivent le parc effacé, et le module analyserait sinon des numéros qui n'existent plus.

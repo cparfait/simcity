@@ -335,6 +335,22 @@ function simcity_invoice_parse_lines(string $text): array {
     return $out;
 }
 
+/** Libellé de forfait débarrassé de la période de facturation.
+ *  Une ligne activée ou résiliée en cours de mois est facturée au prorata et
+ *  la facture accole alors les dates au nom du forfait (« … du 02/06/2026 au
+ *  30/06/2026 »). Ce suffixe n'appartient pas au forfait : gardé tel quel, il
+ *  crée autant de faux forfaits que de prorata dans les listes de filtres. */
+function simcity_invoice_plan_label(?string $name): ?string {
+    if ($name === null) return null;
+    $d = '\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}';
+    $name = preg_replace(
+        ['/\s+du\s+' . $d . '\s+au\s+' . $d . '\s*$/ui',   // « du … au … »
+         '/\s+(?:à partir |a partir )?du\s+' . $d . '\s*$/ui',
+         '/\s+au\s+' . $d . '\s*$/ui'],
+        '', $name);
+    return trim(preg_replace('/\s+/u', ' ', (string)$name));
+}
+
 function simcity_invoice_parse_line_block(string $block): ?array {
     if (!preg_match('/Référence\s*:\s*((?:\d{2}\.){4}\d{2})/u', $block, $m)) return null;
     $phone = str_replace('.', '', $m[1]);
@@ -392,6 +408,7 @@ function simcity_invoice_parse_line_block(string $block): ?array {
         // (nom d'utilisateur sur la même ligne, montant entièrement remisé…).
         $r['plan_name'] = trim($mm[1]);
     }
+    if ($r['plan_name'] !== null) $r['plan_name'] = simcity_invoice_plan_label($r['plan_name']);
 
     // ── Remise marché : « Remise sur abonnement (96,00% de 20,00€ HT) ».
     // Le taux et le prix catalogue sont écrits en clair dans chaque bloc : ils

@@ -60,6 +60,16 @@ check('L2 hors-forfait total', 2.12, $l2['hf_ht']);
 check('L2 data (Ko)',     575601, $l2['data_ko']);
 check('L2 total HT (repli abo+conso, montant décroché)', 3.37, $l2['total_ht']);
 
+echo "── Libellés de forfait : périodes de prorata retirées\n";
+check('du … au …',   'Forfait Mobile 5G+ Eco Illimité',
+    simcity_invoice_plan_label('Forfait Mobile 5G+ Eco Illimité du 02/06/2026 au 30/06/2026'));
+check('du … seul',   'Forfait Mobile Eco 5Go',
+    simcity_invoice_plan_label('Forfait Mobile Eco 5Go du 2/6/26'));
+check('au … seul',   'Forfait Mobile Eco 5Go',
+    simcity_invoice_plan_label('Forfait Mobile Eco 5Go au 30/06/2026'));
+check('libellé propre inchangé', 'Forfait Mobile 5G Eco 1Go',
+    simcity_invoice_plan_label('Forfait Mobile 5G Eco 1Go'));
+
 echo "── Normalisation des noms\n";
 check('civilité + accents', 'CAZAUX RIBEIRE ANAIS', simcity_inv_normalize_name('Mme CAZAUX RIBEIRE Anaïs'));
 check('date année 2 chiffres', '2026-03-30', simcity_inv_date('30/03/26'));

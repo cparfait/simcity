@@ -654,6 +654,26 @@ function simcity_apply_schema(PDO $pdo): void
     // base, elle continuerait de primer sur l'UPN et de casser le bind.
     $pdo->exec("DELETE FROM settings WHERE setting_key='ldap_user_dn_template'");
 
+    // ── Forfaits facturés : retrait des périodes de prorata ──────
+    // Les factures accolent la période au libellé quand la ligne est facturée
+    // au prorata (« … du 02/06/2026 au 30/06/2026 »). Les factures déjà
+    // importées gardaient ces variantes, qui dédoublaient la liste des
+    // forfaits de l'onglet Consommations. Exécuté une seule fois (verrou en
+    // base) ; les imports suivants sont normalisés par le parseur.
+    $donePlan = $pdo->query("SELECT setting_value FROM settings WHERE setting_key='inv_plan_labels_v1'")->fetchColumn();
+    if ($donePlan === false || $donePlan === '' || $donePlan === '0') {
+        require_once __DIR__ . '/invoice_lib.php';
+        $planRows = $pdo->query("SELECT DISTINCT plan_name FROM invoice_lines
+                                 WHERE plan_name IS NOT NULL AND plan_name <> ''")->fetchAll(PDO::FETCH_COLUMN);
+        $updPlan = $pdo->prepare("UPDATE invoice_lines SET plan_name=? WHERE plan_name=?");
+        foreach ($planRows as $pn) {
+            $clean = simcity_invoice_plan_label($pn);
+            if ($clean !== null && $clean !== '' && $clean !== $pn) $updPlan->execute([$clean, $pn]);
+        }
+        $pdo->prepare("INSERT INTO settings (setting_key, setting_value, label) VALUES ('inv_plan_labels_v1','1','Nettoyage initial des libellés de forfait facturés')
+                       ON DUPLICATE KEY UPDATE setting_value='1'")->execute();
+    }
+
     // ── Normalisation unique des noms / e-mails existants ────────
     // Nom en MAJUSCULES, prénom en Casse-Titre (composés gérés), e-mail en
     // minuscules. Exécutée une seule fois (verrou en base) ; les écritures
