@@ -157,21 +157,39 @@ function ldap_esc(string $v): string {
 /**
  * Vrai si l'utilisateur appartient au groupe AD (groupes imbriqués inclus).
  * `$group` peut être un DN (CN=...,DC=...) ou un simple nom (cn/sAMAccountName).
+ *
+ * Trois voies, testées dans cet ordre : appartenance récursive (memberOf en
+ * chaîne), appartenance directe (memberOf), puis GROUPE PRIMAIRE.
  */
 function ldap_user_in_group($conn, string $base, string $username, string $group): bool {
     $group = trim($group);
     if ($group === '') return true;
+
+    // Résolution du groupe : son DN, et son « jeton de groupe primaire » (le
+    // RID, 513 pour « Utilisateurs du domaine »). primaryGroupToken est un
+    // attribut CONSTRUIT : Active Directory ne le renvoie que s'il est demandé
+    // nommément, il n'apparaît jamais dans un résultat par défaut.
     $groupDn = $group;
-    // Nom simple -> résoudre le DN du groupe
+    $primaryToken = null;
     if (!str_contains($group, '=')) {
+        // Nom simple -> résoudre le DN du groupe
         $g = ldap_esc($group);
-        $sr = @ldap_search($conn, $base, "(&(objectClass=group)(|(cn={$g})(sAMAccountName={$g})))", ['cn'], 0, 1);
+        $sr = @ldap_search($conn, $base, "(&(objectClass=group)(|(cn={$g})(sAMAccountName={$g})))",
+            ['cn', 'primarygrouptoken'], 0, 1);
         $entries = $sr ? ldap_get_entries($conn, $sr) : false;
         if (!$entries || $entries['count'] === 0) return false;
-        $groupDn = $entries[0]['dn'];
+        $groupDn      = $entries[0]['dn'];
+        $primaryToken = $entries[0]['primarygrouptoken'][0] ?? null;
+    } else {
+        $sr = @ldap_read($conn, $groupDn, '(objectClass=*)', ['primarygrouptoken']);
+        if ($sr) {
+            $e = ldap_get_entries($conn, $sr);
+            if ($e && $e['count'] > 0) $primaryToken = $e[0]['primarygrouptoken'][0] ?? null;
+        }
     }
+
     $u = ldap_esc($username);
-    // Appartenance récursive (matching rule AD LDAP_MATCHING_RULE_IN_CHAIN)
+    // 1) Appartenance récursive (matching rule AD LDAP_MATCHING_RULE_IN_CHAIN)
     $gDnEsc = ldap_esc($groupDn);
     $sr = @ldap_search($conn, $base,
         "(&(sAMAccountName={$u})(memberOf:1.2.840.113556.1.4.1941:={$gDnEsc}))", ['cn'], 0, 1);
@@ -179,7 +197,7 @@ function ldap_user_in_group($conn, string $base, string $username, string $group
         $entries = ldap_get_entries($conn, $sr);
         if ($entries && $entries['count'] > 0) return true;
     }
-    // Repli : appartenance directe via memberOf
+    // 2) Repli : appartenance directe via memberOf
     $sr = @ldap_search($conn, $base, "(sAMAccountName={$u})", ['memberof'], 0, 1);
     if ($sr) {
         $entries = ldap_get_entries($conn, $sr);
@@ -187,6 +205,19 @@ function ldap_user_in_group($conn, string $base, string $username, string $group
             for ($i = 0; $i < $entries[0]['memberof']['count']; $i++) {
                 if (strcasecmp($entries[0]['memberof'][$i], $groupDn) === 0) return true;
             }
+        }
+    }
+    // 3) Groupe PRIMAIRE — indispensable pour « Utilisateurs du domaine ».
+    // AD ne matérialise pas cette appartenance dans member/memberOf : elle vit
+    // dans l'attribut primaryGroupID de l'utilisateur (le RID du groupe). Sans
+    // ce contrôle, désigner « Utilisateurs du domaine » comme groupe requis
+    // refuse TOUS les comptes, silencieusement, et l'AD paraît hors service.
+    if ($primaryToken !== null && $primaryToken !== '') {
+        $sr = @ldap_search($conn, $base,
+            "(&(sAMAccountName={$u})(primaryGroupID=" . (int)$primaryToken . "))", ['cn'], 0, 1);
+        if ($sr) {
+            $entries = ldap_get_entries($conn, $sr);
+            if ($entries && $entries['count'] > 0) return true;
         }
     }
     return false;
@@ -230,6 +261,12 @@ function ldap_authenticate_user(string $username, string $password): ?array {
     // seul un membre peut se connecter. Échec fermé si non vérifiable.
     if ($requiredGroup !== '') {
         if ($base === '' || !ldap_user_in_group($conn, $base, $username, $requiredGroup)) {
+            // Sans cette trace, le refus est indiscernable d'un mot de passe
+            // erroné : le bind a réussi, l'utilisateur voit « identifiants
+            // incorrects » et l'AD paraît hors service. Le cas le plus courant
+            // est un groupe requis mal choisi.
+            error_log("SimCity LDAP: bind réussi pour « {$username} » mais appartenance au groupe requis « {$requiredGroup} » non vérifiée"
+                . ($base === '' ? ' (base DN vide)' : '') . " — connexion refusée.");
             ldap_unbind($conn);
             return null;
         }
