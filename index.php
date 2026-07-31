@@ -2673,6 +2673,55 @@ function fetchEntityHistory($pdo, $type, $id) {
     } return $res;
 }
 
+/** Détention successive d'une ligne, reconstruite depuis le journal.
+ *  Renvoie, de la plus ancienne à la plus récente, des périodes
+ *  ['agent_id', 'name', 'start' => 'Y-m-d', 'end' => 'Y-m-d'|null].
+ *
+ *  Le référentiel ne garde que le titulaire courant (mobile_lines.agent_id) :
+ *  les changements ne vivent que dans history_logs. Deux formes d'attribution
+ *  y coexistent — la fiche ligne écrit « Ligne/SIM attribuée à X » avec
+ *  l'agent_id, l'import CSV initial écrit « Import initial — attribuée à X »
+ *  sans agent_id (le nom est alors lu dans le libellé). Toute sortie de
+ *  dotation (retrait, désattribution, libération au départ de l'agent,
+ *  archivage) ferme la période en cours. */
+function simcity_line_periods(PDO $pdo, int $lineId): array {
+    $st = $pdo->prepare("SELECT h.action_date, h.action_desc, h.agent_id,
+                TRIM(CONCAT(IFNULL(a.last_name,''), ' ', IFNULL(a.first_name,''))) agent_name
+            FROM history_logs h LEFT JOIN agents a ON a.id = h.agent_id
+            WHERE h.entity_type='line' AND h.entity_id=? ORDER BY h.action_date, h.id");
+    $st->execute([$lineId]);
+
+    $periods = []; $open = null;
+    foreach ($st->fetchAll() as $ev) {
+        $date = substr((string)$ev['action_date'], 0, 10);
+        $desc = (string)$ev['action_desc'];
+        if (preg_match('/attribu[ée]e?\s+à\s*(.*)$/ui', $desc, $m)) {
+            if ($open !== null) { $open['end'] = $date; $periods[] = $open; }
+            $open = ['agent_id' => $ev['agent_id'] !== null ? (int)$ev['agent_id'] : null,
+                     'name'     => trim($ev['agent_name'] ?: $m[1]) ?: 'Utilisateur inconnu',
+                     'start'    => $date, 'end' => null];
+        } elseif (preg_match('/retir[ée]e?\s+de la dotation|d[ée]sattribu|lib[ée]r[ée]e?\s+automatiquement|archiv/ui', $desc)) {
+            if ($open !== null) { $open['end'] = $date; $periods[] = $open; $open = null; }
+        }
+    }
+    if ($open !== null) $periods[] = $open;
+    return $periods;
+}
+
+/** Durée écoulée depuis une date, en clair (« 1 an et 4 mois »). */
+function simcity_duree_depuis(string $ymd): string {
+    $d = date_create($ymd);
+    if (!$d) return '';
+    $i = date_diff($d, date_create('today'));
+    if ($i->invert) return '';
+    $y = (int)$i->y; $m = (int)$i->m;
+    if ($y === 0 && $m === 0) return $i->d <= 1 ? "aujourd'hui" : $i->d . ' jours';
+    $out = [];
+    if ($y) $out[] = $y . ' an' . ($y > 1 ? 's' : '');
+    if ($m) $out[] = $m . ' mois';
+    return implode(' et ', $out);
+}
+
 function statusBadge($s) {
     $map = ['Stock'=>['En Stock / Dispo','badge-success'], 'Deployed'=>['Déployé / Actif','badge-info'], 'Repair'=>['Réparation','badge-warning'], 'HS'=>['Casse / Rebus','badge-danger'], 'Lost'=>['Perdu / Volé','badge-danger'], 'Active'=>['Active','badge-success'], 'Suspended'=>['Suspendue','badge-warning'], 'Resiliated'=>['Résiliée','badge-danger']];
     [$label, $cls] = $map[$s] ?? [$s, 'badge-muted']; return "<span class='badge $cls'>$label</span>";
@@ -5845,7 +5894,8 @@ elseif ($page === 'invoices') {
     // saisie « +33 6… » est reconnue dans un onglet et « hors SimCity » dans
     // les autres. À numéro égal, la ligne active écrase l'archivée.
     $appLines = [];
-    foreach ($pdo->query("SELECT l.phone_number, l.archived, l.status, l.agent_id, COALESCE(l.sim_vierge,0) sim_vierge,
+    foreach ($pdo->query("SELECT l.id, l.phone_number, l.archived, l.status, l.agent_id, COALESCE(l.sim_vierge,0) sim_vierge,
+            DATE(l.created_at) created_on, l.activation_date,
             IFNULL(a.first_name,'') fn, IFNULL(a.last_name,'') ln, IFNULL(s.name,'') service_name,
             REPLACE(IFNULL(b.account_number,''), ' ', '') acct
         FROM mobile_lines l LEFT JOIN agents a ON l.agent_id=a.id LEFT JOIN services s ON l.service_id=s.id
@@ -6978,11 +7028,298 @@ elseif ($page === 'invoices') {
         // du référentiel (« +33 6… », espaces, points) — il doit être canonisé
         // comme partout ailleurs, sinon la ligne paraît sans facture.
         $detailPhone = simcity_phone_canon((string)($_GET['line'] ?? ''));
-        if ($detailPhone !== ''):
+        $detailAgent = max(0, (int)($_GET['agent'] ?? 0));
+
+        // Repère de détention dessiné sur les graphiques : bande grisée sur
+        // les mois qui précèdent la prise en main de la ligne, trait à la
+        // bascule. Les mois antérieurs sont la consommation d'un autre agent :
+        // sans ce repère, la courbe se lit comme celle du titulaire actuel.
+        $ownMarkJs = <<<'JS'
+        const simcityOwnMark = {
+          id:'simcityOwnMark',
+          _edge(x, ar, i){
+            const p = x.getPixelForValue(i);
+            if (i <= 0) return ar.left;
+            return (p + x.getPixelForValue(i - 1)) / 2;
+          },
+          beforeDatasetsDraw(chart, args, opts){
+            const marks = (opts && opts.marks) || [];
+            const x = chart.scales.x, ar = chart.chartArea, ctx = chart.ctx;
+            marks.forEach(m => {
+              if (!m.shade) return;
+              const px = simcityOwnMark._edge(x, ar, m.i);
+              if (px <= ar.left + 1) return;
+              ctx.save();
+              ctx.fillStyle = 'rgba(148,163,184,.16)';
+              ctx.fillRect(ar.left, ar.top, Math.min(px, ar.right) - ar.left, ar.bottom - ar.top);
+              ctx.restore();
+            });
+          },
+          afterDatasetsDraw(chart, args, opts){
+            const marks = (opts && opts.marks) || [];
+            const x = chart.scales.x, ar = chart.chartArea, ctx = chart.ctx;
+            marks.forEach((m, n) => {
+              const px = simcityOwnMark._edge(x, ar, m.i);
+              if (px < ar.left - 1 || px > ar.right + 1) return;
+              const col = m.color || '#10b981';
+              ctx.save();
+              ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.setLineDash([5,4]);
+              ctx.beginPath(); ctx.moveTo(px, ar.top); ctx.lineTo(px, ar.bottom); ctx.stroke();
+              ctx.setLineDash([]);
+              if (m.txt) {
+                ctx.font = '600 11px system-ui, -apple-system, sans-serif';
+                const w = ctx.measureText(m.txt).width + 12;
+                const bx = (px + w + 4 <= ar.right) ? px + 4 : Math.max(ar.left, px - w - 4);
+                const by = ar.top + 4 + (n % 3) * 21;
+                ctx.fillStyle = col; ctx.globalAlpha = .92;
+                ctx.fillRect(bx, by, w, 18);
+                ctx.globalAlpha = 1; ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle';
+                ctx.fillText(m.txt, bx + 6, by + 9);
+              }
+              ctx.restore();
+            });
+          }
+        };
+        Chart.register(simcityOwnMark);
+        JS;
+
+        if ($detailAgent > 0):
+            // ── Vue « utilisateur » : toutes ses lignes, passées et présentes ──
+            $agSt = $pdo->prepare("SELECT a.id, a.first_name, a.last_name, a.archived, IFNULL(s.name,'') service_name
+                    FROM agents a LEFT JOIN services s ON a.service_id = s.id WHERE a.id=?");
+            $agSt->execute([$detailAgent]);
+            $agent = $agSt->fetch() ?: null;
+
+            $agentLines = []; $aggMonths = []; $agentFull = '';
+            if ($agent) {
+                $agentFull = trim($agent['first_name'] . ' ' . $agent['last_name']);
+                // Lignes actuelles + toutes celles dont le journal le cite.
+                $idSt = $pdo->prepare("SELECT id FROM mobile_lines WHERE agent_id=?
+                    UNION SELECT entity_id FROM history_logs WHERE entity_type='line' AND agent_id=?
+                    UNION SELECT entity_id FROM history_logs WHERE entity_type='line' AND agent_id IS NULL AND action_desc LIKE ?");
+                $idSt->execute([$detailAgent, $detailAgent, '%attribuée à ' . $agentFull . '%']);
+
+                $mlSt = $pdo->prepare("SELECT id, phone_number, archived, status, agent_id, DATE(created_at) created_on
+                                       FROM mobile_lines WHERE id=?");
+                $ilSt = $pdo->prepare("SELECT * FROM invoice_lines WHERE phone_number=? ORDER BY month_key");
+                foreach ($idSt->fetchAll(PDO::FETCH_COLUMN) as $lid) {
+                    $mlSt->execute([(int)$lid]);
+                    $ml = $mlSt->fetch();
+                    if (!$ml || !$ml['phone_number']) continue;      // SIM vierge : rien à facturer
+
+                    // Les journaux d'import initial ne portent pas d'agent_id,
+                    // seulement « attribuée à Prénom Nom » : on retombe alors
+                    // sur la règle de rapprochement de noms de l'application.
+                    $per = array_values(array_filter(simcity_line_periods($pdo, (int)$lid),
+                        fn($p) => $p['agent_id'] === $detailAgent
+                               || ($p['agent_id'] === null && $agentFull !== '' && simcity_name_matches($p['name'], $agentFull))));
+                    $guess = false;
+                    if (!$per && (int)$ml['agent_id'] === $detailAgent) {
+                        // Ligne attribuée mais journal muet (antérieure au journal).
+                        $per = [['agent_id' => $detailAgent, 'name' => $agentFull,
+                                 'start' => (string)$ml['created_on'], 'end' => null]];
+                        $guess = true;
+                    }
+                    if (!$per) continue;
+
+                    $owns = function (string $mk) use ($per): bool {
+                        foreach ($per as $p) {
+                            if (substr($p['start'], 0, 7) <= $mk && ($p['end'] === null || substr($p['end'], 0, 7) >= $mk)) return true;
+                        }
+                        return false;
+                    };
+                    $canon = simcity_phone_canon($ml['phone_number']);
+                    $ilSt->execute([$canon]);
+                    $rows = array_values(array_filter($ilSt->fetchAll(), fn($r) => $owns($r['month_key'])));
+
+                    // Cumuls de la ligne et cumuls tous mois confondus. Les
+                    // montants restent des flottants, les compteurs des entiers.
+                    $eurCols = ['total_ht','abo_ht','hf_ht','surtaxe_ht','intl_ht'];
+                    $intCols = ['data_ko','calls_seconds','calls_count','sms_count','mms_count'];
+                    $zero = array_fill_keys(array_merge($eurCols, $intCols), 0);
+                    $sum  = $zero;
+                    foreach ($rows as $r) {
+                        $mk = $r['month_key'];
+                        if (!isset($aggMonths[$mk])) $aggMonths[$mk] = $zero + ['n' => 0];
+                        foreach ($eurCols as $k) { $sum[$k] += (float)$r[$k]; $aggMonths[$mk][$k] += (float)$r[$k]; }
+                        foreach ($intCols as $k) { $sum[$k] += (int)$r[$k];   $aggMonths[$mk][$k] += (int)$r[$k]; }
+                        $aggMonths[$mk]['n']++;
+                    }
+                    $agentLines[] = ['id'=>(int)$lid, 'phone'=>$canon, 'archived'=>(int)$ml['archived'],
+                        'status'=>$ml['status'], 'current'=>(int)$ml['agent_id'] === $detailAgent,
+                        'periods'=>$per, 'guess'=>$guess, 'nbm'=>count($rows), 'sum'=>$sum,
+                        'plan'=>$rows ? end($rows)['plan_name'] : null];
+                }
+                ksort($aggMonths);
+                usort($agentLines, fn($a, $b) => [$b['current'], $b['periods'][0]['start'] ?? '']
+                                             <=> [$a['current'], $a['periods'][0]['start'] ?? '']);
+            }
+            $aggAxis = array_keys($aggMonths);
+            // Un repère par prise de ligne, posé sur son premier mois facturé.
+            $aggMarks = [];
+            foreach ($agentLines as $al) {
+                $startMk = substr($al['periods'][0]['start'], 0, 7);
+                foreach ($aggAxis as $i => $mk) {
+                    if ($mk >= $startMk) {
+                        if ($i > 0) $aggMarks[] = ['i'=>$i, 'txt'=>formatPhone($al['phone']), 'color'=>'#0891b2'];
+                        break;
+                    }
+                }
+            }
+    ?>
+      <p style="margin-bottom:1rem;"><a href="?page=invoices&tab=conso&<?=$qsPeriod?>" class="btn-secondary" style="text-decoration:none;font-size:.82rem;padding:.4rem .9rem;"><i class="bi bi-arrow-left"></i> Toutes les lignes</a></p>
+      <?php if(!$agent): ?>
+        <div class="card" style="padding:2rem;text-align:center;color:var(--text2);">Utilisateur introuvable dans le référentiel.</div>
+      <?php else: ?>
+      <div class="card" style="margin-bottom:1.5rem;padding:1.25rem 1.5rem;display:flex;gap:2rem;flex-wrap:wrap;align-items:center;">
+        <div><div style="font-size:1.35rem;font-weight:700;color:var(--primary);"><?=h(trim($agent['last_name'].' '.$agent['first_name']))?><?=$agent['archived'] ? ' 🗄️' : ''?></div>
+             <div class="muted"><i class="bi bi-building"></i> <?=h($agent['service_name'] ?: 'Aucun service')?></div></div>
+        <div><div class="muted">Lignes détenues</div>
+             <div style="font-weight:600;"><?=count($agentLines)?> au total · <?=count(array_filter($agentLines, fn($l) => $l['current']))?> en cours</div></div>
+        <div style="margin-left:auto;"><div class="muted">Total facturé sur ses périodes</div>
+             <div style="font-weight:700;font-size:1.1rem;"><?=$fmtEur(array_sum(array_column(array_column($agentLines,'sum'),'total_ht')))?> HT</div></div>
+        <div><a href="?page=lines&tab=active&q=<?=urlencode(trim($agent['last_name'].' '.$agent['first_name']))?>" class="btn-secondary" style="text-decoration:none;font-size:.82rem;padding:.4rem .9rem;"><i class="bi bi-person-vcard"></i> Fiche</a></div>
+      </div>
+
+      <?php if(!$agentLines): ?>
+        <div class="card" style="padding:2rem;text-align:center;color:var(--text2);">
+          Aucune ligne rattachée à cet utilisateur, ni actuellement ni dans l'historique.</div>
+      <?php else: ?>
+      <div class="card" style="margin-bottom:1.5rem;">
+        <div class="card-header"><i class="bi bi-bar-chart-line"></i> Évolution mensuelle — toutes ses lignes cumulées</div>
+        <div style="padding:1rem;height:280px;"><canvas id="invAgent"></canvas></div>
+        <p class="muted" style="margin:0;padding:0 1rem 1rem;font-size:.8rem;">
+          Chaque mois ne compte que les lignes détenues à cette date : la consommation des titulaires
+          précédents ou suivants est exclue. Les traits repèrent la prise en main de chaque ligne.</p>
+      </div>
+
+      <div class="card" style="overflow-x:auto;margin-bottom:1.5rem;">
+        <div class="card-header"><i class="bi bi-sim"></i> Ses lignes</div>
+        <table class="data-table">
+          <thead><tr><th>Ligne</th><th>Détention</th><th>Forfait</th><th style="text-align:right;">Mois facturés</th>
+            <th>Appels</th><th style="text-align:right;">SMS</th><th style="text-align:right;">Data</th>
+            <th style="text-align:right;">Hors-forfait</th><th style="text-align:right;">Total HT</th></tr></thead>
+          <tbody>
+          <?php foreach($agentLines as $al): ?>
+            <tr>
+              <td style="font-family:var(--font-mono);white-space:nowrap;">
+                <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($al['phone'])?>" title="Historique complet de la ligne"><?=h(formatPhone($al['phone']))?></a>
+                <?php if(!$al['current']): ?><span class="badge badge-muted" style="font-size:.65rem;">rendue</span><?php endif; ?>
+                <?php if($al['archived']): ?><span class="badge badge-danger" style="font-size:.65rem;">résiliée</span><?php endif; ?>
+              </td>
+              <td style="font-size:.8rem;white-space:nowrap;">
+                <?php foreach($al['periods'] as $p): $ds = $p['start'] !== '' ? strtotime($p['start']) : false; ?>
+                  <div><?= $ds ? 'du ' . h(date('d/m/Y', $ds)) : '<span class="muted">début inconnu</span>' ?>
+                    <?= $p['end'] === null ? '<strong>à aujourd\'hui</strong>' : 'au ' . h(date('d/m/Y', (int)strtotime($p['end']))) ?></div>
+                <?php endforeach; ?>
+                <?php if($al['guess']): ?><div class="muted" style="font-size:.72rem;">date de création de la fiche (non journalisée)</div><?php endif; ?>
+              </td>
+              <td class="muted" style="font-size:.8rem;"><?=h($al['plan'] ?: '—')?></td>
+              <td style="text-align:right;"><?=(int)$al['nbm']?></td>
+              <td><?=(int)$al['sum']['calls_count']?> <span class="muted">(<?=$fmtDur((int)$al['sum']['calls_seconds'])?>)</span></td>
+              <td style="text-align:right;"><?=(int)$al['sum']['sms_count'] ?: '—'?></td>
+              <td style="text-align:right;"><?=$fmtData((int)$al['sum']['data_ko'])?></td>
+              <td style="text-align:right;color:<?=$al['sum']['hf_ht']>0?'var(--warning)':'inherit'?>;font-weight:600;"><?=$al['sum']['hf_ht']>0 ? $fmtEur($al['sum']['hf_ht']) : '—'?></td>
+              <td style="text-align:right;font-weight:700;"><?=$fmtEur($al['sum']['total_ht'])?></td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+
+      <?php if($aggMonths): ?>
+      <div class="card" style="overflow-x:auto;">
+        <div class="card-header"><i class="bi bi-calendar3"></i> Détail mensuel cumulé</div>
+        <table class="data-table">
+          <thead><tr><th>Mois</th><th style="text-align:right;">Lignes</th><th>Appels</th><th>Durée</th><th style="text-align:right;">SMS</th>
+            <th style="text-align:right;">Data</th><th style="text-align:right;">Surtaxés</th><th style="text-align:right;">International</th>
+            <th style="text-align:right;">Hors-forfait</th><th style="text-align:right;">Abo HT</th><th style="text-align:right;">Total HT</th></tr></thead>
+          <tbody>
+          <?php foreach(array_reverse($aggMonths, true) as $mk => $m): ?>
+            <tr>
+              <td style="font-weight:600;"><?=h($fmtMois($mk))?></td>
+              <td style="text-align:right;"><?=(int)$m['n']?></td>
+              <td><?=(int)$m['calls_count']?></td>
+              <td><?=$fmtDur((int)$m['calls_seconds'])?></td>
+              <td style="text-align:right;"><?=(int)$m['sms_count'] ?: '—'?></td>
+              <td style="text-align:right;"><?=$fmtData((int)$m['data_ko'])?></td>
+              <td style="text-align:right;color:<?=$m['surtaxe_ht']>0?'var(--danger)':'inherit'?>;"><?=$m['surtaxe_ht']>0 ? $fmtEur($m['surtaxe_ht']) : '—'?></td>
+              <td style="text-align:right;color:<?=$m['intl_ht']>0?'var(--danger)':'inherit'?>;"><?=$m['intl_ht']>0 ? $fmtEur($m['intl_ht']) : '—'?></td>
+              <td style="text-align:right;color:<?=$m['hf_ht']>0?'var(--warning)':'inherit'?>;font-weight:600;"><?=$m['hf_ht']>0 ? $fmtEur($m['hf_ht']) : '—'?></td>
+              <td style="text-align:right;"><?=$fmtEur($m['abo_ht'])?></td>
+              <td style="text-align:right;font-weight:700;"><?=$fmtEur($m['total_ht'])?></td>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+      <?php endif; ?>
+
+      <script src="vendor/chart.umd.min.js"></script>
+      <script>
+      (function(){
+        const el = document.getElementById('invAgent'); if(!el) return;
+        <?=$ownMarkJs?>
+
+        new Chart(el, {
+          data:{labels:<?=json_encode(array_map($fmtMois, $aggAxis))?>,
+            datasets:[
+              {type:'bar', label:'Data (Go)', yAxisID:'y', data:<?=json_encode(array_map(fn($m)=>round($m['data_ko']/1048576,2), array_values($aggMonths)))?>, backgroundColor:'rgba(79,70,229,.55)', borderRadius:4},
+              {type:'bar', label:'Appels (h)', yAxisID:'y', data:<?=json_encode(array_map(fn($m)=>round($m['calls_seconds']/3600,2), array_values($aggMonths)))?>, backgroundColor:'rgba(8,145,178,.55)', borderRadius:4},
+              {type:'line', label:'Coût total € HT', yAxisID:'y2', data:<?=json_encode(array_map(fn($m)=>round((float)$m['total_ht'],2), array_values($aggMonths)))?>, borderColor:'#f59e0b', backgroundColor:'#f59e0b', tension:.25}
+            ]},
+          options:{responsive:true,maintainAspectRatio:false,
+            scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},
+                    y:{beginAtZero:true,position:'left',ticks:{color:'#94a3b8'},grid:{color:'rgba(148,163,184,.15)'}},
+                    y2:{beginAtZero:true,position:'right',ticks:{color:'#f59e0b'},grid:{display:false}}},
+            plugins:{legend:{labels:{color:'#94a3b8'}},
+                     simcityOwnMark:{marks:<?=json_encode($aggMarks)?>}}}});
+      })();
+      </script>
+      <?php endif; endif; ?>
+
+    <?php elseif ($detailPhone !== ''):
             $st = $pdo->prepare("SELECT * FROM invoice_lines WHERE phone_number=? ORDER BY month_key");
             $st->execute([$detailPhone]);
             $hist = $st->fetchAll();
             $app = $appLines[$detailPhone] ?? null;
+
+            // ── Détention de la ligne ────────────────────────────────
+            $periods = ($app && $app['id']) ? simcity_line_periods($pdo, (int)$app['id']) : [];
+            $owner = null;
+            foreach ($periods as $p) if ($p['end'] === null) $owner = $p;
+            $ownerGuess = false;
+            if (!$owner && $app && $app['agent_id']) {
+                // Fiche attribuée mais journal muet : repli sur la création de
+                // la fiche, signalé comme tel pour ne pas afficher une date fausse.
+                $start = (string)($app['created_on'] ?: $app['activation_date']);
+                $lastEnd = $periods ? end($periods)['end'] : null;
+                if ($lastEnd && $lastEnd > $start) $start = $lastEnd;
+                $owner = ['agent_id' => (int)$app['agent_id'], 'name' => trim($app['ln'].' '.$app['fn']),
+                          'start' => $start, 'end' => null];
+                $ownerGuess = true;
+            }
+            $periodsView = $periods;
+            if ($ownerGuess && $owner['start'] !== '') $periodsView[] = $owner;
+            $ownerAt = function (string $mk) use ($periodsView): ?array {
+                $found = null;
+                foreach ($periodsView as $p) {
+                    if (substr($p['start'], 0, 7) <= $mk && ($p['end'] === null || substr($p['end'], 0, 7) >= $mk)) $found = $p;
+                }
+                return $found;
+            };
+            // Premier mois facturé sous le titulaire actuel → repère du graphique.
+            $ownerMarks = [];
+            if ($owner && $owner['start'] !== '') {
+                $startMk = substr($owner['start'], 0, 7);
+                foreach ($hist as $i => $hr) {
+                    if ($hr['month_key'] >= $startMk) {
+                        if ($i > 0) $ownerMarks[] = ['i' => $i, 'shade' => true,
+                            'txt' => 'Titulaire actuel depuis ' . $fmtMois($startMk)];
+                        break;
+                    }
+                }
+            }
     ?>
       <p style="margin-bottom:1rem;"><a href="?page=invoices&tab=conso&<?=$qsPeriod?>" class="btn-secondary" style="text-decoration:none;font-size:.82rem;padding:.4rem .9rem;"><i class="bi bi-arrow-left"></i> Toutes les lignes</a></p>
       <?php if(!$hist): ?>
@@ -6992,24 +7329,48 @@ elseif ($page === 'invoices') {
         <div><div style="font-family:var(--font-mono);font-size:1.35rem;font-weight:700;color:var(--primary);"><?=h(formatPhone($detailPhone))?></div>
              <div class="muted"><?=h($last['sfr_user'] ?: '—')?> <span style="opacity:.6;">(nom SFR)</span></div></div>
         <?php if($app): ?>
-        <div><div style="font-weight:600;"><?=h(trim($app['ln'].' '.$app['fn']) ?: 'Sans agent')?></div>
+        <div><div style="font-weight:600;">
+             <?php if($app['agent_id']): ?>
+               <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$app['agent_id']?>" title="Toutes les lignes de cet utilisateur, passées et présentes"><?=h(trim($app['ln'].' '.$app['fn']))?></a>
+             <?php else: ?>Sans agent<?php endif; ?></div>
              <div class="muted"><i class="bi bi-building"></i> <?=h($app['service_name'] ?: 'Aucun service')?> · statut <?=h($app['status'])?></div></div>
         <?php else: ?>
         <div><span class="badge badge-danger"><i class="bi bi-question-circle"></i> Inconnue de SimCity</span></div>
+        <?php endif; ?>
+        <?php if($owner && $owner['start'] !== ''): ?>
+        <div><div class="muted">Détenue par le titulaire actuel depuis</div>
+             <div style="font-weight:600;"><i class="bi bi-calendar-check"></i> <?=h(date('d/m/Y', strtotime($owner['start'])))?></div>
+             <div class="muted" style="font-size:.78rem;"><?=h(simcity_duree_depuis($owner['start']))?><?=$ownerGuess ? ' · d\'après la création de la fiche (attribution non journalisée)' : ''?></div></div>
+        <?php elseif($app && !$app['agent_id']): ?>
+        <div><div class="muted">Détention</div><div style="font-weight:600;">Ligne non attribuée</div></div>
         <?php endif; ?>
         <div style="margin-left:auto;"><div class="muted">Forfait (dernier mois)</div><div style="font-weight:600;"><?=h($last['plan_name'] ?: '—')?></div></div>
       </div>
       <div class="card" style="margin-bottom:1.5rem;">
         <div class="card-header"><i class="bi bi-bar-chart-line"></i> Évolution mensuelle</div>
         <div style="padding:1rem;height:280px;"><canvas id="invLine"></canvas></div>
+        <?php if($ownerMarks): ?>
+        <p class="muted" style="margin:0;padding:0 1rem 1rem;font-size:.8rem;">
+          La zone grisée précède la prise en main de la ligne par <strong><?=h($owner['name'])?></strong> :
+          cette consommation est celle d'un titulaire précédent.</p>
+        <?php elseif($owner): ?>
+        <p class="muted" style="margin:0;padding:0 1rem 1rem;font-size:.8rem;">
+          <strong><?=h($owner['name'])?></strong> détient la ligne sur toute la période facturée affichée.</p>
+        <?php endif; ?>
       </div>
       <div class="card" style="overflow-x:auto;">
         <table class="data-table">
-          <thead><tr><th>Mois</th><th>Forfait</th><th>Appels</th><th>Durée</th><th>SMS</th><th>MMS</th><th>Data</th><th>Surtaxés</th><th>International</th><th>Hors-forfait</th><th>Abo HT</th><th>Total HT</th></tr></thead>
+          <thead><tr><th>Mois</th><th>Titulaire</th><th>Forfait</th><th>Appels</th><th>Durée</th><th>SMS</th><th>MMS</th><th>Data</th><th>Surtaxés</th><th>International</th><th>Hors-forfait</th><th>Abo HT</th><th>Total HT</th></tr></thead>
           <tbody>
-          <?php foreach(array_reverse($hist) as $hrow): ?>
+          <?php foreach(array_reverse($hist) as $hrow): $ow = $ownerAt($hrow['month_key']); ?>
             <tr>
               <td style="font-weight:600;"><?=h($fmtMois($hrow['month_key']))?></td>
+              <td style="font-size:.8rem;white-space:nowrap;<?=$ow && $ow['end'] !== null ? 'color:var(--text2);' : ''?>">
+                <?php if(!$ow): ?><span class="muted">—</span>
+                <?php elseif($ow['agent_id']): ?><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$ow['agent_id']?>" style="color:inherit;"><?=h($ow['name'])?></a>
+                <?php else: ?><?=h($ow['name'])?><?php endif; ?>
+                <?php if($ow && $ow['end'] !== null): ?><span class="badge badge-muted" style="font-size:.62rem;">ancien</span><?php endif; ?>
+              </td>
               <td class="muted" style="font-size:.8rem;"><?=h($hrow['plan_name'] ?: '—')?></td>
               <td><?=(int)$hrow['calls_count']?></td>
               <td><?=$fmtDur((int)$hrow['calls_seconds'])?></td>
@@ -7030,6 +7391,8 @@ elseif ($page === 'invoices') {
       <script>
       (function(){
         const el = document.getElementById('invLine'); if(!el) return;
+        <?=$ownMarkJs?>
+
         new Chart(el, {
           data:{labels:<?=json_encode(array_map($fmtMois, array_column($hist,'month_key')))?>,
             datasets:[
@@ -7041,7 +7404,8 @@ elseif ($page === 'invoices') {
             scales:{x:{ticks:{color:'#94a3b8'},grid:{display:false}},
                     y:{beginAtZero:true,position:'left',ticks:{color:'#94a3b8'},grid:{color:'rgba(148,163,184,.15)'}},
                     y2:{beginAtZero:true,position:'right',ticks:{color:'#f59e0b'},grid:{display:false}}},
-            plugins:{legend:{labels:{color:'#94a3b8'}}}}});
+            plugins:{legend:{labels:{color:'#94a3b8'}},
+                     simcityOwnMark:{marks:<?=json_encode($ownerMarks)?>}}}});
       })();
       </script>
       <?php endif; ?>
@@ -7066,7 +7430,14 @@ elseif ($page === 'invoices') {
                 (SELECT IFNULL(s.name,'') FROM mobile_lines ml LEFT JOIN agents a2 ON ml.agent_id=a2.id
                     LEFT JOIN services s ON COALESCE(ml.service_id, a2.service_id)=s.id
                     WHERE $norm = l.phone_number AND ml.archived=0 LIMIT 1) service_name,
-                (SELECT COUNT(*) FROM mobile_lines ml WHERE $norm = l.phone_number AND ml.archived=0) in_app
+                (SELECT COUNT(*) FROM mobile_lines ml WHERE $norm = l.phone_number AND ml.archived=0) in_app,
+                (SELECT ml.agent_id FROM mobile_lines ml
+                    WHERE $norm = l.phone_number AND ml.archived=0 AND ml.agent_id IS NOT NULL
+                    ORDER BY ml.id LIMIT 1) agent_id,
+                (SELECT TRIM(CONCAT(IFNULL(a4.last_name,''), ' ', IFNULL(a4.first_name,''))) FROM mobile_lines ml
+                    JOIN agents a4 ON a4.id = ml.agent_id
+                    WHERE $norm = l.phone_number AND ml.archived=0
+                    ORDER BY ml.id LIMIT 1) agent_name
             FROM invoice_lines l WHERE l.month_key IN ($ph) $accWhere
             GROUP BY l.phone_number";
         $baseArgs = array_merge([$axisTo, $axisTo], $axis, $accArgs);
@@ -7223,7 +7594,14 @@ elseif ($page === 'invoices') {
           <?php foreach($consoRows as $c): ?>
           <tr>
             <td style="font-family:var(--font-mono);white-space:nowrap;"><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($c['phone_number'])?>" title="Historique de la ligne"><?=h(formatPhone($c['phone_number']))?></a></td>
-            <td><?=h($c['sfr_user'] ?: '—')?></td>
+            <td>
+              <?php if($c['agent_id']): ?>
+                <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$c['agent_id']?>" title="Toutes les lignes de cet utilisateur, passées et présentes"><?=h($c['sfr_user'] ?: $c['agent_name'])?></a>
+                <?php if($c['sfr_user'] && $c['agent_name'] && !simcity_name_matches($c['sfr_user'], $c['agent_name'])): ?>
+                <div class="muted" style="font-size:.72rem;"><?=h($c['agent_name'])?> <span style="opacity:.7;">(SimCity)</span></div>
+                <?php endif; ?>
+              <?php else: ?><?=h($c['sfr_user'] ?: '—')?><?php endif; ?>
+            </td>
             <td class="muted"><?=(int)$c['in_app'] ? h($c['service_name'] ?: '—') : '<span class="badge badge-danger" style="font-size:.65rem;">hors SimCity</span>'?></td>
             <td class="muted" style="font-size:.8rem;"><?=h($c['plan_name'] ?: '—')?></td>
             <?php if($multi): ?><td class="muted" style="text-align:right;"><?=(int)$c['nbm']?></td><?php endif; ?>
