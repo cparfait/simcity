@@ -2620,6 +2620,10 @@ if (!isset($_SESSION['user_id'])) {
 // ─── 5. HELPERS ───────────────────────────────────────────────
 function h($str) { return htmlspecialchars((string)$str, ENT_QUOTES); }
 function S(array $d, string $k, string $def=''): string { return trim(strip_tags((string)($d[$k] ?? $def))); }
+// Les mots de passe ne doivent JAMAIS passer par S() : strip_tags() ampute tout
+// ce qui suit un « < » (ex. « zsA$E<i/f2VU4W » → « zsA$E »), et le hachage ne
+// correspond alors plus à ce que l'utilisateur saisit à la connexion.
+function RAWPASS(array $d, string $k='password'): string { return (string)($d[$k] ?? ''); }
 function IV(array $d, string $k) { return !empty($d[$k]) ? (int)$d[$k] : null; }
 function NV(array $d, string $k) { $v=trim($d[$k]??''); return $v?:null; }
 
@@ -4413,7 +4417,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($managingOther && !$isSuper) {
                 flash('error', "Action réservée aux super-administrateurs.");
             } elseif ($act === 'add') {
-                $pdo->prepare("INSERT INTO users(username, password, first_name, last_name, email, is_admin) VALUES(?,?,?,?,?,?)")->execute([S($d,'username'), password_hash(S($d,'password'), PASSWORD_DEFAULT), fmtFirstName(NV($d,'first_name')), fmtLastName(NV($d,'last_name')), fmtEmail(NV($d,'email')), $isAdminVal ?? 0]);
+                $pdo->prepare("INSERT INTO users(username, password, first_name, last_name, email, is_admin) VALUES(?,?,?,?,?,?)")->execute([S($d,'username'), password_hash(RAWPASS($d), PASSWORD_DEFAULT), fmtFirstName(NV($d,'first_name')), fmtLastName(NV($d,'last_name')), fmtEmail(NV($d,'email')), $isAdminVal ?? 0]);
                 logHistory($pdo, 'admin', $pdo->lastInsertId(), "Création de l'administrateur ".S($d,'username'));
                 flash('success', 'Compte créé.');
             } elseif ($act === 'edit') {
@@ -4430,7 +4434,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $params = [S($d,'username'), fmtFirstName(NV($d,'first_name')), fmtLastName(NV($d,'last_name')), fmtEmail(NV($d,'email'))];
                     if (!empty($d['password'])) {
                         $sql = "UPDATE users SET username=?, password=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
-                        array_splice($params, 1, 0, [password_hash(S($d,'password'), PASSWORD_DEFAULT)]);
+                        array_splice($params, 1, 0, [password_hash(RAWPASS($d), PASSWORD_DEFAULT)]);
                     } else {
                         $sql = "UPDATE users SET username=?, first_name=?, last_name=?, email=?$isAdminSet WHERE id=?";
                     }
