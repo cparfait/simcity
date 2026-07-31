@@ -4313,8 +4313,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($act === 'add') $pdo->prepare("INSERT INTO models(brand,name,category)VALUES(?,?,?)")->execute([S($d,'brand'),S($d,'name'),S($d,'category')]);
             elseif ($act === 'edit') $pdo->prepare("UPDATE models SET brand=?,name=?,category=? WHERE id=?")->execute([S($d,'brand'),S($d,'name'),S($d,'category'),$id]);
         } elseif ($ent === 'operator') {
-            if ($act === 'add') $pdo->prepare("INSERT INTO operators(name,website,notes)VALUES(?,?,?)")->execute([S($d,'name'),NV($d,'website'),S($d,'notes')]);
-            elseif ($act === 'edit') $pdo->prepare("UPDATE operators SET name=?,website=?,notes=? WHERE id=?")->execute([S($d,'name'),NV($d,'website'),S($d,'notes'),$id]);
+            // Le site nourrit un href (barre latérale et page d'import) : tout
+            // schéma autre que http(s) est refusé, sans quoi un « javascript: »
+            // saisi ici deviendrait un XSS stocké. Une adresse sans schéma est
+            // complétée plutôt que rejetée — la refuser effacerait en silence
+            // les valeurs déjà en base, saisies avant ce contrôle.
+            $opUrl = function ($v) {
+                $v = trim((string)$v);
+                if ($v === '') return null;
+                if (preg_match('#^https?://#i', $v)) return $v;
+                if (preg_match('#^[a-z][a-z0-9+.-]*:#i', $v)) {   // javascript:, data:, ftp:…
+                    flash('error', "Adresse de site ignorée : seules les adresses http:// et https:// sont acceptées.");
+                    return null;
+                }
+                return 'https://' . $v;
+            };
+            if ($act === 'add') $pdo->prepare("INSERT INTO operators(name,website,notes)VALUES(?,?,?)")->execute([S($d,'name'),$opUrl(NV($d,'website')),S($d,'notes')]);
+            elseif ($act === 'edit') $pdo->prepare("UPDATE operators SET name=?,website=?,notes=? WHERE id=?")->execute([S($d,'name'),$opUrl(NV($d,'website')),S($d,'notes'),$id]);
         } elseif ($ent === 'plan') {
             $opId = IV($d,'operator_id');
             if ($act === 'add') $pdo->prepare("INSERT INTO plan_types(name,data_limit,notes,operator_id)VALUES(?,?,?,?)")->execute([S($d,'name'),S($d,'data_limit'),S($d,'notes'),$opId]);
@@ -6009,7 +6024,7 @@ elseif ($page === 'invoices') {
 
     <div style="display:flex; gap:10px; margin-bottom:1rem; border-bottom:2px solid var(--border); flex-wrap:wrap;">
         <a href="?page=invoices&tab=dash&<?=$qsPeriod?>" class="tab-btn <?=$tab==='dash'?'active':''?>"><i class="bi bi-graph-up"></i> Tableau de bord</a>
-        <a href="?page=invoices&tab=import" class="tab-btn <?=$tab==='import'?'active':''?>"><i class="bi bi-cloud-upload"></i> Import des factures</a>
+        <a href="?page=invoices&tab=import" class="tab-btn <?=$tab==='import'?'active':''?>"><i class="bi bi-cloud-upload"></i> Factures</a>
         <a href="?page=invoices&tab=conso&<?=$qsPeriod?>" class="tab-btn <?=$tab==='conso'?'active':''?>"><i class="bi bi-bar-chart-line"></i> Consommations</a>
         <a href="?page=invoices&tab=alerts&<?=$qsPeriod?>" class="tab-btn <?=$tab==='alerts'?'active':''?>"><i class="bi bi-bell"></i> Alertes
           <?php if($nbAlerts): ?><span class="badge badge-danger" style="font-size:.68rem;"><?=$nbAlerts?></span><?php endif; ?></a>
@@ -6397,7 +6412,7 @@ elseif ($page === 'invoices') {
         <?php if(!$remKnown): ?>
           <p class="muted" style="margin:0;"><i class="bi bi-info-circle"></i>
             Le taux de remise et le prix catalogue sont écrits en clair dans chaque bloc de la facture, mais ils n'ont pas encore été extraits
-            pour les factures déjà importées. Lancez <a href="?page=invoices&tab=import">Import des factures → Ré-analyser toutes les factures</a>
+            pour les factures déjà importées. Lancez <a href="?page=invoices&tab=import" style="color:var(--primary);">Factures → Ré-analyser toutes les factures</a>
             pour les récupérer sans rien re-téléverser.</p>
         <?php else: ?>
           <div class="kpi-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.25rem;">
@@ -6481,7 +6496,7 @@ elseif ($page === 'invoices') {
             <?=$devOutside?> ligne(s) d'achat existent en dehors de cette période. Élargissez les bornes pour les voir.
             <?php else: ?>
             Les factures d'achat de terminaux (numéro <code>9T…</code>) contiennent le libellé, la quantité, le prix et l'IMEI de chaque matériel.
-            Déposez-les dans l'onglet Import : ce tableau les rapprochera automatiquement du parc matériel par IMEI.
+            Déposez-les dans l'onglet Factures : ce tableau les rapprochera automatiquement du parc matériel par IMEI.
             <?php endif; ?></p>
         <?php else: ?>
         <table class="data-table" style="font-size:.85rem;">
@@ -6533,7 +6548,7 @@ elseif ($page === 'invoices') {
             <td><?=$aj['invoice_date'] ? date('d/m/Y', strtotime($aj['invoice_date'])) : '—'?></td>
             <td class="muted"><?=h($fmtMois($aj['month_key']))?></td>
             <td style="text-align:right;font-family:var(--font-mono);font-weight:600;color:<?=(float)$aj['total_ht'] < 0 ? 'var(--success)' : 'var(--warning)'?>;"><?=$fmtEur($aj['total_ht'])?></td>
-            <td class="actions"><a class="btn-icon" title="Voir la facture dans l'onglet Import" href="?page=invoices&tab=import<?=$acct !== '' ? '&acct=' . urlencode($acct) : ''?>" style="text-decoration:none;"><i class="bi bi-box-arrow-up-right"></i></a></td>
+            <td class="actions"><a class="btn-icon" title="Voir la facture dans l'onglet Factures" href="?page=invoices&tab=import<?=$acct !== '' ? '&acct=' . urlencode($acct) : ''?>" style="text-decoration:none;"><i class="bi bi-box-arrow-up-right"></i></a></td>
           </tr>
           <?php endforeach; ?>
           </tbody>
@@ -6669,12 +6684,48 @@ elseif ($page === 'invoices') {
           <span class="badge badge-warning">9AF… régularisation</span> <span class="badge badge-danger">9AA… avoir</span>.
           Les factures déjà importées (même n°) sont ignorées — l'import est rejouable sans doublons.
         </p>
+        <?php
+          // Raccourci vers l'espace client : le site enregistré sur la fiche de
+          // l'opérateur (Référentiels → Opérateurs), et lui seul — une URL en dur
+          // deviendrait fausse au premier changement d'opérateur ou de portail.
+          // Un seul opérateur : lien direct. Plusieurs : menu déroulant, pour ne
+          // pas aligner autant de liens que de contrats.
+          $opPortals = $pdo->query("SELECT name, website FROM operators
+                                    WHERE website IS NOT NULL AND website <> '' ORDER BY name")->fetchAll();
+          /* color:var(--primary) obligatoire : la feuille de style pose a{color:inherit}
+             globalement, un lien sans couleur explicite est indiscernable du texte. */
+          $portalLink = 'display:inline-flex;align-items:center;gap:6px;color:var(--primary);font-weight:600;';
+        ?>
+        <?php if(count($opPortals) === 1): ?>
         <p style="font-size:.85rem;margin:-.4rem 0 1rem;">
-          <a href="https://www.sfrbusiness.fr/espace-client/portail/#/facturation-et-paiement/societe/multiple"
-             target="_blank" rel="noopener noreferrer" style="display:inline-flex;align-items:center;gap:6px;">
-            <i class="bi bi-box-arrow-up-right"></i> Télécharger les factures sur l'espace client SFR Business</a>
-          <span class="muted"> — Facturation et paiement → sélectionner la période, puis déposer les PDF ici.</span>
+          <a href="<?=h($opPortals[0]['website'])?>" target="_blank" rel="noopener noreferrer" style="<?=$portalLink?>">
+            <i class="bi bi-box-arrow-up-right"></i> Télécharger les factures sur l'espace client <?=h($opPortals[0]['name'])?></a>
+          <span class="muted"> — sélectionnez la période chez l'opérateur, puis déposez les PDF ici.</span>
         </p>
+        <?php elseif($opPortals): ?>
+        <p style="font-size:.85rem;margin:-.4rem 0 1rem;">
+          <details style="display:inline-block;position:relative;">
+            <summary style="<?=$portalLink?>cursor:pointer;list-style:none;">
+              <i class="bi bi-box-arrow-up-right"></i> Télécharger les factures sur l'espace client
+              <i class="bi bi-chevron-down" style="font-size:.75rem;"></i>
+            </summary>
+            <span style="position:absolute;z-index:20;left:0;margin-top:.35rem;min-width:220px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);box-shadow:var(--shadow);padding:.35rem 0;display:block;">
+              <?php foreach($opPortals as $op): ?>
+              <a href="<?=h($op['website'])?>" target="_blank" rel="noopener noreferrer"
+                 style="display:block;padding:.45rem .9rem;color:var(--text);font-size:.85rem;text-decoration:none;"
+                 onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'"><?=h($op['name'])?></a>
+              <?php endforeach; ?>
+            </span>
+          </details>
+          <span class="muted"> — sélectionnez la période chez l'opérateur, puis déposez les PDF ici.</span>
+        </p>
+        <?php else: ?>
+        <p style="font-size:.85rem;margin:-.4rem 0 1rem;" class="muted">
+          <i class="bi bi-info-circle"></i> Renseignez le <strong>site web</strong> sur la fiche de l'opérateur
+          (<a href="?page=refs&tab=operators" style="color:var(--primary);">Référentiels → Opérateurs</a>)
+          pour disposer ici d'un raccourci vers le téléchargement des factures.
+        </p>
+        <?php endif; ?>
         <?php if($alertGroups['missing']): ?>
         <p style="font-size:.85rem;margin:0 0 1rem;padding:.6rem .9rem;border-left:3px solid var(--warning);background:var(--bg3);border-radius:var(--radius-sm);">
           <i class="bi bi-file-earmark-x" style="color:var(--warning);"></i>
@@ -9036,6 +9087,13 @@ elseif ($page === 'refs') {
               <?php elseif($tab==='agents' && $k==='service_name' && trim((string)$row[$k]) !== ''): ?>
                 <?php // Service cliquable : filtre la liste sur ce service. ?>
                 <span class="cell-link" data-refs-filter="<?=h($row[$k])?>" title="Filtrer sur ce service"><?=h($row[$k])?></span>
+              <?php elseif($tab==='operators' && $k==='website' && trim((string)$row[$k]) !== ''): ?>
+                <?php // URL affichée en clair : un lien profond d'espace client fait
+                      // facilement 100 caractères et déformerait la colonne. On montre
+                      // un libellé court, l'adresse complète reste dans l'infobulle. ?>
+                <a href="<?=h($row[$k])?>" target="_blank" rel="noopener noreferrer" title="<?=h($row[$k])?>"
+                   style="display:inline-flex;align-items:center;gap:5px;color:var(--primary);font-size:.82rem;">
+                  <i class="bi bi-box-arrow-up-right"></i>Ouvrir</a>
               <?php elseif($tab==='services' && ($k==='nb_lines' || $k==='nb_devices') && (int)$row[$k] > 0): ?>
                 <?php // Compteur cliquable : ouvre la liste pré-filtrée sur le nom du service (via le paramètre q). ?>
                 <a href="?page=<?=$k==='nb_lines'?'lines':'devices'?>&tab=active&q=<?=urlencode($row['name'])?>" title="Voir les <?=$k==='nb_lines'?'lignes':'matériels'?> de ce service" style="font-weight:600;"><?=h($row[$k])?></a>
@@ -9240,7 +9298,10 @@ elseif ($page === 'refs') {
             <div class="form-group form-full"><label>Notes</label><textarea name="notes" id="<?=$act?>-notes" rows="2"></textarea></div>
         <?php elseif ($ent === 'operator'): ?>
             <div class="form-group form-full"><label>Nom de l'opérateur *</label><input type="text" name="name" id="<?=$act?>-name" required placeholder="ex: SFR, Orange, Bouygues..."></div>
-            <div class="form-group form-full"><label>Site web</label><input type="url" name="website" id="<?=$act?>-website" placeholder="https://..."></div>
+            <div class="form-group form-full"><label>Site web</label>
+              <input type="url" name="website" id="<?=$act?>-website" placeholder="https://...">
+              <small style="color:var(--text3);font-size:.75rem;">Repris comme raccourci dans la barre latérale et sur Facturation / Contrôle → Factures : indiquez de préférence l'espace client, page des factures, plutôt que le site vitrine.</small>
+            </div>
             <div class="form-group form-full"><label>Notes</label><textarea name="notes" id="<?=$act?>-notes" rows="2"></textarea></div>
         <?php elseif ($ent === 'billing'): ?>
             <div class="form-group"><label>N° Compte Facturation</label><input type="text" name="account_number" id="<?=$act?>-account_number" required></div>
@@ -10136,7 +10197,7 @@ elseif ($page === 'stats') {
       <!-- 4. FACTURATION — vue panoramique ; l'analyse fine est dans le module -->
       <?php if($statInvMonths): ?>
       <h3 style="font-size:1rem;color:var(--text-strong);margin-top:.5rem;"><i class="bi bi-receipt"></i> Facturation
-        <a href="?page=invoices" style="font-size:.78rem;font-weight:400;margin-left:.5rem;">analyse détaillée →</a></h3>
+        <a href="?page=invoices" style="font-size:.78rem;font-weight:400;margin-left:.5rem;color:var(--primary);">analyse détaillée →</a></h3>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;">
         <div class="card" style="margin:0;padding:1.1rem 1.25rem;text-align:center;border-left:4px solid var(--primary);">
           <div style="font-family:var(--font-mono);font-size:1.6rem;font-weight:600;color:var(--primary);"><?=number_format($statInvLastTotal, 0, ',', ' ')?> €</div>
