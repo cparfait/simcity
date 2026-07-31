@@ -48,7 +48,14 @@ try {
     );
     $name = simcity_backup_to_disk($pdo);
     $kept = count(simcity_list_backups());
+    $arc  = simcity_files_archive_for($name);
     $msg  = "[" . date('Y-m-d H:i:s') . "] OK — sauvegarde créée : $name ($kept fichier(s) conservé(s)).";
+    if (is_file(simcity_backup_dir() . $arc)) {
+        $msg .= " Fichiers téléversés archivés : $arc.";
+    }
+    if (($warn = simcity_backup_last_warning()) !== '') {
+        $msg .= " ATTENTION — $warn.";
+    }
     if ($isCli) { fwrite(STDOUT, $msg . "\n"); } else { echo $msg . "\n"; }
     exit(0);
 } catch (Throwable $e) {

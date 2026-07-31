@@ -30,10 +30,15 @@ services:
       # LDAP_VALIDATE_CERT: "true"
       # Chaîne de confiance de la PKI interne, montée en lecture seule (volume
       # /certs ci-dessous). Pointe sur un FICHIER, pas sur le répertoire.
-      # LDAP_CA_CERT: /certs/ca_chatillon.crt
+      # Inutile ici si le chemin est déjà saisi dans Paramètres → « Fichier CA
+      # (PEM) » : renseigner les deux verrouillerait le champ dans l'interface.
+      # LDAP_CA_CERT: /certs/ca.pem
       # LDAP_DOMAIN: chatillon.lan
       # LDAP_BASE_DN: DC=chatillon,DC=lan
       # LDAP_REQUIRED_GROUP: GG-SimCity-Admins
+      # Membres = super-administrateurs, réévalué à chaque connexion : les
+      # droits se gèrent dans l'AD plutôt que dans la fiche utilisateur.
+      # LDAP_ADMIN_GROUP: GG-SimCity-SuperAdmins
       # LDAP_BIND_USER: svc-simcity@chatillon.lan
       # LDAP_BIND_PASSWORD: "secret"
       # ── Envoi d'e-mails (optionnel — sinon via l'UI) ──

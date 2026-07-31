@@ -25,6 +25,7 @@ const LDAP_KEYS = [
     'ldap_domain'           => 'LDAP_DOMAIN',
     'ldap_base_dn'          => 'LDAP_BASE_DN',
     'ldap_required_group'   => 'LDAP_REQUIRED_GROUP',
+    'ldap_admin_group'      => 'LDAP_ADMIN_GROUP',
     'ldap_bind_user'        => 'LDAP_BIND_USER',
     'ldap_bind_password'    => 'LDAP_BIND_PASSWORD',
 ];
@@ -195,7 +196,12 @@ function ldap_user_in_group($conn, string $base, string $username, string $group
  * Tente un bind LDAP avec les identifiants fournis.
  * Retourne un tableau d'infos (succès) ou null (échec/désactivé) :
  *   ['email' => ?string, 'display_name' => ?string,
- *    'first_name' => ?string, 'last_name' => ?string]
+ *    'first_name' => ?string, 'last_name' => ?string,
+ *    'is_admin'  => ?bool]
+ *
+ * 'is_admin' vaut null si aucun groupe d'administration n'est configuré
+ * (les droits restent alors gérés à la main dans SimCity) ; true/false
+ * sinon, selon l'appartenance au groupe.
  */
 function ldap_authenticate_user(string $username, string $password): ?array {
     if (!ldap_auth_enabled() || $username === '' || $password === '') return null;
@@ -229,8 +235,19 @@ function ldap_authenticate_user(string $username, string $password): ?array {
         }
     }
 
+    // Groupe d'administration : l'appartenance décide du statut super-admin,
+    // à chaque connexion. Le but est de gérer les droits dans l'AD plutôt que
+    // dans deux référentiels. Non configuré → null, SimCity garde la main.
+    // Échec fermé : sans base DN, on ne promeut personne.
+    $adminGroup = ldap_cfg('ldap_admin_group');
+    $isAdmin = null;
+    if ($adminGroup !== '') {
+        $isAdmin = ($base !== '') && ldap_user_in_group($conn, $base, $username, $adminGroup);
+    }
+
     // Récupération des attributs (email, nom affiché) pour le provisionnement
-    $info = ['email' => null, 'display_name' => null, 'first_name' => null, 'last_name' => null];
+    $info = ['email' => null, 'display_name' => null, 'first_name' => null, 'last_name' => null,
+             'is_admin' => $isAdmin];
     if ($base !== '') {
         $sr = @ldap_search($conn, $base, '(sAMAccountName=' . ldap_esc($username) . ')',
             ['mail', 'displayname', 'givenname', 'sn'], 0, 1);

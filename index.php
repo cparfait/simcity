@@ -2368,13 +2368,15 @@ if (isset($_GET['page']) && $_GET['page'] === 'import_template') {
 // après contrôle d'accès. Réservé aux super-admins.
 if (isset($_GET['page']) && $_GET['page'] === 'backup_download') {
     if (!isset($_SESSION['user_id']) || empty($_SESSION['is_admin'])) die("Accès refusé — réservé aux super-administrateurs.");
-    // Nom de fichier durci : uniquement le motif attendu, pas de traversée de dossier
+    // Nom de fichier durci : uniquement les deux motifs attendus (dump SQL ou
+    // archive des fichiers téléversés), pas de traversée de dossier
     $f = basename($_GET['f'] ?? '');
-    if (!preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql$/', $f)) die("Fichier invalide.");
+    $isArchive = (bool)preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}_uploads\.tar\.gz$/', $f);
+    if (!$isArchive && !preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql$/', $f)) die("Fichier invalide.");
     $path = simcity_backup_dir() . $f;
     if (!is_file($path)) die("Sauvegarde introuvable.");
     while (ob_get_level()) ob_end_clean();
-    header('Content-Type: application/sql; charset=utf-8');
+    header('Content-Type: ' . ($isArchive ? 'application/gzip' : 'application/sql; charset=utf-8'));
     header('Content-Disposition: attachment; filename="' . $f . '"');
     header('Content-Length: ' . filesize($path));
     readfile($path);
@@ -2514,6 +2516,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                     logHistory($pdo, 'admin', $newId, "Compte provisionné automatiquement depuis l'Active Directory : {$loginUser}");
                     $st->execute([$loginUser]);
                     $u = $st->fetch();
+                }
+                // Statut super-administrateur aligné sur le groupe AD dédié, à
+                // chaque connexion : les droits se gèrent dans l'annuaire, plus
+                // dans deux référentiels. Sans groupe configuré ($is_admin null),
+                // SimCity garde entièrement la main.
+                if ($u && ($ldapInfo['is_admin'] ?? null) !== null) {
+                    $wasAdmin = (int)$u['is_admin'] === 1;
+                    if ($ldapInfo['is_admin'] && !$wasAdmin) {
+                        $pdo->prepare("UPDATE users SET is_admin=1 WHERE id=?")->execute([$u['id']]);
+                        $u['is_admin'] = 1;
+                        logHistory($pdo, 'admin', (int)$u['id'], "Super-administrateur accordé automatiquement : membre du groupe AD d'administration");
+                    } elseif (!$ldapInfo['is_admin'] && $wasAdmin && ($u['auth_source'] ?? 'local') === 'ldap') {
+                        // Le retrait ne vise que les comptes issus de l'AD : un
+                        // compte local promu dans SimCity ne doit pas être
+                        // rétrogradé parce que son titulaire se connecte via AD.
+                        // Et jamais le dernier super-administrateur, sous peine
+                        // de perdre l'accès à la configuration LDAP elle-même.
+                        $others = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE is_admin=1 AND id<>" . (int)$u['id'])->fetchColumn();
+                        if ($others > 0) {
+                            $pdo->prepare("UPDATE users SET is_admin=0 WHERE id=?")->execute([$u['id']]);
+                            $u['is_admin'] = 0;
+                            logHistory($pdo, 'admin', (int)$u['id'], "Super-administrateur retiré automatiquement : sorti du groupe AD d'administration");
+                        } else {
+                            error_log("SimCity: retrait du statut super-admin ignoré pour « {$loginUser} » — dernier super-administrateur de l'application.");
+                        }
+                    }
                 }
             }
         }
@@ -3335,7 +3363,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if (!ldap_env_locked($key)) $set->execute([!empty($d[$key]) ? '1' : '0', $key]);
                     }
                     if (!ldap_env_locked('ldap_port')) $set->execute([(string)max(0, (int)($d['ldap_port'] ?? 0)), 'ldap_port']);
-                    foreach (['ldap_server','ldap_ca_cert','ldap_domain','ldap_base_dn','ldap_required_group','ldap_bind_user'] as $key) {
+                    foreach (['ldap_server','ldap_ca_cert','ldap_domain','ldap_base_dn','ldap_required_group','ldap_admin_group','ldap_bind_user'] as $key) {
                         if (!ldap_env_locked($key)) $set->execute([trim($d[$key] ?? ''), $key]);
                     }
                     // Mot de passe du compte de service : conservé si le champ est laissé vide
@@ -3795,7 +3823,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($act === 'run') {
                 try {
                     $name = simcity_backup_to_disk($pdo);
-                    flash('success', "Sauvegarde créée sur le serveur : $name");
+                    $arc  = simcity_files_archive_for($name);
+                    $warn = simcity_backup_last_warning();
+                    $msg  = "Sauvegarde créée sur le serveur : $name";
+                    if (is_file(simcity_backup_dir() . $arc)) $msg .= " — fichiers téléversés archivés dans $arc";
+                    if ($warn !== '') flash('warning', "Sauvegarde SQL créée, mais " . $warn . ".");
+                    flash('success', $msg);
                 } catch (Throwable $e) {
                     flash('error', "Échec de la sauvegarde : " . $e->getMessage());
                 }
@@ -3803,42 +3836,86 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $f = basename($d['file'] ?? '');
                 if (preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql$/', $f)) {
                     $p = simcity_backup_dir() . $f;
-                    if (is_file($p) && @unlink($p)) flash('success', "Sauvegarde supprimée : $f");
+                    // L'archive de fichiers suit son dump : la garder seule ne
+                    // permettrait plus aucune restauration cohérente.
+                    $arcDeleted = @unlink(simcity_backup_dir() . simcity_files_archive_for($f));
+                    if (is_file($p) && @unlink($p)) flash('success', "Sauvegarde supprimée : $f" . ($arcDeleted ? " (et son archive de fichiers)" : ""));
                     else flash('error', "Suppression impossible (fichier absent ou droits).");
                 } else {
                     flash('error', "Nom de fichier invalide.");
+                }
+            } elseif ($act === 'orphans') {
+                // Ménage des fichiers que plus aucune ligne ne référence.
+                $sel = array_filter(array_map('strval', $_POST['orphan'] ?? []));
+                if (!$sel) {
+                    flash('error', "Aucun fichier sélectionné.");
+                } else {
+                    $r = simcity_uploads_delete_orphans($pdo, $sel);
+                    if ($r['deleted']) {
+                        logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "Suppression de {$r['deleted']} fichier(s) orphelin(s) dans uploads/");
+                        flash('success', "{$r['deleted']} fichier(s) orphelin(s) supprimé(s)."
+                            . ($r['refused'] ? " {$r['refused']} ignoré(s) (redevenus référencés ou droits insuffisants)." : ''));
+                    } else {
+                        flash('error', "Aucun fichier supprimé ({$r['refused']} ignoré(s) : redevenus référencés ou droits insuffisants).");
+                    }
                 }
             } elseif ($act === 'restore') {
                 if (($d['confirm_word'] ?? '') !== 'RESTAURER') {
                     flash('error', 'Mot de confirmation incorrect (tapez RESTAURER).');
                 } else {
-                    // Source : une sauvegarde stockée OU un fichier .sql uploadé
-                    $sql = null; $srcLabel = '';
+                    // Source : une sauvegarde stockée OU un fichier .sql uploadé.
+                    // Les fichiers téléversés suivent, si l'archive compagnon existe
+                    // (sauvegarde stockée) ou a été jointe au formulaire.
+                    $sql = null; $srcLabel = ''; $filesArchive = null; $filesTmp = null;
+                    $withFiles = !empty($d['restore_files']);
                     $f = basename($d['file'] ?? '');
                     if ($f !== '' && preg_match('/^simcity_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}\.sql$/', $f)) {
                         $p = simcity_backup_dir() . $f;
                         if (is_file($p)) { $sql = file_get_contents($p); $srcLabel = $f; }
+                        $arc = simcity_backup_dir() . simcity_files_archive_for($f);
+                        if ($withFiles && is_file($arc)) $filesArchive = $arc;
                     } elseif (isset($_FILES['sql_file']) && $_FILES['sql_file']['error'] === UPLOAD_ERR_OK) {
                         if ($_FILES['sql_file']['size'] > 50 * 1024 * 1024) {
                             flash('error', 'Fichier trop volumineux (max 50 Mo).');
                         } else {
                             $sql = file_get_contents($_FILES['sql_file']['tmp_name']);
                             $srcLabel = basename($_FILES['sql_file']['name']);
+                            // Archive de fichiers jointe : déplacée hors du tampon PHP,
+                            // qui est purgé à la fin de la requête.
+                            if ($withFiles && isset($_FILES['files_archive']) && $_FILES['files_archive']['error'] === UPLOAD_ERR_OK) {
+                                $tmp = tempnam(sys_get_temp_dir(), 'simcity_uploads_');
+                                if ($tmp && @move_uploaded_file($_FILES['files_archive']['tmp_name'], $tmp)) {
+                                    $filesArchive = $filesTmp = $tmp;
+                                }
+                            }
                         }
                     }
                     if ($sql === null || trim($sql) === '') {
+                        if ($filesTmp) @unlink($filesTmp);
                         flash('error', "Aucune sauvegarde valide fournie (sélectionnez un fichier stocké ou envoyez un .sql).");
                     } else {
                         // La restauration exécute du DDL (auto-commit MySQL) : on sort d'abord de la transaction
                         if ($pdo->inTransaction()) $pdo->commit();
                         try {
-                            // Filet de sécurité : photographier l'état actuel avant d'écraser
+                            // Filet de sécurité : photographier l'état actuel avant
+                            // d'écraser — base ET fichiers, puisque les deux vont
+                            // être remplacés. C'est le seul recours si la
+                            // restauration ne donne pas ce qu'on attendait.
                             $safety = simcity_backup_to_disk($pdo);
                             $n = simcity_restore_sql($pdo, $sql);
-                            flash('success', "Restauration effectuée depuis « $srcLabel » ($n instruction(s)). Sauvegarde de sécurité créée avant écrasement : $safety. Reconnectez-vous si besoin.");
+                            $msg = "Restauration effectuée depuis « $srcLabel » ($n instruction(s)).";
+                            if ($filesArchive) {
+                                $r = simcity_files_restore($filesArchive);
+                                $msg .= " Fichiers téléversés remplacés : {$r['extracted']} restauré(s), {$r['deleted']} supprimé(s)"
+                                      . ($r['skipped'] ? ", {$r['skipped']} ignoré(s) (chemin ou extension refusés)" : '') . ".";
+                            } else {
+                                $msg .= " Les fichiers téléversés n'ont PAS été touchés (aucune archive) : des documents peuvent être orphelins ou manquants — voir « Cohérence fichiers ↔ base ».";
+                            }
+                            flash('success', $msg . " Sauvegarde de sécurité créée avant écrasement : $safety. Reconnectez-vous si besoin.");
                         } catch (Throwable $e) {
                             flash('error', "Échec de la restauration : " . $e->getMessage() . " — la base peut être incohérente ; restaurez la sauvegarde de sécurité.");
                         }
+                        if ($filesTmp) @unlink($filesTmp);
                         header('Location: index.php?page=refs&tab=settings' . (isset($_GET['sub']) ? '&sub=' . preg_replace('/[^a-z]/', '', $_GET['sub']) : '')); exit;
                     }
                 }
@@ -7364,7 +7441,7 @@ elseif ($page === 'refs') {
       <span><i class="bi bi-globe2"></i> <strong>Authentification Active Directory :</strong>
         <?php if(ldap_auth_enabled()): ?>
           <span style="color:var(--success);font-weight:600;">activée</span>
-          <span class="muted">— serveur : <code style="font-family:var(--font-mono);font-size:.8rem;"><?=h(ldap_cfg('ldap_server'))?></code><?=ldap_cfg('ldap_required_group')!==''?' · groupe requis : <code style="font-family:var(--font-mono);font-size:.8rem;">'.h(ldap_cfg('ldap_required_group')).'</code>':' · <strong style="color:var(--warning);">⚠️ aucun groupe requis</strong>'?></span>
+          <span class="muted">— serveur : <code style="font-family:var(--font-mono);font-size:.8rem;"><?=h(ldap_cfg('ldap_server'))?></code><?=ldap_cfg('ldap_required_group')!==''?' · groupe requis : <code style="font-family:var(--font-mono);font-size:.8rem;">'.h(ldap_cfg('ldap_required_group')).'</code>':' · <strong style="color:var(--warning);">⚠️ aucun groupe requis</strong>'?><?=ldap_cfg('ldap_admin_group')!==''?' · super-admins : <code style="font-family:var(--font-mono);font-size:.8rem;">'.h(ldap_cfg('ldap_admin_group')).'</code>':''?></span>
         <?php elseif(ldap_cfg('ldap_enabled') && !extension_loaded('ldap')): ?>
           <span style="color:var(--danger);font-weight:600;">extension PHP « ldap » manquante</span>
         <?php else: ?>
@@ -8070,7 +8147,7 @@ elseif ($page === 'refs') {
           <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
             Les administrateurs se connectent avec leur <strong>compte Active Directory</strong>, en complément des comptes locaux
             (mot de passe local testé d'abord, puis bind LDAP). Un utilisateur AD valide et inconnu est <strong>provisionné automatiquement</strong>
-            (jamais super-admin). Marqué 🔒 env : valeur imposée par l'environnement (Docker).
+            (sans droits, sauf s'il appartient au groupe des super-administrateurs ci-dessous). Marqué 🔒 env : valeur imposée par l'environnement (Docker).
           </p>
           <?php if(!extension_loaded('ldap')): ?>
           <div style="background:var(--danger-dim);color:var(--danger);border-radius:var(--radius-sm);padding:.75rem 1rem;margin-bottom:1.25rem;font-size:.85rem;">
@@ -8121,6 +8198,15 @@ elseif ($page === 'refs') {
               <input type="text" name="ldap_required_group" value="<?=h(ldap_cfg('ldap_required_group'))?>" placeholder="GG-SimCity-Admins ou CN=GG-SimCity-Admins,OU=Groupes,DC=chatillon,DC=lan" <?=$lk('ldap_required_group')?>>
               <small style="color:var(--text3);font-size:.75rem;">Sans groupe, <strong>tout compte AD valide</strong> accède à l'application. Les groupes imbriqués sont pris en compte.</small>
             </div>
+            <div class="form-group form-full"><label>Groupe AD des super-administrateurs<?=$lkN('ldap_admin_group')?></label>
+              <input type="text" name="ldap_admin_group" value="<?=h(ldap_cfg('ldap_admin_group'))?>" placeholder="GG-SimCity-SuperAdmins ou CN=GG-SimCity-SuperAdmins,OU=Groupes,DC=chatillon,DC=lan" <?=$lk('ldap_admin_group')?>>
+              <small style="color:var(--text3);font-size:.75rem;">
+                Membre de ce groupe = <strong>super-administrateur</strong>, appliqué à chaque connexion : les droits se gèrent
+                dans l'annuaire, plus dans deux endroits. Sorti du groupe, le statut est retiré à la connexion suivante —
+                uniquement pour les comptes AD, et jamais pour le dernier super-administrateur. Laissé vide, les droits
+                restent gérés à la main dans la fiche utilisateur.
+              </small>
+            </div>
             <div class="form-group form-full"><label>Fichier CA (PEM) <span style="font-weight:400;text-transform:none;">(optionnel, chemin serveur)</span><?=$lkN('ldap_ca_cert')?></label><input type="text" name="ldap_ca_cert" value="<?=h(ldap_cfg('ldap_ca_cert'))?>" placeholder="/etc/ssl/certs/ca-interne.pem" <?=$lk('ldap_ca_cert')?>><small style="color:var(--text3);font-size:.75rem;">Chemin vu <strong>par le serveur</strong> — dans le conteneur Docker, pas sur votre poste. Inutile si la validation du certificat est décochée.</small></div>
             <div class="form-group"><label>Compte de service <span style="font-weight:400;text-transform:none;">(bouton Tester)</span><?=$lkN('ldap_bind_user')?></label><input type="text" name="ldap_bind_user" value="<?=h(ldap_cfg('ldap_bind_user'))?>" autocomplete="off" placeholder="svc-simcity@chatillon.lan" <?=$lk('ldap_bind_user')?>></div>
             <div class="form-group"><label>Mot de passe <span style="font-weight:400;text-transform:none;">(vide = inchangé)</span><?=$lkN('ldap_bind_password')?></label><input type="password" name="ldap_bind_password" value="" autocomplete="new-password" <?=$lk('ldap_bind_password')?>></div>
@@ -8149,6 +8235,11 @@ elseif ($page === 'refs') {
         $autoOn    = defined('BACKUP_AUTO') && BACKUP_AUTO;
         $autoLast  = getSetting($pdo, 'last_auto_backup', '');
         $autoHours = defined('BACKUP_AUTO_INTERVAL') ? round(((int)BACKUP_AUTO_INTERVAL)/3600) : 24;
+        $filesOn   = !defined('BACKUP_INCLUDE_FILES') || BACKUP_INCLUDE_FILES;
+        $filesRet  = defined('BACKUP_FILES_RETENTION') ? (int)BACKUP_FILES_RETENTION : 3;
+        [$upCount, $upBytes] = simcity_files_dir_stats(rtrim(simcity_uploads_dir(), '/\\'));
+        $scan      = simcity_uploads_scan($pdo);
+        $kindLabel = ['invoice' => 'Facture', 'attachment' => 'Document agent', 'logo' => 'Logo PDF'];
     ?>
     <!-- Bloc sauvegarde / restauration — super-admin uniquement -->
     <div class="card">
@@ -8158,6 +8249,16 @@ elseif ($page === 'refs') {
           Sauvegarde complète (structure + données : lignes, matériels, agents, bons signés, signatures, historique…).
           Les fichiers créés sur le serveur sont conservés en <strong><?=$retention?> exemplaires glissants</strong>
           dans le dossier <code style="font-size:.8rem;"><?=h(BACKUP_DIR)?></code> (protégé du web).
+          <?php if($filesOn): ?>
+            Chaque sauvegarde est accompagnée d'une <strong>archive des fichiers téléversés</strong>
+            (PDF de factures, documents des fiches agents, logo) — <?=$filesRet?> exemplaires conservés,
+            <?=$fmtSize($upBytes)?> pour <?=$upCount?> fichier(s) aujourd'hui. Restaurer les deux ensemble est
+            le seul moyen de retrouver un état réellement cohérent.
+          <?php else: ?>
+            <strong style="color:var(--warning);">L'archivage des fichiers téléversés est désactivé</strong>
+            (<code>BACKUP_INCLUDE_FILES</code>) : une restauration ne remettra que la base, et les documents
+            du disque se désynchroniseront.
+          <?php endif; ?>
         </p>
 
         <!-- Statut de la sauvegarde automatique intégrée -->
@@ -8187,23 +8288,36 @@ elseif ($page === 'refs') {
         <?php else: ?>
           <div style="overflow-x:auto;margin-bottom:1rem;">
           <table class="data-table" style="font-size:.85rem;">
-            <thead><tr><th>Fichier</th><th>Date</th><th>Taille</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Fichier</th><th>Date</th><th>Base</th><th>Fichiers téléversés</th><th>Actions</th></tr></thead>
             <tbody>
-            <?php foreach($backups as $bk): ?>
+            <?php foreach($backups as $bk):
+              $hasArc = !empty($bk['files_name']);
+              $conf = $hasArc
+                ? 'Restaurer cette sauvegarde ? La base ET les fichiers téléversés seront remplacés par ceux de l\\\'archive (une sauvegarde de sécurité complète est créée avant).'
+                : 'Restaurer cette sauvegarde ? La base sera écrasée, mais les fichiers téléversés ne seront PAS touchés (aucune archive pour cette date) : des documents risquent d\\\'être orphelins ou manquants.';
+            ?>
               <tr>
                 <td><code style="font-size:.78rem;"><?=h($bk['name'])?></code></td>
                 <td><?=date('d/m/Y H:i', $bk['mtime'])?></td>
                 <td><?=$fmtSize($bk['size'])?></td>
+                <td>
+                  <?php if($hasArc): ?>
+                    <a href="?page=backup_download&f=<?=urlencode($bk['files_name'])?>" style="text-decoration:none;" title="Télécharger l'archive des fichiers">📦 <?=$fmtSize($bk['files_size'])?></a>
+                  <?php else: ?>
+                    <span class="muted" style="font-size:.8rem;" title="Restaurer cette sauvegarde ne remettra pas les fichiers en place">— aucune</span>
+                  <?php endif; ?>
+                </td>
                 <td class="actions" style="white-space:nowrap;">
-                  <a href="?page=backup_download&f=<?=urlencode($bk['name'])?>" class="btn-icon" title="Télécharger" style="text-decoration:none;">⬇️</a>
-                  <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('Restaurer cette sauvegarde ? La base actuelle sera écrasée (une sauvegarde de sécurité est créée avant).')">
+                  <a href="?page=backup_download&f=<?=urlencode($bk['name'])?>" class="btn-icon" title="Télécharger le .sql" style="text-decoration:none;">⬇️</a>
+                  <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('<?=$conf?>')">
                     <input type="hidden" name="_entity" value="backup">
                     <input type="hidden" name="_action" value="restore">
                     <input type="hidden" name="file" value="<?=h($bk['name'])?>">
                     <input type="hidden" name="confirm_word" value="RESTAURER">
+                    <?php if($hasArc): ?><input type="hidden" name="restore_files" value="1"><?php endif; ?>
                     <button type="submit" class="btn-icon" title="Restaurer cette sauvegarde" style="color:var(--warning);"><i class="bi bi-arrow-counterclockwise"></i></button>
                   </form>
-                  <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('Supprimer définitivement cette sauvegarde ?')">
+                  <form method="post" style="display:inline;margin:0;" onsubmit="return confirm('Supprimer définitivement cette sauvegarde<?=$hasArc?' et son archive de fichiers':''?> ?')">
                     <input type="hidden" name="_entity" value="backup">
                     <input type="hidden" name="_action" value="delete">
                     <input type="hidden" name="file" value="<?=h($bk['name'])?>">
@@ -8230,6 +8344,17 @@ elseif ($page === 'refs') {
               <input type="text" name="confirm_word" placeholder="RESTAURER" autocomplete="off" required style="max-width:150px;font-family:var(--font-mono);">
               <button type="submit" class="btn-secondary" style="color:var(--warning);border-color:rgba(245,158,11,.4);">♻️ Restaurer</button>
             </div>
+            <p class="muted" style="font-size:.8rem;margin:.75rem 0 .4rem;">
+              Facultatif — l'archive <code>…_uploads.tar.gz</code> du même horodatage. Sans elle, seule la base
+              est restaurée : les documents du disque resteront ceux d'aujourd'hui.
+            </p>
+            <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;">
+              <input type="file" name="files_archive" accept=".gz,.tgz,application/gzip" style="flex:1;min-width:200px;">
+              <label style="display:flex;align-items:center;gap:.4rem;font-size:.82rem;color:var(--text2);">
+                <input type="checkbox" name="restore_files" value="1" checked style="width:15px;height:15px;">
+                Remplacer les fichiers téléversés par ceux de l'archive
+              </label>
+            </div>
           </form>
         </details>
 
@@ -8251,6 +8376,88 @@ elseif ($page === 'refs') {
             <span class="muted" style="font-size:.78rem;">💡 Restauration en ligne de commande : <code>mysql -u &lt;user&gt; -p <?=h(DB_NAME)?> &lt; fichier.sql</code></span>
           </div>
         </details>
+      </div>
+    </div>
+
+    <!-- Cohérence disque ↔ base : orphelins et références cassées -->
+    <div class="card">
+      <div class="card-header"><i class="bi bi-link-45deg"></i> Cohérence fichiers ↔ base</div>
+      <div style="padding:1.5rem;">
+        <p style="color:var(--text2);font-size:.88rem;margin-bottom:1.25rem;line-height:1.6;">
+          Les documents vivent sur le disque (<code style="font-size:.8rem;"><?=h(UPLOAD_DIR)?></code>), leurs
+          références en base. Une restauration sans archive de fichiers, une suppression manuelle sur le serveur
+          ou un import interrompu peuvent désynchroniser les deux. Cet écran fait le rapprochement.
+        </p>
+
+        <?php if(!$scan['orphans'] && !$scan['missing']): ?>
+          <div style="display:flex;align-items:center;gap:.6rem;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;padding:.75rem 1rem;font-size:.85rem;">
+            <span style="font-size:1.2rem;">🟢</span>
+            <div><strong style="color:var(--success);">Aucun écart</strong>
+              <span style="color:var(--text3);">— chaque fichier du disque est référencé, chaque référence pointe vers un fichier existant.</span></div>
+          </div>
+        <?php endif; ?>
+
+        <?php if($scan['missing']): ?>
+          <h4 style="font-size:.9rem;color:var(--danger);margin-bottom:.5rem;"><i class="bi bi-exclamation-octagon"></i> Références cassées (<?=count($scan['missing'])?>)</h4>
+          <p class="muted" style="font-size:.82rem;margin-bottom:.75rem;line-height:1.6;">
+            La ligne existe en base, le fichier a disparu du disque. Aucune sauvegarde SQL ne le contient :
+            seule une archive de fichiers du même horodatage, ou le document d'origine, permet de le retrouver.
+            Un PDF de facture peut simplement être ré-importé (le numéro fait foi, aucun doublon possible).
+          </p>
+          <div style="overflow-x:auto;margin-bottom:1.5rem;">
+            <table class="data-table" style="font-size:.85rem;">
+              <thead><tr><th>Type</th><th>Référence</th><th>Chemin attendu</th></tr></thead>
+              <tbody>
+              <?php foreach($scan['missing'] as $m): ?>
+                <tr>
+                  <td><?=h($kindLabel[$m['kind']] ?? $m['kind'])?></td>
+                  <td><?=h($m['label'])?></td>
+                  <td><code style="font-size:.78rem;color:var(--danger);"><?=h($m['path'])?></code></td>
+                </tr>
+              <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
+        <?php endif; ?>
+
+        <?php if($scan['orphans']):
+          $orphanBytes = array_sum(array_column($scan['orphans'], 'size'));
+        ?>
+          <h4 style="font-size:.9rem;color:var(--warning);margin-bottom:.5rem;"><i class="bi bi-file-earmark-x"></i> Fichiers orphelins (<?=count($scan['orphans'])?> — <?=$fmtSize($orphanBytes)?>)</h4>
+          <p class="muted" style="font-size:.82rem;margin-bottom:.75rem;line-height:1.6;">
+            Présents sur le disque, plus référencés par aucune ligne : invisibles dans l'application, mais
+            toujours là. <strong>Avant de supprimer un PDF de facture</strong>, songez qu'il est ré-importable
+            tel quel — c'est souvent la facture qu'il faut remettre en base, pas le fichier qu'il faut effacer.
+          </p>
+          <form method="post" onsubmit="return confirm('Supprimer définitivement les fichiers sélectionnés ? Aucune sauvegarde SQL ne les contient.')">
+            <input type="hidden" name="_entity" value="backup">
+            <input type="hidden" name="_action" value="orphans">
+            <div style="overflow-x:auto;margin-bottom:.75rem;">
+              <table class="data-table" style="font-size:.85rem;">
+                <thead><tr>
+                  <th style="width:30px;"><input type="checkbox" onclick="document.querySelectorAll('.orphan-cb').forEach(c=>c.checked=this.checked)" title="Tout sélectionner"></th>
+                  <th>Type</th><th>Fichier</th><th>Taille</th><th>Modifié le</th>
+                </tr></thead>
+                <tbody>
+                <?php foreach($scan['orphans'] as $o): ?>
+                  <tr>
+                    <td><input type="checkbox" class="orphan-cb" name="orphan[]" value="<?=h($o['path'])?>"></td>
+                    <td><?=h($kindLabel[$o['kind']] ?? $o['kind'])?>
+                      <?php if($o['kind']==='invoice' && $o['hint']): ?>
+                        <br><span class="muted" style="font-size:.75rem;">ré-importable — n° <?=h($o['hint'])?></span>
+                      <?php endif; ?>
+                    </td>
+                    <td><code style="font-size:.78rem;"><?=h($o['path'])?></code></td>
+                    <td><?=$fmtSize($o['size'])?></td>
+                    <td><?=date('d/m/Y H:i', $o['mtime'])?></td>
+                  </tr>
+                <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
+            <button type="submit" class="btn-secondary" style="color:var(--danger);border-color:rgba(239,68,68,.4);"><i class="bi bi-trash3"></i> Supprimer les fichiers sélectionnés</button>
+          </form>
+        <?php endif; ?>
       </div>
     </div>
 
@@ -10242,7 +10449,7 @@ a{color:inherit;text-decoration:none} a:hover{color:var(--primary)}
       else echo h($pageTitles[$page] ?? 'Accueil');
     ?></span>
   </div>
-  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): $isErr=($f['type']??'')==='error'; ?><div style="display:flex;align-items:center;gap:.6rem;padding:.85rem 1rem;border-radius:var(--radius);margin-bottom:1rem;box-shadow:var(--shadow);border:1px solid transparent;border-left-width:4px;<?=$isErr ? 'background:var(--danger-dim);color:var(--danger);border-left-color:var(--danger)' : 'background:var(--success-dim);color:var(--success);border-left-color:var(--success)'?>"><i class="bi bi-<?=$isErr?'exclamation-octagon-fill':'check-circle-fill'?>" style="flex-shrink:0;"></i><div><?=h($f['msg'])?></div></div><?php endforeach; ?></div><?php endif; ?>
+  <?php $flashes=getFlashes(); if($flashes): ?><div style="padding:1rem 2rem 0"><?php foreach($flashes as $f): $ft=($f['type']??''); $isErr=$ft==='error'; $isWarn=$ft==='warning'; ?><div style="display:flex;align-items:center;gap:.6rem;padding:.85rem 1rem;border-radius:var(--radius);margin-bottom:1rem;box-shadow:var(--shadow);border:1px solid transparent;border-left-width:4px;<?=$isErr ? 'background:var(--danger-dim);color:var(--danger);border-left-color:var(--danger)' : ($isWarn ? 'background:rgba(245,158,11,.1);color:var(--warning);border-left-color:var(--warning)' : 'background:var(--success-dim);color:var(--success);border-left-color:var(--success)')?>"><i class="bi bi-<?=$isErr?'exclamation-octagon-fill':($isWarn?'exclamation-triangle-fill':'check-circle-fill')?>" style="flex-shrink:0;"></i><div><?=h($f['msg'])?></div></div><?php endforeach; ?></div><?php endif; ?>
   <div class="content"><?=$content?></div>
 </main>
 </div>

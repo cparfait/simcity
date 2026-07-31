@@ -43,6 +43,9 @@ jobs:
       - name: Test unitaire de l'import depuis SFR (lecteur xlsx, contrôles)
         run: php tests/parc_import_test.php
 
+      - name: Test unitaire de l'archivage des fichiers et du rapprochement
+        run: php tests/files_backup_test.php
+
       - name: Test de démarrage (smoke test)
         env:
           DB_HOST: 127.0.0.1

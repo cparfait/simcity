@@ -633,6 +633,7 @@ function simcity_apply_schema(PDO $pdo): void
         ['ldap_domain',           '',  "Domaine AD — bind UPN utilisateur@domaine"],
         ['ldap_base_dn',          '',  "Base DN (ex : DC=exemple,DC=lan)"],
         ['ldap_required_group',   '',  "Groupe AD requis (DN ou nom) — fortement conseillé"],
+        ['ldap_admin_group',      '',  "Groupe AD des super-administrateurs (DN ou nom) — droits pilotés depuis l'AD"],
         ['ldap_bind_user',        '',  "Compte de service (bouton Tester la connexion)"],
         ['ldap_bind_password',    '',  "Mot de passe du compte de service"],
         // Facturation / Contrôle — seuils d'alerte (réglables dans le module)

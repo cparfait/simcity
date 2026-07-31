@@ -93,6 +93,7 @@ Sentinelle) **priment sur la base** — le champ correspondant est alors verroui
         LDAP_DOMAIN: chatillon.lan           # bind UPN : utilisateur@domaine
         LDAP_BASE_DN: DC=chatillon,DC=lan
         LDAP_REQUIRED_GROUP: GG-SimCity-Admins   # ⚠️ fortement conseillé (DN ou nom du groupe)
+        LDAP_ADMIN_GROUP: GG-SimCity-SuperAdmins # membres = super-administrateurs (optionnel)
         # Compte de service — uniquement pour le bouton « Tester la connexion » :
         LDAP_BIND_USER: svc-simcity@chatillon.lan
         LDAP_BIND_PASSWORD: "secret"
@@ -101,6 +102,11 @@ Sentinelle) **priment sur la base** — le champ correspondant est alors verroui
 - Le **groupe AD requis** restreint la connexion aux membres du groupe
   (**groupes imbriqués inclus**). Sans lui, *tout* compte AD valide accède à
   l'application — à éviter.
+- Le **groupe AD des super-administrateurs** (optionnel) pilote les droits
+  depuis l'annuaire : appartenance vérifiée à chaque connexion, statut accordé
+  ou retiré automatiquement. Le retrait ne concerne que les comptes AD et
+  épargne toujours le dernier super-administrateur, pour ne pas se verrouiller
+  hors de la configuration. Laissé vide, les droits restent gérés à la main.
 - Un compte provisionné depuis l'AD est marqué **🌐 AD** dans Référentiels →
   Comptes Admin : il n'a pas de mot de passe local (le champ est ignoré) et
   s'authentifie toujours via LDAP.
@@ -191,6 +197,15 @@ Connectez-vous sur `index.php` avec le compte par défaut :
    `BACKUP_RETENTION` exemplaires glissants (défaut 7) dans `BACKUP_DIR` (`backups/`,
    protégé du web). Le dossier contient des données sensibles (signatures, mot de passe
    SMTP) : il n'est jamais servi directement (le téléchargement passe par l'app authentifiée).
+
+   **Les fichiers téléversés sont archivés avec la base** (`BACKUP_INCLUDE_FILES`, activé
+   par défaut) : un `…_uploads.tar.gz` accompagne chaque dump, avec sa propre rétention
+   (`BACKUP_FILES_RETENTION`, défaut 3 — ces archives pèsent bien plus lourd) et un
+   garde-fou de taille (`BACKUP_FILES_MAX_BYTES`, défaut 500 Mo). Sans cette archive, une
+   restauration ne remet que la base : les PDF de factures et les pièces jointes du disque
+   restent au présent, d'où des documents orphelins d'un côté et des références cassées de
+   l'autre. L'écran **« Cohérence fichiers ↔ base »** (Paramètres → Maintenance) liste les
+   deux et permet de supprimer les orphelins après contrôle.
 
    **Sauvegarde nocturne — choisissez selon votre hébergement :**
    - **Sans cron (recommandé, idéal en conteneur)** : la constante `BACKUP_AUTO` (activée
@@ -302,6 +317,7 @@ simcity/
 ├── lib_format.php    # Normalisation des noms / e-mails (partagé)
 ├── backup.php        # Sauvegarde automatique (cron / tâche planifiée)
 ├── backup_lib.php    # Fonctions de sauvegarde / restauration (partagées)
+├── files_lib.php     # Archive tar.gz des fichiers téléversés + cohérence disque ↔ base
 ├── ldap_auth.php     # Authentification LDAP / Active Directory (optionnelle)
 ├── assets/
 │   └── logo.svg      # Logo (sidebar, login, favicon) — style Sentinelle
@@ -355,6 +371,10 @@ git pull && docker build -t simcity:local .
 **Depuis l'application** (recommandé) : Paramètres → **💾 Sauvegarde de la base de données** →
 « Télécharger la sauvegarde (.sql) ». Copiez le fichier sur une clé USB. Réservé aux super-admins.
 
+> ⚠️ Un `.sql` seul ne suffit pas à revenir en arrière : téléchargez aussi l'archive
+> **`…_uploads.tar.gz`** de la même ligne (colonne « Fichiers téléversés »). Elle contient les
+> PDF de factures, les pièces jointes des fiches agents et le logo — aucun n'est dans le dump SQL.
+
 **En ligne de commande** (alternative) :
 
 ```bash
@@ -386,7 +406,11 @@ php tests/invoice_parse_test.php
 php tests/parc_import_test.php
 ```
 
-Le premier valide le parseur de factures sur une facture synthétique (`tests/fixtures/`). Le second fabrique lui-même un classeur `.xlsx` et un CSV, et couvre le lecteur ZIP (méthodes « stocké » et « deflate »), la reconnaissance des colonnes, les normalisations (dates, codes SIM, statuts, en-têtes accentués) et la règle de rapprochement des noms commune aux deux contrôles.
+```bash
+php tests/files_backup_test.php
+```
+
+Le premier valide le parseur de factures sur une facture synthétique (`tests/fixtures/`). Le deuxième fabrique lui-même un classeur `.xlsx` et un CSV, et couvre le lecteur ZIP (méthodes « stocké » et « deflate »), la reconnaissance des colonnes, les normalisations (dates, codes SIM, statuts, en-têtes accentués) et la règle de rapprochement des noms commune aux deux contrôles. Le troisième couvre l'archive `tar.gz` des fichiers téléversés (aller-retour à l'octet près, noms longs, refus d'une archive piégée : remontée `../`, chemin absolu, extension exécutable) et le rapprochement disque ↔ base (orphelins, références cassées).
 
 **Test de recette HTTP** — `tests/smoke.sh` rejoue le parcours complet (connexion → attribution → génération du bon → signature → restitution → vérifications). À lancer **uniquement contre une instance de test** :
 

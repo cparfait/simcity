@@ -64,7 +64,7 @@ define('CSRF_TOKEN_NAME', '_csrf');
 // « Authentification Active Directory » (stockage en base, table settings).
 // En Docker, les variables d'environnement LDAP_* (mêmes noms que Sentinelle :
 // LDAP_ENABLED, LDAP_SERVER, LDAP_PORT, LDAP_USE_SSL, LDAP_VALIDATE_CERT,
-// LDAP_CA_CERT, LDAP_DOMAIN, LDAP_BASE_DN, LDAP_REQUIRED_GROUP,
+// LDAP_CA_CERT, LDAP_DOMAIN, LDAP_BASE_DN, LDAP_REQUIRED_GROUP, LDAP_ADMIN_GROUP,
 // LDAP_BIND_USER, LDAP_BIND_PASSWORD) PRIMENT sur la
 // base : le champ correspondant est alors verrouillé dans l'interface.
 // Nécessite l'extension PHP « ldap » (php.ini : extension=ldap).
@@ -79,6 +79,18 @@ define('UPLOAD_ALLOWED_MIME', ['image/png','image/jpeg','image/gif','image/webp'
 // Dossier des sauvegardes SQL sur le serveur (protégé du web par .htaccess).
 define('BACKUP_DIR',        'backups/');
 define('BACKUP_RETENTION',  7);   // Nombre de sauvegardes conservées (jours glissants)
+
+// Fichiers téléversés (PDF de factures, pièces jointes, logo) : archivés en
+// tar.gz à côté du dump SQL du même horodatage. Sans cette archive, restaurer
+// une sauvegarde désynchronise la base et le disque — lignes sans fichier
+// d'un côté, fichiers orphelins de l'autre.
+define('BACKUP_INCLUDE_FILES',   true);
+// Rétention distincte : ces archives pèsent bien plus lourd qu'un dump SQL
+// (les PDF de factures ne se compressent presque pas).
+define('BACKUP_FILES_RETENTION', 3);
+// Garde-fou : au-delà de cette taille, l'archive est ignorée et la sauvegarde
+// SQL signale l'avertissement plutôt que de saturer le disque en silence.
+define('BACKUP_FILES_MAX_BYTES', 500 * 1024 * 1024);   // 500 Mo
 
 // Sauvegarde automatique « sans cron » : déclenchée par le trafic web.
 // Idéal en conteneur (pas de crontab). Une seule sauvegarde est créée par
