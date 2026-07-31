@@ -7493,10 +7493,10 @@ elseif ($page === 'invoices') {
         $wSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
         // Tri (colonnes en liste blanche)
-        // Le tri « utilisateur » suit ce qui est AFFICHÉ : le titulaire du
-        // référentiel d'abord, le nom porté par la facture en repli.
+        // Deux colonnes de nom, deux tris : « user » sur le titulaire du
+        // référentiel, « sfr » sur le nom porté par la facture.
         $sortDefs = ['total' => 't.total_ht', 'phone' => 't.phone_number',
-                     'user' => "COALESCE(NULLIF(t.agent_name,''), t.sfr_user)",
+                     'user' => 't.agent_name', 'sfr' => 't.sfr_user',
                      'svc' => 't.service_name', 'plan' => 't.plan_name', 'hf' => 't.hf_ht',
                      'data' => 't.data_ko', 'sms' => 't.sms_count', 'calls' => 't.calls_seconds',
                      'intl' => 't.intl_ht', 'surtaxe' => 't.surtaxe_ht'];
@@ -7600,7 +7600,8 @@ elseif ($page === 'invoices') {
         <table class="data-table">
           <thead><tr>
             <th><a href="<?=h($sortLnk('phone'))?>">Ligne<?=$sortIco('phone')?></a></th>
-            <th><a href="<?=h($sortLnk('user'))?>" title="Titulaire du référentiel SimCity ; à défaut, le nom porté par la facture">Titulaire<?=$sortIco('user')?></a></th>
+            <th><a href="<?=h($sortLnk('user'))?>" title="Titulaire du référentiel SimCity">Titulaire (SimCity)<?=$sortIco('user')?></a></th>
+            <th><a href="<?=h($sortLnk('sfr'))?>" title="Nom porté par la facture de l'opérateur">Nom sur la facture<?=$sortIco('sfr')?></a></th>
             <th><a href="<?=h($sortLnk('svc'))?>">Service (SimCity)<?=$sortIco('svc')?></a></th>
             <th><a href="<?=h($sortLnk('plan'))?>">Forfait<?=$sortIco('plan')?></a></th>
             <?php if($multi): ?><th style="text-align:right;">Mois</th><?php endif; ?>
@@ -7613,23 +7614,23 @@ elseif ($page === 'invoices') {
             <th style="text-align:right;"><a href="<?=h($sortLnk('total'))?>">Total HT<?=$sortIco('total')?></a></th>
           </tr></thead>
           <tbody id="tbody-conso">
-          <?php if(!$consoRows): ?><tr><td colspan="12" class="empty-cell">Aucune ligne ne correspond aux filtres</td></tr><?php endif; ?>
+          <?php if(!$consoRows): ?><tr><td colspan="13" class="empty-cell">Aucune ligne ne correspond aux filtres</td></tr><?php endif; ?>
           <?php foreach($consoRows as $c): ?>
           <tr>
             <td style="font-family:var(--font-mono);white-space:nowrap;"><a href="?page=invoices&tab=conso&<?=$qsPeriod?>&line=<?=h($c['phone_number'])?>" title="Historique de la ligne"><?=h(formatPhone($c['phone_number']))?></a></td>
-            <?php // Le titulaire est celui du référentiel ; le nom de la facture
-                  // n'apparaît qu'à défaut, ou en second quand il diverge. ?>
+            <?php // Deux colonnes distinctes : le titulaire vient du référentiel,
+                  // le nom de la facture vient de l'opérateur. L'écart entre les
+                  // deux est signalé — c'est le signal du rapprochement.
+                  $cDiff = (string)$c['agent_name'] !== '' && $c['sfr_user']
+                           && !simcity_name_matches($c['sfr_user'], $c['agent_name']); ?>
             <td>
               <?php if($c['agent_id'] && (string)$c['agent_name'] !== ''): ?>
                 <a href="?page=invoices&tab=conso&<?=$qsPeriod?>&agent=<?=(int)$c['agent_id']?>" title="Toutes les lignes de cet utilisateur, passées et présentes"><?=h($c['agent_name'])?></a>
-                <?php if($c['sfr_user'] && !simcity_name_matches($c['sfr_user'], $c['agent_name'])): ?>
-                <div class="muted" style="font-size:.72rem;" title="Nom porté par la facture de l'opérateur"><i class="bi bi-receipt"></i> <?=h($c['sfr_user'])?></div>
-                <?php endif; ?>
-              <?php elseif($c['sfr_user']): ?>
-                <?=h($c['sfr_user'])?>
-                <div class="muted" style="font-size:.72rem;" title="Aucun titulaire dans le référentiel : nom repris de la facture"><i class="bi bi-receipt"></i> nom de la facture</div>
-              <?php else: ?>—<?php endif; ?>
+              <?php elseif((int)$c['in_app']): ?><span class="muted">non attribuée</span>
+              <?php else: ?><span class="muted">—</span><?php endif; ?>
             </td>
+            <td style="<?=$cDiff ? 'color:var(--warning);' : 'color:var(--text2);'?>"
+                <?=$cDiff ? 'title="Diffère du titulaire du référentiel"' : ''?>><?=h($c['sfr_user'] ?: '—')?></td>
             <td class="muted"><?=(int)$c['in_app'] ? h($c['service_name'] ?: '—') : '<span class="badge badge-danger" style="font-size:.65rem;">hors SimCity</span>'?></td>
             <td class="muted" style="font-size:.8rem;"><?=h($c['plan_name'] ?: '—')?></td>
             <?php if($multi): ?><td class="muted" style="text-align:right;"><?=(int)$c['nbm']?></td><?php endif; ?>
@@ -7644,7 +7645,7 @@ elseif ($page === 'invoices') {
           <?php endforeach; ?>
           </tbody>
           <tfoot><tr style="border-top:2px solid var(--border);font-weight:700;">
-            <td colspan="<?=$multi ? 5 : 4?>">Total de la sélection — <?=$nbRows?> ligne(s)</td>
+            <td colspan="<?=$multi ? 6 : 5?>">Total de la sélection — <?=$nbRows?> ligne(s)</td>
             <td><?=number_format((int)$tot['nbc'], 0, ',', ' ')?> <span class="muted" style="font-weight:400;">(<?=$fmtDur((int)$tot['secs'])?>)</span></td>
             <td style="text-align:right;"><?=number_format((int)$tot['sms'], 0, ',', ' ')?></td>
             <td style="text-align:right;"><?=$fmtData((int)$tot['ko'])?></td>
