@@ -23,7 +23,14 @@ services:
       # ── Authentification Active Directory (optionnel — sinon via l'UI) ──
       # LDAP_ENABLED: "true"
       # LDAP_SERVER: ldaps://dc.chatillon.lan
-      # LDAP_VALIDATE_CERT: "false"           # CA interne/auto-signée
+      # Validation du certificat du contrôleur de domaine. À laisser sur "true" :
+      # sans elle, un attaquant en position d'homme du milieu sur le LAN présente
+      # un faux certificat et récupère les mots de passe AD au moment du bind.
+      # "false" ne se justifie qu'en pré-production, le temps de récupérer le CA.
+      # LDAP_VALIDATE_CERT: "true"
+      # Chaîne de confiance de la PKI interne, montée en lecture seule (volume
+      # /certs ci-dessous). Pointe sur un FICHIER, pas sur le répertoire.
+      # LDAP_CA_CERT: /certs/ca_chatillon.crt
       # LDAP_DOMAIN: chatillon.lan
       # LDAP_BASE_DN: DC=chatillon,DC=lan
       # LDAP_REQUIRED_GROUP: GG-SimCity-Admins
@@ -39,6 +46,10 @@ services:
     volumes:
       - ./uploads:/var/www/html/uploads    # persistance des pièces jointes
       - ./backups:/var/www/html/backups    # persistance des sauvegardes SQL
+      # Certificat de l'autorité interne, requis par LDAP_CA_CERT pour valider
+      # le certificat du contrôleur de domaine en LDAPS. Lecture seule : le
+      # conteneur n'a aucune raison d'écrire dans la PKI.
+      - /home/sysadmin/docker/ca_chatillon:/certs:ro
     depends_on:
       db:
         condition: service_healthy

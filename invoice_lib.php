@@ -47,10 +47,20 @@ function simcity_invoice_pdftotext_bin(): string {
     return getenv('SIMCITY_PDFTOTEXT') ?: 'pdftotext';
 }
 
+// Délai maximal d'extraction, en secondes. Une facture mensuelle réelle
+// (plusieurs centaines de pages) s'extrait en quelques secondes ; la marge est
+// large à dessein, le seuil ne vise que les blocages francs.
+const SIMCITY_PDFTOTEXT_TIMEOUT = 60;
+
 // Extrait le texte d'un PDF avec mise en page préservée (-layout).
 // stdout et stderr sont séparés : les warnings poppler ne doivent jamais se
 // mêler au texte parsé, et un binaire absent doit se diagnostiquer comme tel
 // (pas comme « facture illisible »).
+//
+// La lecture est bornée dans le temps. poppler est historiquement sujet aux
+// boucles et aux explosions de complexité sur PDF malformé : sans délai,
+// stream_get_contents() attend EOF indéfiniment et immobilise le worker Apache.
+// Un dépôt groupé de factures suffirait alors à épuiser le pool de workers.
 function simcity_invoice_extract_text(string $pdfPath): string {
     $bin = simcity_invoice_pdftotext_bin();
     $cmd = escapeshellarg($bin) . ' -layout -enc UTF-8 ' . escapeshellarg($pdfPath) . ' -';
@@ -58,10 +68,50 @@ function simcity_invoice_extract_text(string $pdfPath): string {
     if (!is_resource($proc)) {
         throw new RuntimeException("pdftotext indisponible (binaire : $bin).");
     }
-    $out = (string)stream_get_contents($pipes[1]);
-    $err = trim((string)stream_get_contents($pipes[2]));
-    fclose($pipes[1]); fclose($pipes[2]);
-    proc_close($proc);
+
+    if (DIRECTORY_SEPARATOR === '\\') {
+        // Windows : stream_select() ne sait pas surveiller les tubes de
+        // proc_open. On garde la lecture bloquante d'origine — le poste de
+        // développement n'expose pas d'uploads, l'enjeu est côté conteneur.
+        $out = (string)stream_get_contents($pipes[1]);
+        $err = trim((string)stream_get_contents($pipes[2]));
+        fclose($pipes[1]); fclose($pipes[2]);
+        proc_close($proc);
+    } else {
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+        $out = ''; $err = ''; $timedOut = false;
+        $deadline = microtime(true) + SIMCITY_PDFTOTEXT_TIMEOUT;
+        $open = [1 => $pipes[1], 2 => $pipes[2]];
+        while ($open) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0) { $timedOut = true; break; }
+            $read = array_values($open); $w = null; $x = null;
+            $sec = (int)$remaining;
+            $n = @stream_select($read, $w, $x, $sec, (int)(($remaining - $sec) * 1000000));
+            if ($n === false) break;                  // interruption : on sort et on traite ce qu'on a
+            if ($n === 0) { $timedOut = true; break; }
+            foreach ($read as $pipe) {
+                $chunk = fread($pipe, 65536);
+                if ($chunk === false || $chunk === '') {
+                    if (feof($pipe)) unset($open[$pipe === $pipes[2] ? 2 : 1]);
+                    continue;
+                }
+                if ($pipe === $pipes[2]) $err .= $chunk; else $out .= $chunk;
+            }
+        }
+        if ($timedOut) {
+            proc_terminate($proc, 9);
+            foreach ($pipes as $p) { if (is_resource($p)) fclose($p); }
+            proc_close($proc);
+            throw new RuntimeException('Extraction interrompue : pdftotext a dépassé '
+                . SIMCITY_PDFTOTEXT_TIMEOUT . " s sur ce PDF. Fichier probablement corrompu.");
+        }
+        foreach ($pipes as $p) { if (is_resource($p)) fclose($p); }
+        proc_close($proc);
+        $err = trim($err);
+    }
+
     if (trim($out) === '') {
         if ($err !== '' && (stripos($err, 'not found') !== false || stripos($err, 'reconnu') !== false
                             || stripos($err, 'introuvable') !== false)) {

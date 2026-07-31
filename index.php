@@ -885,13 +885,61 @@ function requestPublicBrand($pdo) {
     return '<div class="brand"><img src="' . $logo . '" alt="Logo"></div>';
 }
 
+// ─── Limitation de débit des endpoints publics ───────────────────────────────
+// Les endpoints ci-dessous répondent SANS authentification : à eux trois, ils
+// exposent l'annuaire Active Directory (noms, e-mails, intitulés de poste),
+// l'équipement attribué à un agent et l'existence d'une adresse dans l'outil.
+// Chacun pris isolément est un confort de saisie ; enchaînés et interrogés en
+// boucle, ils constituent un moissonnage complet du personnel et de son parc,
+// matière première d'un hameçonnage ciblé. On plafonne donc par IP.
+//
+// Renvoie true si l'appel est autorisé (et le comptabilise), false s'il faut le
+// refuser. Un utilisateur connecté n'est jamais limité : l'autocomplétion des
+// pages internes utilise les mêmes endpoints, à un rythme légitimement soutenu.
+function publicRateAllow($pdo, string $bucket, int $maxBurst = 20, int $burstMinutes = 5, int $maxDay = 150): bool {
+    if (!empty($_SESSION['user_id'])) return true;
+    $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    try {
+        $st = $pdo->prepare("SELECT
+                COALESCE(SUM(hit_at > DATE_SUB(NOW(), INTERVAL ? MINUTE)), 0) AS recents,
+                COUNT(*) AS jour
+            FROM rate_limits WHERE bucket=? AND ip=?");
+        $st->execute([$burstMinutes, $bucket, $ip]);
+        $r = $st->fetch();
+        if ((int)$r['recents'] >= $maxBurst || (int)$r['jour'] >= $maxDay) return false;
+        $pdo->prepare("INSERT INTO rate_limits (bucket, ip) VALUES (?,?)")->execute([$bucket, $ip]);
+        // Purge opportuniste (~1 appel sur 50) : la fenêtre la plus large est de
+        // 24 h, au-delà les lignes ne servent plus qu'à grossir la table.
+        if (random_int(1, 50) === 1) {
+            $pdo->exec("DELETE FROM rate_limits WHERE hit_at < DATE_SUB(NOW(), INTERVAL 1 DAY)");
+        }
+    } catch (Throwable $e) {
+        // Table pas encore créée (installation en cours) : ne pas casser le
+        // formulaire public pour un compteur.
+        return true;
+    }
+    return true;
+}
+
+// Réponse commune en cas de dépassement.
+function publicRateDeny($payload = []) {
+    http_response_code(429);
+    header('Retry-After: 300');
+    echo json_encode($payload);
+    exit;
+}
+
 // ─── AJAX PUBLIC : recherche de bénéficiaire (AD prioritaire + référentiel) ──
 // Alimente l'autocomplétion du formulaire public. Sans authentification (le
 // formulaire est public) : longueur minimale et nombre de résultats limités.
 if (isset($_GET['ajax_request_lookup'])) {
     header('Content-Type: application/json; charset=utf-8');
     $q = trim($_GET['q'] ?? '');
-    if (mb_strlen($q) < 2) { echo json_encode([]); exit; }
+    // Deux caractères suffisent pour un utilisateur connecté ; pour un anonyme,
+    // ils suffiraient surtout à balayer l'annuaire en 676 requêtes. Le seuil à
+    // trois réduit le rendement du moissonnage sans gêner la saisie d'un nom.
+    if (mb_strlen($q) < (empty($_SESSION['user_id']) ? 3 : 2)) { echo json_encode([]); exit; }
+    if (!publicRateAllow($pdo, 'req_lookup')) publicRateDeny([]);
     $out = []; $seenEmail = [];
 
     // 1) Active Directory en priorité (via le compte de service)
@@ -926,8 +974,12 @@ if (isset($_GET['ajax_request_lookup'])) {
 // Révélé uniquement sur correspondance EXACTE (e-mail, ou nom complet unique) :
 // le demandeur doit connaître l'identité précise — pas d'énumération à l'aveugle.
 // Version compacte (sans IMEI/ICCID).
+// La correspondance exacte exigée ici ne protège que tant qu'on ignore les
+// identités : ajax_request_lookup les fournit justement. Les deux endpoints se
+// chaînent, ils se plafonnent donc ensemble.
 if (isset($_GET['ajax_request_equipment'])) {
     header('Content-Type: application/json; charset=utf-8');
+    if (!publicRateAllow($pdo, 'req_equip')) publicRateDeny(['found' => false]);
     $agent = requestMatchAgent($pdo, $_GET['email'] ?? '', $_GET['name'] ?? '');
     if (!$agent) { echo json_encode(['found' => false]); exit; }
     echo json_encode(['found' => true,
@@ -951,8 +1003,11 @@ function requestOpenByEmail($pdo, $email) {
 
 // ─── AJAX PUBLIC : « ai-je déjà des demandes ? » (prévention de doublon) ─────
 // Ne renvoie qu'un COMPTE, aucun détail (garde-fou : le détail part par e-mail).
+// Le compte renvoyé reste un oracle : il confirme qu'une adresse est connue de
+// l'outil. Plafonné au même titre que les deux endpoints précédents.
 if (isset($_GET['ajax_request_has'])) {
     header('Content-Type: application/json; charset=utf-8');
+    if (!publicRateAllow($pdo, 'req_has')) publicRateDeny(['count' => 0]);
     echo json_encode(['count' => count(requestOpenByEmail($pdo, $_GET['email'] ?? ''))]);
     exit;
 }
@@ -1235,7 +1290,9 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
       function search(inp){
         const q = inp.value.trim();
         clearTimeout(timer);
-        if (q.length < 2){ hideSug(); return; }
+        // Aligné sur le seuil serveur des appelants anonymes (3 caractères) :
+        // en deçà, la requête repartirait systématiquement vide.
+        if (q.length < 3){ hideSug(); return; }
         timer = setTimeout(async ()=>{
           try { const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q)); renderSug(await r.json()); }
           catch(e){ hideSug(); }
@@ -1275,7 +1332,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
       name.addEventListener('input', ()=>{
         const q = name.value.trim();
         clearTimeout(timer);
-        if (q.length < 2){ hideSug(); return; }
+        if (q.length < 3){ hideSug(); return; }   // seuil serveur : 3 pour un anonyme
         timer = setTimeout(async ()=>{
           try {
             const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
@@ -1337,7 +1394,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'demande') {
         email.value = '';   // saisie manuelle : l'e-mail mémorisé ne vaut plus
         const q = name.value.trim();
         clearTimeout(timer);
-        if (q.length < 2){ hideSug(); return; }
+        if (q.length < 3){ hideSug(); return; }   // seuil serveur : 3 pour un anonyme
         timer = setTimeout(async ()=>{
           try {
             const r = await fetch('index.php?ajax_request_lookup=1&q='+encodeURIComponent(q));
@@ -2468,7 +2525,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
             } else {
                 // Connexion réussie : régénérer l'ID de session (anti-fixation)
                 session_regenerate_id(true);
-                $pdo->prepare("DELETE FROM login_attempts WHERE username=? OR ip=?")->execute([$loginUser, $loginIp]);
+                // Purge du SEUL compte qui vient de réussir. Effacer aussi les
+                // tentatives de l'IP rendrait le verrou contournable : titulaire
+                // d'un compte valide, on brute-force un compte admin par salves
+                // de quatre, on se reconnecte avec le sien pour remettre le
+                // compteur d'IP à zéro, et on recommence indéfiniment.
+                $pdo->prepare("DELETE FROM login_attempts WHERE username=?")->execute([$loginUser]);
                 $_SESSION['user_id'] = $u['id'];
                 $_SESSION['username'] = $u['username'];
                 $_SESSION['is_admin'] = !empty($u['is_admin']);

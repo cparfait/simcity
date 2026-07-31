@@ -18,8 +18,27 @@ define('APP_VERSION', '1.0');
 //      Exemple :  environment: { DB_HOST: simcity_db, DB_USER: simcity, DB_PASS: secret }
 define('DB_HOST',    getenv('DB_HOST') ?: 'localhost');
 define('DB_NAME',    getenv('DB_NAME') ?: 'simcity_db');
-define('DB_USER',    getenv('DB_USER') ?: 'root');
-define('DB_PASS',    getenv('DB_PASS') ?: '');
+
+// Le repli « root / mot de passe vide » ne subsiste que pour un serveur MySQL
+// local (Laragon, WAMP, XAMPP). Hors de ce cas — donc en conteneur, où DB_HOST
+// désigne un autre hôte — une variable DB_USER oubliée doit faire échouer le
+// démarrage bruyamment plutôt que de tenter silencieusement une connexion root
+// sans mot de passe.
+$__dbLocal = in_array(DB_HOST, ['localhost', '127.0.0.1', '::1'], true);
+$__dbUser  = getenv('DB_USER');
+$__dbPass  = getenv('DB_PASS');
+if ($__dbUser === false || $__dbUser === '') {
+    if (!$__dbLocal) {
+        http_response_code(500);
+        die('Configuration incomplète : la variable d\'environnement DB_USER est requise (DB_HOST=' . DB_HOST . ').');
+    }
+    $__dbUser = 'root';
+    $__dbPass = '';
+}
+define('DB_USER',    $__dbUser);
+define('DB_PASS',    $__dbPass === false ? '' : $__dbPass);
+unset($__dbLocal, $__dbUser, $__dbPass);
+
 define('DB_CHARSET', 'utf8mb4');
 
 // ─── Session ─────────────────────────────────────────────────

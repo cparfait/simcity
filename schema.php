@@ -285,6 +285,19 @@ function simcity_apply_schema(PDO $pdo): void
         INDEX idx_login_ip   (ip, attempted_at)
     ) ENGINE=InnoDB;");
 
+    // ── Limitation de débit des endpoints publics ────────────
+    // Table distincte de login_attempts À DESSEIN : y mélanger les appels du
+    // formulaire public verrouillerait la page de connexion des utilisateurs
+    // partageant l'IP de sortie de la collectivité.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS rate_limits (
+        id     INT AUTO_INCREMENT PRIMARY KEY,
+        bucket VARCHAR(40) NOT NULL,
+        ip     VARCHAR(45) NOT NULL,
+        hit_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_rl_key (bucket, ip, hit_at),
+        INDEX idx_rl_age (hit_at)
+    ) ENGINE=InnoDB;");
+
     // ── Comptes administrateurs ──────────────────────────────
     $pdo->exec("CREATE TABLE IF NOT EXISTS users (
         id             INT AUTO_INCREMENT PRIMARY KEY,

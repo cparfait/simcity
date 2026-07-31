@@ -71,11 +71,22 @@
 
 # ─── En-têtes de sécurité HTTP ────────────────────────────────
 <IfModule mod_headers.c>
-    # Protection XSS navigateur
-    Header always set X-XSS-Protection "1; mode=block"
+    # X-XSS-Protection est volontairement ABSENT : l'auditeur XSS des navigateurs
+    # a été retiré de Chrome et n'a jamais existé sur Firefox. Ses dernières
+    # implémentations introduisaient elles-mêmes des fuites de données par
+    # filtrage sélectif — le réactiver dégraderait la sécurité au lieu de
+    # l'améliorer. Ne pas le remettre.
 
     # Interdit le chargement dans une iframe (clickjacking)
     Header always set X-Frame-Options "DENY"
+
+    # Équivalent moderne de X-Frame-Options, plus quelques verrous sans coût :
+    # base-uri empêche un HTML injecté de détourner les URL relatives vers un
+    # domaine tiers, object-src ferme les greffons Flash/Java.
+    # Pas de script-src ni de style-src : les pages reposent massivement sur des
+    # scripts et des styles en ligne ; une politique complète demanderait de tous
+    # les externaliser ou de les signer par nonce, chantier à part entière.
+    Header always set Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 
     # Interdit au navigateur de deviner le type MIME
     Header always set X-Content-Type-Options "nosniff"
