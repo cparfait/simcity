@@ -3002,7 +3002,7 @@ if (isset($_GET['ajax_agent_details'])) {
     $id = (int)$_GET['ajax_agent_details'];
     $agt = $pdo->query("SELECT a.*, s.name as service_name FROM agents a LEFT JOIN services s ON a.service_id=s.id WHERE a.id=$id")->fetch();
     $lines = $pdo->query("SELECT l.phone_number, l.iccid, l.pin, l.puk, p.name as plan_name, l.status, COALESCE(l.personal_device,0) as personal_device, COALESCE(l.esim,0) as esim, l.eid, l.activation_code FROM mobile_lines l LEFT JOIN plan_types p ON l.plan_id=p.id WHERE l.agent_id=$id AND l.archived=0")->fetchAll();
-    $devices = $pdo->query("SELECT DISTINCT d.imei, m.brand, m.name, m.category, d.status FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
+    $devices = $pdo->query("SELECT DISTINCT d.imei, m.brand, m.name, m.category, d.status, COALESCE(d.mdm,0) as mdm FROM devices d LEFT JOIN models m ON d.model_id=m.id WHERE (d.agent_id=$id OR d.id IN (SELECT device_id FROM mobile_lines WHERE agent_id=$id AND device_id IS NOT NULL)) AND d.archived=0")->fetchAll();
     // Lignes BYOD (téléphone perso, pas de device dans le parc)
     $byodLines = array_filter($lines, fn($l) => !empty($l['personal_device']));
 
@@ -3177,7 +3177,7 @@ if (isset($_GET['ajax_agent_details'])) {
     echo "<h4 style='color:var(--primary); margin-bottom:10px; margin-top:1.5rem; border-bottom:1px solid var(--border); padding-bottom:5px;'><i class='bi bi-phone'></i> Matériels attribués</h4>";
     $hasAnything = $devices || $byodLines;
     if(!$hasAnything) echo "<div class='muted'>Aucun matériel.</div>";
-    foreach($devices as $d) { echo "<div style='background:var(--card2); border:1px solid var(--border); padding:10px; border-radius:8px; margin-bottom:10px;'><strong>".h($d['brand'].' '.$d['name'])."</strong> ".statusBadge($d['status'])."<br><span class='muted'>IMEI: ".h($d['imei'])."</span></div>"; }
+    foreach($devices as $d) { echo "<div style='background:var(--card2); border:1px solid var(--border); padding:10px; border-radius:8px; margin-bottom:10px;'><strong>".h($d['brand'].' '.$d['name'])."</strong> ".statusBadge($d['status']).(!empty($d['mdm']) ? " <span class='badge badge-success' title='Piloté par le MDM'><i class='bi bi-shield-check'></i> MDM</span>" : "")."<br><span class='muted'>IMEI: ".h($d['imei'])."</span></div>"; }
     foreach($byodLines as $l) {
         echo "<div style='background:rgba(56,189,248,.07); border:1px solid rgba(56,189,248,.25); padding:10px; border-radius:8px; margin-bottom:10px;'>
                 <strong style='color:var(--info);'><i class='bi bi-phone'></i> Téléphone personnel (BYOD)</strong><br>
@@ -4629,13 +4629,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (empty($d['_ajax'])) { $qaError ? flash('error', $qaError) : flash('success', 'Attribution enregistrée.'); }
         } elseif ($ent === 'device') {
             $mod = IV($d,'model_id'); $agt = IV($d,'agent_id'); $svc = IV($d,'service_id'); $pd = NV($d,'purchase_date');
+            $mdm = !empty($d['mdm']) ? 1 : 0;
             if ($act === 'add') {
-                $pdo->prepare("INSERT INTO devices(imei,imei2,serial_number,inventory_label,model_id,status,agent_id,service_id,purchase_date,notes)VALUES(?,?,?,?,?,?,?,?,?,?)")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status','Stock'),$agt,$svc,$pd,S($d,'notes')]);
+                $pdo->prepare("INSERT INTO devices(imei,imei2,serial_number,inventory_label,model_id,status,agent_id,service_id,purchase_date,mdm,notes)VALUES(?,?,?,?,?,?,?,?,?,?,?)")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status','Stock'),$agt,$svc,$pd,$mdm,S($d,'notes')]);
                 $newId = $pdo->lastInsertId();
                 if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $newId, "Matériel affecté à $agtName", $agt); cancelPendingBons($pdo, $agt, "Nouveau matériel affecté"); }
             } elseif ($act === 'edit') {
-                $old = $pdo->query("SELECT agent_id FROM devices WHERE id=$id")->fetchColumn();
-                $pdo->prepare("UPDATE devices SET imei=?,imei2=?,serial_number=?,inventory_label=?,model_id=?,status=?,agent_id=?,service_id=?,purchase_date=?,notes=? WHERE id=?")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status'),$agt,$svc,$pd,S($d,'notes'),$id]);
+                $before = $pdo->query("SELECT agent_id, mdm FROM devices WHERE id=$id")->fetch();
+                $old = $before['agent_id'] ?? null;
+                $pdo->prepare("UPDATE devices SET imei=?,imei2=?,serial_number=?,inventory_label=?,model_id=?,status=?,agent_id=?,service_id=?,purchase_date=?,mdm=?,notes=? WHERE id=?")->execute([S($d,'imei'),S($d,'imei2'),S($d,'serial_number'),NV($d,'inventory_label'),$mod,S($d,'status'),$agt,$svc,$pd,$mdm,S($d,'notes'),$id]);
+                // L'enrôlement MDM est une info de conformité : on la trace dans l'historique.
+                if ((int)($before['mdm'] ?? 0) !== $mdm) {
+                    logHistory($pdo, 'device', $id, $mdm ? "🛡️ Périphérique déclaré piloté par le MDM" : "⚠️ Périphérique déclaré non piloté par le MDM", $agt ?: $old);
+                }
                 if ($old != $agt) {
                     if ($old) { logHistory($pdo, 'device', $id, "Matériel retiré de la dotation", $old); cancelPendingBons($pdo, $old, "Matériel retiré"); }
                     if ($agt) { $agtName = getAgentName($pdo, $agt); logHistory($pdo, 'device', $id, "Matériel affecté à $agtName", $agt); cancelPendingBons($pdo, $agt, "Nouveau matériel affecté"); } 
@@ -5519,13 +5525,56 @@ elseif ($page === 'devices') {
     $where = "d.archived=" . ($isArchive ? "1" : "0");
     if ($isStock) $where .= " AND d.status='Stock'"; elseif (!$isArchive) $where .= " AND d.status!='Stock'";
 
-    $devices = $pdo->query("SELECT d.id, d.imei, d.imei2, d.serial_number, d.inventory_label, d.model_id, d.status, d.agent_id, d.service_id, d.purchase_date, d.notes, d.archived, d.created_at, a.first_name, a.last_name, s.name as service_name, m.brand, m.name as model_name, m.category,
+    // ── Recherche avancée ────────────────────────────────────────
+    // Critères tous facultatifs, combinés en ET, et portés par un formulaire GET :
+    // l'URL reste partageable et le bouton « précédent » du navigateur fonctionne.
+    // Le filtre rapide au-dessus du tableau reste un tri visuel côté navigateur ;
+    // ici tout se joue en SQL, donc sur l'ensemble du parc et pas sur la page vue.
+    $f = fn($k) => trim((string)($_GET['f_' . $k] ?? ''));
+    $fq = $f('q'); $fBrand = $f('brand'); $fModel = $f('model'); $fCat = $f('category');
+    $fStatus = $f('status'); $fService = $f('service'); $fAgent = $f('agent');
+    $fLine = $f('line'); $fMdm = $f('mdm'); $fFrom = $f('from'); $fTo = $f('to');
+    $activeFilters = array_filter([$fq, $fBrand, $fModel, $fCat, $fStatus, $fService, $fAgent, $fLine, $fMdm, $fFrom, $fTo], fn($v) => $v !== '');
+
+    $params = [];
+    if ($fq !== '') {
+        // Un seul champ pour tout ce qui identifie un matériel ou son porteur.
+        $where .= " AND (d.imei LIKE ? OR d.imei2 LIKE ? OR d.serial_number LIKE ? OR d.inventory_label LIKE ?
+                     OR d.notes LIKE ? OR m.brand LIKE ? OR m.name LIKE ? OR s.name LIKE ?
+                     OR CONCAT_WS(' ', a.first_name, a.last_name) LIKE ?
+                     OR CONCAT_WS(' ', a.last_name, a.first_name) LIKE ?)";
+        $params = array_merge($params, array_fill(0, 10, '%' . $fq . '%'));
+    }
+    if ($fBrand   !== '') { $where .= " AND m.brand = ?";     $params[] = $fBrand; }
+    if ($fModel   !== '') { $where .= " AND d.model_id = ?";  $params[] = (int)$fModel; }
+    if ($fCat     !== '') { $where .= " AND m.category = ?";  $params[] = $fCat; }
+    if ($fStatus  !== '') { $where .= " AND d.status = ?";    $params[] = $fStatus; }
+    if ($fMdm     !== '') { $where .= " AND d.mdm = ?";       $params[] = (int)$fMdm; }
+    // '0' = « sans service », distinct de « peu importe »
+    if ($fService === '0') { $where .= " AND d.service_id IS NULL"; }
+    elseif ($fService !== '') { $where .= " AND d.service_id = ?"; $params[] = (int)$fService; }
+    if ($fAgent === 'yes') $where .= " AND d.agent_id IS NOT NULL";
+    elseif ($fAgent === 'no') $where .= " AND d.agent_id IS NULL";
+    if ($fLine === 'yes' || $fLine === 'no') {
+        $where .= ($fLine === 'yes' ? " AND EXISTS" : " AND NOT EXISTS")
+                . " (SELECT 1 FROM mobile_lines ml WHERE ml.device_id = d.id AND ml.archived = 0)";
+    }
+    if ($fFrom !== '') { $where .= " AND d.purchase_date >= ?"; $params[] = $fFrom; }
+    if ($fTo   !== '') { $where .= " AND d.purchase_date <= ?"; $params[] = $fTo; }
+
+    $devQ = $pdo->prepare("SELECT d.id, d.imei, d.imei2, d.serial_number, d.inventory_label, d.model_id, d.status, d.agent_id, d.service_id, d.purchase_date, d.mdm, d.notes, d.archived, d.created_at, a.first_name, a.last_name, s.name as service_name, m.brand, m.name as model_name, m.category,
         (SELECT id FROM mobile_lines WHERE device_id=d.id AND archived=0 LIMIT 1) as line_id,
         (SELECT phone_number FROM mobile_lines WHERE device_id=d.id AND archived=0 LIMIT 1) as line_phone
-        FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC")->fetchAll();
-    
+        FROM devices d LEFT JOIN agents a ON d.agent_id=a.id LEFT JOIN services s ON d.service_id=s.id LEFT JOIN models m ON d.model_id=m.id WHERE $where ORDER BY d.created_at DESC");
+    $devQ->execute($params);
+    $devices = $devQ->fetchAll();
+
     $models = $pdo->query("SELECT id, brand, name FROM models ORDER BY brand, name")->fetchAll();
     $services = $pdo->query("SELECT id, name FROM services ORDER BY name")->fetchAll();
+    // Valeurs proposées dans les listes : celles réellement présentes dans le parc
+    $fBrands = $pdo->query("SELECT DISTINCT brand FROM models WHERE brand<>'' ORDER BY brand")->fetchAll(PDO::FETCH_COLUMN);
+    $fCats   = $pdo->query("SELECT DISTINCT category FROM models WHERE category IS NOT NULL AND category<>'' ORDER BY category")->fetchAll(PDO::FETCH_COLUMN);
+    $fStatuses = $pdo->query("SELECT DISTINCT status FROM devices WHERE archived=" . ($isArchive ? "1" : "0") . " AND status IS NOT NULL ORDER BY status")->fetchAll(PDO::FETCH_COLUMN);
     ?>
     <?php if(!$isArchive): ?>
     <div class="page-header">
@@ -5539,9 +5588,56 @@ elseif ($page === 'devices') {
         <a href="?page=devices&tab=archive" class="tab-btn <?=$tab==='archive'?'active':''?>"><i class="bi bi-archive"></i> Archives (Perdus / Cassés)</a>
     </div>
 
-    <div class="search-bar-wrap">
-      <div class="search-bar"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Rechercher IMEI, Modèle, Agent..." oninput="tableSearch(this,'tbody-dev','count')"></div>
+    <div class="search-bar-wrap search-bar-inline">
+      <div class="search-bar" style="flex:1 1 380px;"><span class="search-bar-icon"><i class="bi bi-search"></i></span><input type="text" placeholder="Rechercher IMEI, Modèle, Agent..." oninput="tableSearch(this,'tbody-dev','count')"></div>
+      <button type="button" class="btn-secondary" style="white-space:nowrap;" onclick="toggleAdvSearch()">
+        <i class="bi bi-sliders"></i> Recherche avancée<?php if($activeFilters): ?> <span class="badge badge-info" style="margin-left:.3rem;"><?=count($activeFilters)?></span><?php endif; ?>
+      </button>
       <div class="search-count" id="count"></div>
+    </div>
+
+    <!-- RECHERCHE AVANCÉE : filtres SQL, donc sur tout le parc de l'onglet -->
+    <div class="card" id="adv-search" style="display:<?=$activeFilters ? 'block' : 'none'?>;margin-bottom:1rem;padding:1.25rem;">
+      <form method="get" class="form-grid" style="margin:0;">
+        <input type="hidden" name="page" value="devices">
+        <input type="hidden" name="tab" value="<?=h($tab)?>">
+        <div class="form-group form-full"><label>Texte libre <span style="font-weight:400;text-transform:none;">(IMEI, n° de série, libellé d'inventaire, notes, marque, modèle, agent, service)</span></label>
+          <input type="text" name="f_q" value="<?=h($fq)?>" placeholder="Ex : 35693803564, MOB-0042, Dupont..."></div>
+        <div class="form-group"><label>Marque</label>
+          <select name="f_brand"><option value="">-- Toutes --</option>
+            <?php foreach($fBrands as $b): ?><option value="<?=h($b)?>" <?=$fBrand===$b?'selected':''?>><?=h($b)?></option><?php endforeach; ?></select></div>
+        <div class="form-group"><label>Modèle</label>
+          <select name="f_model"><option value="">-- Tous --</option>
+            <?php foreach($models as $m): ?><option value="<?=$m['id']?>" <?=$fModel===(string)$m['id']?'selected':''?>><?=h($m['brand'].' '.$m['name'])?></option><?php endforeach; ?></select></div>
+        <div class="form-group"><label>Type de matériel</label>
+          <select name="f_category"><option value="">-- Tous --</option>
+            <?php foreach($fCats as $c): ?><option value="<?=h($c)?>" <?=$fCat===$c?'selected':''?>><?=h($c)?></option><?php endforeach; ?></select></div>
+        <div class="form-group"><label>Statut</label>
+          <select name="f_status"><option value="">-- Tous --</option>
+            <?php foreach($fStatuses as $st): ?><option value="<?=h($st)?>" <?=$fStatus===$st?'selected':''?>><?=h(strip_tags(statusBadge($st)))?></option><?php endforeach; ?></select></div>
+        <div class="form-group"><label>Service / Direction</label>
+          <select name="f_service"><option value="">-- Tous --</option><option value="0" <?=$fService==='0'?'selected':''?>>— Sans service —</option>
+            <?php foreach($services as $s): ?><option value="<?=$s['id']?>" <?=$fService===(string)$s['id']?'selected':''?>><?=h($s['name'])?></option><?php endforeach; ?></select></div>
+        <div class="form-group"><label><i class="bi bi-shield-check"></i> MDM</label>
+          <select name="f_mdm"><option value="">-- Tous --</option>
+            <option value="1" <?=$fMdm==='1'?'selected':''?>>Piloté par le MDM</option>
+            <option value="0" <?=$fMdm==='0'?'selected':''?>>Hors MDM</option></select></div>
+        <div class="form-group"><label>Affectation</label>
+          <select name="f_agent"><option value="">-- Peu importe --</option>
+            <option value="yes" <?=$fAgent==='yes'?'selected':''?>>Affecté à un utilisateur</option>
+            <option value="no"  <?=$fAgent==='no' ?'selected':''?>>Non affecté</option></select></div>
+        <div class="form-group"><label>Ligne associée</label>
+          <select name="f_line"><option value="">-- Peu importe --</option>
+            <option value="yes" <?=$fLine==='yes'?'selected':''?>>Avec une ligne</option>
+            <option value="no"  <?=$fLine==='no' ?'selected':''?>>Sans ligne</option></select></div>
+        <div class="form-group"><label>Acheté à partir du</label><input type="date" name="f_from" value="<?=h($fFrom)?>"></div>
+        <div class="form-group"><label>Acheté jusqu'au</label><input type="date" name="f_to" value="<?=h($fTo)?>"></div>
+        <div class="form-group form-full" style="display:flex;gap:.6rem;align-items:center;">
+          <button type="submit" class="btn-primary"><i class="bi bi-search"></i> Rechercher</button>
+          <a href="?page=devices&tab=<?=h($tab)?>" class="btn-secondary" style="text-decoration:none;"><i class="bi bi-x-lg"></i> Réinitialiser</a>
+          <?php if($activeFilters): ?><span class="muted" style="font-size:.85rem;"><?=count($devices)?> matériel(s) trouvé(s)</span><?php endif; ?>
+        </div>
+      </form>
     </div>
 
     <!-- BARRE D'ACTIONS EN MASSE MATÉRIELS -->
@@ -5565,9 +5661,9 @@ elseif ($page === 'devices') {
       <table class="data-table">
         <thead><tr>
           <th style="width:36px;cursor:default;"><input type="checkbox" id="chk-all-device" title="Tout sélectionner" onchange="toggleAllBulk('device',this.checked)" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></th>
-          <th>Modèle</th><th>Type</th><th>Identifiants</th><th>Affectation</th><th>Statut</th><th>Date d'achat</th><th>Actions</th></tr></thead>
+          <th>Modèle</th><th>Type</th><th>Identifiants</th><th>Affectation</th><th>Statut</th><th title="Périphérique piloté par le MDM">MDM</th><th>Date d'achat</th><th>Actions</th></tr></thead>
         <tbody id="tbody-dev">
-        <?php if(empty($devices)): ?><tr><td colspan="8" class="empty-cell">Aucun équipement dans cet onglet</td></tr><?php endif; ?>
+        <?php if(empty($devices)): ?><tr><td colspan="9" class="empty-cell"><?=$activeFilters ? 'Aucun matériel ne correspond à la recherche' : 'Aucun équipement dans cet onglet'?></td></tr><?php endif; ?>
         <?php foreach($devices as $d): ?>
         <tr>
           <td><input type="checkbox" class="bulk-chk-device" value="<?=$d['id']?>" onchange="updateBulkBar('device')" style="cursor:pointer;accent-color:var(--primary);width:15px;height:15px;"></td>
@@ -5576,6 +5672,7 @@ elseif ($page === 'devices') {
           <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span><?php if($d['inventory_label']): ?><br><span class="badge badge-muted" style="font-size:.68rem;"><i class="bi bi-tag"></i> <?=h($d['inventory_label'])?></span><?php endif; ?></td>
           <td><?php if($d['agent_id']): ?><strong class="cell-link" onclick="viewAgent(<?=$d['agent_id']?>, '<?=h(addslashes($d['first_name'].' '.$d['last_name']))?>')" title="Ouvrir la fiche utilisateur"><?=h($d['first_name'].' '.$d['last_name'])?></strong><?php else: ?><strong class="muted">Non affecté</strong><?php endif; ?><br><span class="muted"><i class="bi bi-building"></i> <?=h($d['service_name']?:'-')?></span></td>
           <td><?=statusBadge($d['status'])?></td>
+          <td><?php if($d['mdm']): ?><span class="badge badge-success" title="Piloté par le MDM"><i class="bi bi-shield-check"></i> MDM</span><?php else: ?><span class="muted" title="Non piloté par le MDM">—</span><?php endif; ?></td>
           <td><?=$d['purchase_date']?date('d/m/Y',strtotime($d['purchase_date'])):'-'?></td>
           <td class="actions">
             <?php $hist = fetchEntityHistory($pdo, 'device', $d['id']); ?>
@@ -5670,6 +5767,16 @@ elseif ($page === 'devices') {
           <?php foreach($services as $s): ?><option value="<?=$s['id']?>"><?=h($s['name'])?></option><?php endforeach; ?></select>
           <button type="button" class="btn-quickadd" onclick="quickAddOpen('service','<?=$act?>-service_id')" title="Ajouter un service"><i class="bi bi-plus-lg"></i></button>
           </div>
+        </div>
+        <div class="form-group form-full">
+          <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:.7rem 1rem;text-transform:none;">
+            <input type="checkbox" name="mdm" id="<?=$act?>-mdm" value="1"
+              style="width:16px;height:16px;accent-color:var(--success);cursor:pointer;flex-shrink:0;">
+            <span>
+              <strong style="color:var(--success);"><i class="bi bi-shield-check"></i> Piloté par le MDM</strong>
+              <span style="color:var(--text3);font-size:.82rem;margin-left:.4rem;">— l'appareil est enrôlé dans la solution de gestion de flotte</span>
+            </span>
+          </label>
         </div>
         <div class="form-group form-full"><label>Notes</label><textarea name="notes" id="<?=$act?>-notes" rows="2"></textarea></div>
       </div>
@@ -11262,7 +11369,16 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // MODALES
-function openModal(id){ 
+// Panneau de recherche avancée (matériels) : replié par défaut, déplié dès
+// qu'un critère est actif — c'est le serveur qui décide de l'état initial.
+function toggleAdvSearch(){
+  const p = document.getElementById('adv-search');
+  if(!p) return;
+  p.style.display = (p.style.display === 'none') ? 'block' : 'none';
+  if(p.style.display === 'block') { const i = p.querySelector('input[name="f_q"]'); if(i) i.focus(); }
+}
+
+function openModal(id){
   const e=document.getElementById(id); 
   if(e){
     e.classList.add('open');
@@ -11275,6 +11391,11 @@ function openModal(id){
       if(chkSv) { chkSv.checked = false; toggleSimVierge('add'); }
       const chkEsim = document.getElementById('add-esim');
       if(chkEsim) { chkEsim.checked = false; toggleEsim('add'); }
+    }
+    // Le navigateur conserve l'état des cases à cocher : on repart d'un matériel non enrôlé
+    if(id === 'modal-add-device') {
+      const chkMdm = document.getElementById('add-mdm');
+      if(chkMdm) chkMdm.checked = false;
     }
   }
 }
@@ -11538,6 +11659,11 @@ function openEditModal(data, ent){
   if(ent === 'line' || ent === 'device'){
     const as = document.getElementById('edit-agent_search');
     if(as) as.value = data.agent_id ? ((data.last_name||'')+' '+(data.first_name||'')).trim() : '';
+  }
+  // Restaure la case « piloté par le MDM » pour les matériels
+  if(ent === 'device') {
+    const chkMdm = document.getElementById('edit-mdm');
+    if(chkMdm) chkMdm.checked = (data.mdm == 1 || data.mdm === '1');
   }
   // Restaure la case is_admin pour les comptes admin
   if(ent === 'admin') {

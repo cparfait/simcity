@@ -95,6 +95,7 @@ function simcity_apply_schema(PDO $pdo): void
         agent_id        INT NULL,
         service_id      INT NULL,
         purchase_date   DATE NULL,
+        mdm             TINYINT(1) NOT NULL DEFAULT 0,
         notes           TEXT,
         archived        TINYINT(1) DEFAULT 0,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -420,6 +421,11 @@ function simcity_apply_schema(PDO $pdo): void
     // devices.inventory_label
     if (empty($pdo->query("SHOW COLUMNS FROM devices LIKE 'inventory_label'")->fetchAll())) {
         $pdo->exec("ALTER TABLE devices ADD COLUMN inventory_label VARCHAR(100) NULL AFTER serial_number");
+    }
+
+    // devices.mdm : le périphérique est-il enrôlé dans le MDM ?
+    if (empty($pdo->query("SHOW COLUMNS FROM devices LIKE 'mdm'")->fetchAll())) {
+        $pdo->exec("ALTER TABLE devices ADD COLUMN mdm TINYINT(1) NOT NULL DEFAULT 0 AFTER purchase_date");
     }
 
     // mobile_lines : codes SIM secondaires et RIO (export de parc SFR).
