@@ -2727,7 +2727,13 @@ function simcity_duree_depuis(string $ymd): string {
 
 function statusBadge($s) {
     $map = ['Stock'=>['En Stock / Dispo','badge-success'], 'Deployed'=>['Déployé / Actif','badge-info'], 'Repair'=>['Réparation','badge-warning'], 'HS'=>['Casse / Rebus','badge-danger'], 'Lost'=>['Perdu / Volé','badge-danger'], 'Active'=>['Active','badge-success'], 'Suspended'=>['Suspendue','badge-warning'], 'Resiliated'=>['Résiliée','badge-danger']];
-    [$label, $cls] = $map[$s] ?? [$s, 'badge-muted']; return "<span class='badge $cls'>$label</span>";
+    // Statut inconnu : le libelle retombe sur la valeur brute de la base.
+    // mobile_lines.status / devices.status sont des VARCHAR(20), pas des ENUM :
+    // la colonne ne garantit rien, seul strip_tags() des formulaires et la liste
+    // blanche des imports filtrent aujourd'hui. On echappe donc ici plutot que de
+    // dependre de tous les appelants presents et futurs. $cls vient du tableau ou
+    // d'un litteral, il n'a pas besoin de l'etre.
+    [$label, $cls] = $map[$s] ?? [$s, 'badge-muted']; return "<span class='badge $cls'>" . h($label) . "</span>";
 }
 function getSetting($pdo, $key, $default=0) {
     $st = $pdo->prepare("SELECT setting_value FROM settings WHERE setting_key=?");
