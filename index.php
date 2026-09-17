@@ -127,9 +127,12 @@ if (isset($_GET['page']) && $_GET['page'] === 'sign') {
     $canSignNow = $bon && $bon['status'] === 'pending' && (!$bon['expires_at'] || strtotime($bon['expires_at']) >= time());
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canSignNow && isset($_POST['signature_data'])) {
         $sigData = $_POST['signature_data'];
-        // Stocké brut : l'échappement est fait à l'affichage (h() / htmlspecialchars),
-        // sinon un nom comme « D'Angelo » serait doublement encodé.
-        $signerName = trim($_POST['signer_name'] ?? '');
+        // Source publique non authentifiée : on retire le balisage à l'entrée,
+        // comme les autres formulaires publics (demande, validation). Les
+        // apostrophes sont conservées telles quelles — un nom comme « D'Angelo »
+        // ne doit pas être doublement encodé : c'est h() / esc() qui échappe
+        // au moment de l'affichage.
+        $signerName = trim(strip_tags($_POST['signer_name'] ?? ''));
         $ip = $_SERVER['REMOTE_ADDR'] ?? '';
         $justSigned = false;
         // Valider que c'est bien du base64 PNG
@@ -3231,7 +3234,7 @@ if (isset($_GET['ajax_agent_details'])) {
             $hiddenStyle = $hi >= $histShown ? 'display:none;' : '';
             $hiddenClass = $hi >= $histShown ? " class='agent-hist-more'" : '';
             echo "<li$hiddenClass style='{$hiddenStyle}padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid var(--border)'>";
-            echo "<strong style='color:var(--primary); font-size:.8rem;'>$icon - {$h['dt']}</strong><br><span style='font-size:.9rem;'>{$desc}</span><br><span style='font-size:.7rem; color:var(--text3);'>Par : " . h($h['author']?:'Système') . "</span></li>";
+            echo "<strong style='color:var(--primary); font-size:.8rem;'>$icon - {$h['dt']}</strong><br><span style='font-size:.9rem;'>" . h($desc) . "</span><br><span style='font-size:.7rem; color:var(--text3);'>Par : " . h($h['author']?:'Système') . "</span></li>";
         } echo "</ul>";
         if ($histTotal > $histShown) {
             echo "<button type='button' class='btn-secondary' style='font-size:.78rem;padding:.4rem .9rem;margin-top:.25rem;'
@@ -5135,7 +5138,7 @@ if ($page === 'dashboard') {
                 const req = await fetch('index.php?ajax_global_search=1&q=' + encodeURIComponent(q));
                 const data = await req.json();
                 if (!data || data.length === 0) {
-                    resDiv.innerHTML = '<div style="padding:1rem;color:var(--text3);text-align:center">Aucun résultat trouvé pour "'+q+'"</div>';
+                    resDiv.innerHTML = '<div style="padding:1rem;color:var(--text3);text-align:center">Aucun résultat trouvé pour "'+esc(q)+'"</div>';
                     return;
                 }
                 let html = '<table class="data-table"><tbody>';
@@ -5147,7 +5150,7 @@ if ($page === 'dashboard') {
                     
                     html += `<tr style="cursor:pointer; transition:background .15s;" onmouseover="this.style.background='rgba(0,0,0,0.03)'" onmouseout="this.style.background='none'" onclick="window.location.href='${r.link}'">
                         <td style="width:100px">${badge}</td>
-                        <td><strong style="font-size:1.05rem;color:var(--text)">${r.title}</strong><br><span class="muted">${r.subtitle}</span></td>
+                        <td><strong style="font-size:1.05rem;color:var(--text)">${esc(r.title)}</strong><br><span class="muted">${esc(r.subtitle)}</span></td>
                         <td style="text-align:right"><span style="color:var(--primary);font-size:.8rem;font-weight:bold;">Voir →</span></td>
                     </tr>`;
                 });
@@ -5429,7 +5432,7 @@ elseif ($page === 'lines') {
                 data-esim="<?=!empty($sv['esim'])?'1':'0'?>">
                 <?= !empty($sv['esim']) ? '📲 SIM vierge eSIM' : '💳 SIM vierge' ?>
                 <?= $sv['iccid'] ? ' — IMEI: '.h($sv['iccid']) : ' — Sans IMEI' ?>
-                <?= $sv['pin'] ? ' — PIN: '.$sv['pin'] : '' ?>
+                <?= $sv['pin'] ? ' — PIN: '.h($sv['pin']) : '' ?>
               </option>
               <?php endforeach; ?>
             </select>
@@ -10826,6 +10829,10 @@ $content = ob_get_clean();
 <link href="vendor/plex.css" rel="stylesheet">
 <link href="vendor/bootstrap-icons.css" rel="stylesheet">
 <script>(function(){ if (localStorage.getItem('pm_theme') === 'dark') document.documentElement.setAttribute('data-theme','dark'); })();</script>
+<!-- Échappement HTML global : toute donnée venant de la base injectee via innerHTML
+     doit passer par esc(). Des esc() locaux existent dans plusieurs fonctions ;
+     celui-ci sert aux blocs qui n'en ont pas dans leur portee. -->
+<script>window.esc = function (s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; };</script>
 <style>
 /* CSS UNIFIÉ MINIFIÉ — design system aligné sur Sentinelle (IBM Plex, indigo + slate) */
 :root{--bg:#f8fafc;--bg2:#ffffff;--bg3:#f1f5f9;--card:#ffffff;--card2:#f1f5f9;--border:#e2e8f0;--border2:#cbd5e1;--primary:#4f46e5;--primary-dark:#4338ca;--primary-dim:rgba(79,70,229,.08);--primary-glow:rgba(79,70,229,.35);--success:#059669;--success-dim:#d1fae5;--danger:#dc2626;--danger-dim:#fee2e2;--warning:#d97706;--warning-dim:#fef3c7;--info:#2563eb;--info-dim:#dbeafe;--text:#334155;--text-strong:#0f172a;--text2:#64748b;--text3:#94a3b8;--sidebar-w:255px;--topbar-h:64px;--radius:10px;--radius-sm:7px;--radius-lg:14px;--shadow:0 1px 3px rgba(15,23,42,.06),0 1px 2px rgba(15,23,42,.04);--shadow-md:0 4px 12px rgba(15,23,42,.08),0 2px 4px rgba(15,23,42,.04);--shadow-lg:0 12px 28px rgba(15,23,42,.12),0 4px 10px rgba(15,23,42,.06);--ring:0 0 0 3px rgba(79,70,229,.35);--font:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-display:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'IBM Plex Mono',ui-monospace,'SFMono-Regular','Consolas',monospace;}
@@ -11856,11 +11863,11 @@ function showHistory(data) {
     if (!data || !data.length) { c.innerHTML = '<span style="color:var(--text3)">Aucun historique disponible.</span>'; }
     else {
         c.innerHTML = '<ul style="list-style:none;padding:0;margin:0;">' + data.map(h => {
-            let badge = h.agent_name ? `<span class="badge badge-muted" style="margin-left:8px;font-size:0.7rem"><i class="bi bi-person"></i> ${h.agent_name}</span>` : '';
+            let badge = h.agent_name ? `<span class="badge badge-muted" style="margin-left:8px;font-size:0.7rem"><i class="bi bi-person"></i> ${esc(h.agent_name)}</span>` : '';
             return `<li style="padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--border)">
-                <strong style="color:var(--primary);font-size:.8rem">${h.dt}</strong>${badge}<br>
-                <span style="font-size:.9rem">${h.action_desc}</span><br>
-                <span style="font-size:.7rem; color:var(--text3);">Par : ${h.author || 'Système'}</span>
+                <strong style="color:var(--primary);font-size:.8rem">${esc(h.dt)}</strong>${badge}<br>
+                <span style="font-size:.9rem">${esc(h.action_desc)}</span><br>
+                <span style="font-size:.7rem; color:var(--text3);">Par : ${esc(h.author || 'Système')}</span>
             </li>`;
         }).join('') + '</ul>';
     }
@@ -12000,11 +12007,11 @@ async function loadSimHistory() {
       + '<th style="padding:4px 8px;text-align:left;">Par</th>'
       + '</tr></thead><tbody>'
       + rows.map(r => `<tr style="border-bottom:1px solid var(--border);">
-          <td style="padding:5px 8px;color:var(--text2);">${r.dt}</td>
-          <td style="padding:5px 8px;font-family:monospace;color:var(--warning);">${r.old_iccid||'—'}</td>
-          <td style="padding:5px 8px;font-family:monospace;color:var(--success);">${r.new_iccid||'—'}</td>
-          <td style="padding:5px 8px;">${r.reason||'—'}</td>
-          <td style="padding:5px 8px;color:var(--text2);">${r.author||'—'}</td>
+          <td style="padding:5px 8px;color:var(--text2);">${esc(r.dt)}</td>
+          <td style="padding:5px 8px;font-family:monospace;color:var(--warning);">${esc(r.old_iccid||'—')}</td>
+          <td style="padding:5px 8px;font-family:monospace;color:var(--success);">${esc(r.new_iccid||'—')}</td>
+          <td style="padding:5px 8px;">${esc(r.reason||'—')}</td>
+          <td style="padding:5px 8px;color:var(--text2);">${esc(r.author||'—')}</td>
         </tr>`).join('')
       + '</tbody></table>';
   } catch(e) { panel.innerHTML = '<span style="color:var(--danger);font-size:.85rem;">❌ Erreur de chargement.</span>'; }
