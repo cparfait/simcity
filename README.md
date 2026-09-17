@@ -187,7 +187,9 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 
 5. **HTTPS** — deux cas :
    - **Serveur direct** : une fois le certificat TLS en place, passez `FORCE_HTTPS` à `true`
-     dans `config.php` (redirige http → https) et décommentez la ligne **HSTS** dans `.htaccess`.
+     dans `config.php` (redirige http → https). Le **HSTS** est émis automatiquement par
+     `.htaccess`, mais uniquement sur les requêtes arrivées en HTTPS — rien à décommenter,
+     et aucun effet de bord tant que le site est servi en HTTP.
    - **Derrière un reverse proxy** (nginx, Traefik, Cloudflare…) qui termine le TLS :
      laissez `FORCE_HTTPS` à `false` et laissez le proxy gérer la redirection et le HSTS.
      Assurez-vous simplement que le proxy transmet l'en-tête **`X-Forwarded-Proto: https`**
@@ -375,6 +377,26 @@ git pull && docker build -t simcity:local .
   volumes sont conservés : base MySQL (`dbdata`), `uploads` et `backups`.
 
 > 💾 Par prudence, téléchargez une sauvegarde SQL depuis l'application avant toute mise à jour.
+
+### Correctifs de sécurité de l'image de base (à programmer)
+
+L'application n'a **aucun gestionnaire de dépendances** : les bibliothèques front-end
+(Chart.js, qrcode.js, IBM Plex, Bootstrap Icons) sont versionnées dans le dépôt, et tout
+le reste — OpenSSL, libxml, libldap, poppler-utils (`pdftotext`) — vient de l'image
+`php:8.3-apache`. Il n'y a donc rien à auditer côté *lockfile* : **le seul canal de
+correctifs pour ces composants est la reconstruction de l'image**.
+
+Un `docker build` ordinaire réutilise les couches en cache et **ne récupère aucun
+correctif**. Pour re-tirer l'image de base et rejouer `apt-get update` :
+
+```bash
+docker build --pull --no-cache -t simcity:local .
+```
+
+À planifier **périodiquement** (mensuellement par exemple), indépendamment des mises à
+jour applicatives — une installation stable sur le plan fonctionnel accumule sinon les
+CVE système sans que rien ne le signale. Puis recréer les conteneurs comme à l'étape 2
+ci-dessus.
 
 ---
 

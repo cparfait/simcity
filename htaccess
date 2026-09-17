@@ -80,19 +80,44 @@
     # Interdit le chargement dans une iframe (clickjacking)
     Header always set X-Frame-Options "DENY"
 
-    # Équivalent moderne de X-Frame-Options, plus quelques verrous sans coût :
-    # base-uri empêche un HTML injecté de détourner les URL relatives vers un
-    # domaine tiers, object-src ferme les greffons Flash/Java.
-    # Pas de script-src ni de style-src : les pages reposent massivement sur des
-    # scripts et des styles en ligne ; une politique complète demanderait de tous
-    # les externaliser ou de les signer par nonce, chantier à part entière.
-    Header always set Content-Security-Policy "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    # Politique de sécurité du contenu. Toutes les ressources de l'application
+    # sont auto-hébergées (Chart.js, qrcode.js, IBM Plex, Bootstrap Icons) :
+    # 'self' suffit partout, aucun CDN à autoriser.
+    #
+    # Ce que cette politique verrouille : un script injecté ne peut plus charger
+    # de code tiers (script-src 'self'), ni exfiltrer quoi que ce soit vers un
+    # domaine externe — ni par fetch/XHR/WebSocket (connect-src), ni par balise
+    # image (img-src), ni en détournant l'envoi d'un formulaire (form-action).
+    # C'est le canal de sortie qui est fermé, et c'est là que se joue l'essentiel
+    # de l'impact d'une XSS.
+    #
+    # Ce qu'elle ne bloque PAS : 'unsafe-inline' reste nécessaire tant que les
+    # ~160 gestionnaires en ligne (onclick=, onchange=…) et les blocs <script>
+    # inline n'ont pas été externalisés. Un script injecté DANS la page continue
+    # donc de s'exécuter. La CSP est ici une réduction d'impact, jamais un
+    # substitut à l'échappement de sortie : toute donnée issue de la base doit
+    # passer par h() côté PHP et esc() côté JS.
+    #
+    # Durcissement restant, chantier à part entière : supprimer les gestionnaires
+    # en ligne (délégation d'événements via data-*), signer les blocs <script>
+    # par nonce, puis retirer 'unsafe-inline' de script-src.
+    #
+    # img-src autorise data: — les signatures électroniques sont des data:image/png.
+    # Pas de frame-src explicite : l'aperçu de gabarit e-mail est une iframe
+    # srcdoc (déjà sandboxée), et default-src 'self' couvre le reste.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 
     # Interdit au navigateur de deviner le type MIME
     Header always set X-Content-Type-Options "nosniff"
 
-    # HTTPS only - décommenter si vous utilisez HTTPS
-    # Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    # HSTS : interdit au navigateur de retomber en HTTP sur ce domaine.
+    # N'est émis que si la requête est arrivée en HTTPS — sur une installation
+    # servie en HTTP l'en-tête est simplement absent, donc sans effet de bord.
+    # Note : ne pas activer tant que le certificat n'est pas valide, un HSTS posé
+    # par erreur rend le site inaccessible jusqu'à expiration du max-age.
+    # Derrière un reverse proxy qui termine le TLS, %{HTTPS} vaut « off » côté
+    # conteneur : c'est alors au proxy d'émettre l'en-tête.
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains" "expr=%{HTTPS} == 'on'"
 
     # Politique de référencement
     Header always set Referrer-Policy "strict-origin-when-cross-origin"

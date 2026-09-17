@@ -31,6 +31,19 @@ const LDAP_KEYS = [
 ];
 const LDAP_BOOL_KEYS = ['ldap_enabled', 'ldap_use_ssl', 'ldap_validate_cert'];
 
+/* Valeur retenue quand la clé n'est renseignée NI par l'environnement NI par la
+ * table settings — en pratique : installation en cours, table pas encore créée.
+ * La validation du certificat est fail-closed : en l'absence de consigne on
+ * valide, quitte à ce que le bind échoue bruyamment, plutôt que d'accepter en
+ * silence un certificat quelconque sur un canal censé être chiffré.
+ * (schema.php sème déjà ldap_validate_cert à '1' : ce défaut n'est qu'un
+ * filet pour le court instant où la table n'existe pas.) */
+const LDAP_BOOL_DEFAULTS = [
+    'ldap_enabled'       => false,
+    'ldap_use_ssl'       => false,
+    'ldap_validate_cert' => true,
+];
+
 /**
  * Charge la configuration LDAP depuis la table settings (à appeler une fois
  * après la connexion PDO). Les variables d'environnement priment.
@@ -47,7 +60,12 @@ function ldap_init(PDO $pdo): void {
         $envVal = getenv($env);
         $raw = ($envVal !== false && $envVal !== '') ? $envVal : ($rows[$key] ?? '');
         if (in_array($key, LDAP_BOOL_KEYS, true)) {
-            $cfg[$key] = filter_var($raw ?: 'false', FILTER_VALIDATE_BOOLEAN);
+            // Une case décochée vaut '0' : à distinguer de l'absence de valeur,
+            // qui seule doit retomber sur le défaut. Un test sur la valeur vide
+            // uniquement — '0' est falsy en PHP et partirait sinon au défaut.
+            $cfg[$key] = ($raw === '')
+                ? LDAP_BOOL_DEFAULTS[$key]
+                : filter_var($raw, FILTER_VALIDATE_BOOLEAN);
         } elseif ($key === 'ldap_port') {
             $cfg[$key] = (int)$raw;
         } else {
