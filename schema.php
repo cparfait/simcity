@@ -655,6 +655,15 @@ function simcity_apply_schema(PDO $pdo): void
             ->execute([$k, $v, $l]);
     }
 
+    // API en lecture seule pour chatIA (api.php) : désactivée et sans clé à
+    // l'installation. Clés, valeurs par défaut et libellés sont définis une
+    // seule fois, dans api_lib.php (l'API s'en sert aussi de repli).
+    require_once __DIR__ . '/api_lib.php';
+    foreach (SIMCITY_API_SETTINGS as $k => [$v, $l]) {
+        $pdo->prepare("INSERT IGNORE INTO settings (setting_key, setting_value, label) VALUES (?,?,?)")
+            ->execute([$k, $v, $l]);
+    }
+
     // ── Retrait du gabarit DN de bind (remplacé par le seul bind UPN) ──
     // La valeur devait être supprimée et pas seulement masquée : conservée en
     // base, elle continuerait de primer sur l'UPN et de casser le bind.

@@ -314,6 +314,31 @@ Deux points à connaître :
 
 L'import CSV d'inventaire propose le **même écran de comparaison**, en plus du rapprochement des utilisateurs : les deux sources partagent le même moteur et les mêmes règles.
 
+### API en lecture seule pour chatIA
+
+**Référentiels et Paramètres → Paramètres → API chatIA** (super-administrateurs). `api.php` permet à chatIA, l'assistant de la ville, de répondre aux questions sur le parc mobile. **Lecture seule** : une seule méthode (`GET`), aucune route d'écriture, ni session ni cookie.
+
+- **Activation** : désactivée à l'installation (réponse `403`).
+- **Clé** : bouton « Générer une clé » ; elle est affichée **une seule fois**, à coller dans chatIA (Administration › Applications › SimCity › Connexion). SimCity n'en garde que l'**empreinte SHA-256** (rien d'exploitable dans les sauvegardes SQL) et la compare à **temps constant** (`hash_equals`). Régénérer remplace l'ancienne ; « Révoquer » coupe l'accès.
+- **Appel** : en-tête `Authorization: Bearer <clé>`. Sous Apache en CGI/PHP-FPM, le `.htaccess` recopie cet en-tête pour PHP ; sous nginx, rien à faire.
+- **Limite de débit** : N appels par minute et par adresse (réglable, 120 par défaut) ; au-delà de 20 échecs d'authentification en 15 minutes, l'adresse est refusée (`429`). Table `rate_limits`, seaux propres à l'API.
+- **Adresses autorisées** (facultatif) : IP ou réseaux CIDR, IPv4 et IPv6.
+- **Identifiants techniques** (ICCID, IMEI, n° de série et d'inventaire) : transmis ou non, au choix.
+- **Journal** : chaque changement de réglage, génération ou révocation de clé est inscrit dans l'historique (`history_logs`). Les appels ne le sont pas (lectures) : l'écran montre le dernier appel accepté (date, adresse, ressource — jamais le numéro ni le nom cherchés) et les appels acceptés et refusés sur 24 h.
+- `FORCE_HTTPS` vaut aussi pour l'API : un appel en HTTP est refusé (`403`), sans redirection qui ferait renvoyer la clé.
+
+| Ressource | Paramètres | Contenu |
+|---|---|---|
+| `etat` | — | Version de l'API, compteurs (lignes, terminaux) |
+| `ligne` | `numero`, ou `agent`, ou `service` | Lignes : numéro, statut, agent (nom, prénom, service), service, opérateur, forfait, compte de facturation, SIM (type, ICCID*), terminal associé, date d'activation |
+| `agent` | `nom` | Agents (10 au plus) : service, fonction, lignes, terminaux (modèle, statut, MDM, IMEI*), 10 derniers bons (numéro, type, statut, dates) |
+| `stock` | — | Terminaux en stock par modèle, SIM en stock par opérateur et forfait (vierges, eSIM), seuils d'alerte |
+| `synthese` | — | Lignes et terminaux par statut, service, opérateur, forfait, catégorie ; MDM ; bons en attente |
+
+Exemple : `GET api.php?ressource=ligne&numero=0612345678`. Réponses : `200`, `400` (paramètre), `401` (clé), `403` (désactivée, adresse, HTTPS), `404` (ressource), `405` (méthode), `429` (débit), `503` (base). (*) si les identifiants techniques sont transmis.
+
+> 🔒 **Jamais transmis**, quelle que soit la configuration : codes PIN/PUK (1 et 2), RIO, code d'activation eSIM, EID, e-mails, notes libres, signatures, jetons et liens de signature, factures. Les requêtes de l'API ne sélectionnent même pas ces colonnes.
+
 ---
 
 ## Structure du projet
@@ -329,6 +354,8 @@ simcity/
 ├── invoice_lib.php   # Factures opérateur : parseur PDF, remise marché, noms
 ├── sfr_parc_lib.php  # Export « état de parc » SFR : lecteur xlsx + contrôles
 ├── lib_format.php    # Normalisation des noms / e-mails (partagé)
+├── api.php           # API JSON en lecture seule pour chatIA (clé Bearer)
+├── api_lib.php       # Fonctions de l'API : clé, adresses, débit, liste blanche des données
 ├── backup.php        # Sauvegarde automatique (cron / tâche planifiée)
 ├── backup_lib.php    # Fonctions de sauvegarde / restauration (partagées)
 ├── files_lib.php     # Archive tar.gz des fichiers téléversés + cohérence disque ↔ base
@@ -444,9 +471,13 @@ php tests/parc_import_test.php
 php tests/files_backup_test.php
 ```
 
-Le premier valide le parseur de factures sur une facture synthétique (`tests/fixtures/`). Le deuxième fabrique lui-même un classeur `.xlsx` et un CSV, et couvre le lecteur ZIP (méthodes « stocké » et « deflate »), la reconnaissance des colonnes, les normalisations (dates, codes SIM, statuts, en-têtes accentués) et la règle de rapprochement des noms commune aux deux contrôles. Le troisième couvre l'archive `tar.gz` des fichiers téléversés (aller-retour à l'octet près, noms longs, refus d'une archive piégée : remontée `../`, chemin absolu, extension exécutable) et le rapprochement disque ↔ base (orphelins, références cassées).
+```bash
+php tests/api_test.php
+```
 
-**Test de recette HTTP** — `tests/smoke.sh` rejoue le parcours complet (connexion → attribution → génération du bon → signature → restitution → vérifications). À lancer **uniquement contre une instance de test** :
+Le premier valide le parseur de factures sur une facture synthétique (`tests/fixtures/`). Le deuxième fabrique lui-même un classeur `.xlsx` et un CSV, et couvre le lecteur ZIP (méthodes « stocké » et « deflate »), la reconnaissance des colonnes, les normalisations (dates, codes SIM, statuts, en-têtes accentués) et la règle de rapprochement des noms commune aux deux contrôles. Le troisième couvre l'archive `tar.gz` des fichiers téléversés (aller-retour à l'octet près, noms longs, refus d'une archive piégée : remontée `../`, chemin absolu, extension exécutable) et le rapprochement disque ↔ base (orphelins, références cassées). Le quatrième couvre l'API chatIA : lecture et vérification de la clé, adresses autorisées (IPv4, IPv6, CIDR), liste blanche des données (aucun code PIN/PUK, RIO, code eSIM, jeton ni signature, même présents dans la ligne lue), validation des paramètres.
+
+**Test de recette HTTP** — `tests/smoke.sh` rejoue le parcours complet (connexion → attribution → génération du bon → signature → restitution → vérifications → API chatIA : activation, clé montrée une fois, refus sans clé, ligne et agent sans code SIM ni jeton, écriture refusée, révocation). À lancer **uniquement contre une instance de test** :
 
 ```bash
 BASE_URL=http://localhost/simcity/index.php ADMIN_USER=admin ADMIN_PASS=admin bash tests/smoke.sh

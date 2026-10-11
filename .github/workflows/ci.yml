@@ -46,6 +46,9 @@ jobs:
       - name: Test unitaire de l'archivage des fichiers et du rapprochement
         run: php tests/files_backup_test.php
 
+      - name: Test unitaire de l'API chatIA (clé, adresses, liste blanche des données)
+        run: php tests/api_test.php
+
       - name: Test de démarrage (smoke test)
         env:
           DB_HOST: 127.0.0.1

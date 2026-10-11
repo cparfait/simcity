@@ -35,6 +35,13 @@
 <IfModule mod_rewrite.c>
     RewriteEngine On
 
+    # API en lecture seule pour chatIA (api.php) : en CGI ou PHP-FPM, Apache
+    # ne transmet pas l'en-tête « Authorization » à PHP, et la clé d'API
+    # serait perdue. On le recopie dans une variable d'environnement, lue par
+    # simcity_api_bearer() (api_lib.php). Sans effet sur les autres pages.
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule ^api\.php$ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
     # Bloquer tout accès au dossier backups/
     RewriteRule ^backups/ - [F,L]
 

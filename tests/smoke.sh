@@ -3,7 +3,8 @@
 #  SimCity — Test de recette (smoke test) en HTTP pur
 #
 #  ⚠️  À lancer UNIQUEMENT contre une instance de TEST :
-#      le script crée un agent, une ligne et un matériel de test.
+#      le script crée un agent, une ligne et un matériel de test,
+#      et active puis désactive l'API chatIA (sa clé est révoquée).
 #
 #  Usage :
 #    BASE_URL=http://localhost/simcity/index.php \
@@ -89,6 +90,37 @@ for T in dash import reconcile conso alerts; do
     ko "onglet $T en erreur"
   fi
 done
+
+step "8. API en lecture seule pour chatIA"
+API_URL="${BASE_URL%index.php}api.php"
+API_PAGE="$BASE_URL?page=refs&tab=settings&sub=api"
+api_code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
+[ "$(api_code "$API_URL?ressource=etat")" = "403" ] && ok "API désactivée par défaut (403)" || ko "API ouverte sans activation"
+curl -s -b "$CJ" -d "_entity=api_chatia&_action=save&api_chatia_enabled=1&api_chatia_rate=120&api_chatia_ip_allow=&api_chatia_identifiers=1&_csrf=$CSRF" -o /dev/null "$API_PAGE"
+curl -s -b "$CJ" -d "_entity=api_chatia&_action=generate&_csrf=$CSRF" -o /dev/null "$API_PAGE"
+API_KEY=$(curl -s -b "$CJ" "$API_PAGE" | grep -o 'id="api-chatia-cle" value="[a-f0-9]*"' | grep -o '[a-f0-9]\{64\}')
+[ -n "$API_KEY" ] && ok "clé générée et affichée" || ko "clé absente de la page"
+curl -s -b "$CJ" "$API_PAGE" | grep -q 'id="api-chatia-cle"' && ko "clé affichée une seconde fois" || ok "clé montrée une seule fois"
+AUTH="Authorization: Bearer $API_KEY"
+[ "$(api_code "$API_URL?ressource=etat")" = "401" ] && ok "sans clé : 401" || ko "appel accepté sans clé"
+[ "$(api_code -H "Authorization: Bearer $(printf '0%.0s' {1..64})" "$API_URL?ressource=etat")" = "401" ] && ok "fausse clé : 401" || ko "fausse clé acceptée"
+[ "$(api_code -H "$AUTH" "$API_URL?ressource=etat")" = "200" ] && ok "bonne clé : 200" || ko "bonne clé refusée"
+LIGNE=$(curl -s -H "$AUTH" "$API_URL?ressource=ligne&numero=07${STAMP:2:8}")
+echo "$LIGNE" | grep -q "\"numero\":\"07${STAMP:2:8}\"" && ok "ligne retrouvée par son numéro" || ko "ligne introuvable"
+echo "$LIGNE" | grep -qE '"(pin|puk|pin2|puk2|rio|activation_code|notes)"' && ko "code SIM ou note transmis !" || ok "ni PIN, ni PUK, ni RIO, ni note"
+AGENT_JSON=$(curl -s -H "$AUTH" "$API_URL?ressource=agent&nom=Smoke$STAMP")
+echo "$AGENT_JSON" | grep -q '"nombre":1' && ok "agent retrouvé par son nom" || ko "agent introuvable"
+echo "$AGENT_JSON" | grep -q '"numero":"BR-' && ok "bons de l'agent listés" || ko "bons absents"
+echo "$AGENT_JSON" | grep -qE '[a-f0-9]{64}|data:image' && ko "jeton ou signature transmis !" || ok "ni jeton ni signature"
+for R in stock synthese; do
+  [ "$(api_code -H "$AUTH" "$API_URL?ressource=$R")" = "200" ] && ok "ressource $R répond" || ko "ressource $R en erreur"
+done
+[ "$(api_code -X POST -H "$AUTH" "$API_URL?ressource=etat")" = "405" ] && ok "écriture refusée (405)" || ko "méthode POST acceptée"
+[ "$(api_code -H "$AUTH" "$API_URL?ressource=ligne")" = "400" ] && ok "critère manquant : 400" || ko "critère manquant accepté"
+curl -s -b "$CJ" -d "_entity=api_chatia&_action=revoke&_csrf=$CSRF" -o /dev/null "$API_PAGE"
+[ "$(api_code -H "$AUTH" "$API_URL?ressource=etat")" = "401" ] && ok "clé révoquée : 401" || ko "clé révoquée encore acceptée"
+curl -s -b "$CJ" -d "_entity=api_chatia&_action=save&api_chatia_rate=120&api_chatia_ip_allow=&_csrf=$CSRF" -o /dev/null "$API_PAGE"
+[ "$(api_code -H "$AUTH" "$API_URL?ressource=etat")" = "403" ] && ok "API désactivée : 403" || ko "API toujours ouverte"
 
 echo
 echo "════════════════════════════════════"

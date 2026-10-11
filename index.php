@@ -92,6 +92,9 @@ require_once __DIR__ . '/invoice_lib.php';
 // ─── Bibliothèque de l'export de parc SFR (contrôle du référentiel) ───
 require_once __DIR__ . '/sfr_parc_lib.php';
 
+// ─── API en lecture seule pour chatIA (réglages, clé, compteurs) ───
+require_once __DIR__ . '/api_lib.php';
+
 // ─── Sauvegarde automatique « sans cron » ─────────────────────
 // Déclenchée par le trafic web (idéal en conteneur, sans crontab). Un verrou
 // atomique en base garantit qu'un seul visiteur lance la sauvegarde par
@@ -4132,6 +4135,50 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     header('Location: index.php?page=refs&tab=settings&sub=maintenance'); exit;
                 }
             }
+        } elseif ($ent === 'api_chatia') {
+            // Accès de chatIA à l'API en lecture seule (api.php) — réservé aux
+            // super-administrateurs. La clé n'est jamais enregistrée : seule
+            // son empreinte l'est, et la clé n'est montrée qu'une fois, juste
+            // après sa génération (session), pour être copiée dans chatIA.
+            if (empty($_SESSION['is_admin'])) {
+                flash('error', 'Accès refusé — réservé aux super-administrateurs.');
+            } elseif ($act === 'generate') {
+                $cle = simcity_api_key_new();
+                simcity_api_setting_set($pdo, 'api_chatia_key_hash', simcity_api_key_hash($cle));
+                simcity_api_setting_set($pdo, 'api_chatia_key_hint', substr($cle, -4));
+                simcity_api_setting_set($pdo, 'api_chatia_key_date', date('Y-m-d H:i:s'));
+                simcity_api_setting_set($pdo, 'api_chatia_key_by', (string)($_SESSION['username'] ?? ''));
+                $_SESSION['api_chatia_new_key'] = $cle;
+                logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "API chatIA : nouvelle clé générée (se termine par " . substr($cle, -4) . ")");
+                flash('success', "Nouvelle clé générée : copiez-la maintenant dans chatIA, elle ne sera plus affichée. L'ancienne clé ne fonctionne plus.");
+            } elseif ($act === 'revoke') {
+                foreach (['api_chatia_key_hash', 'api_chatia_key_hint', 'api_chatia_key_date', 'api_chatia_key_by'] as $k) {
+                    simcity_api_setting_set($pdo, $k, '');
+                }
+                unset($_SESSION['api_chatia_new_key']);
+                logHistory($pdo, 'admin', (int)$_SESSION['user_id'], "API chatIA : clé révoquée");
+                flash('success', 'Clé révoquée : chatIA ne peut plus interroger SimCity tant qu\'une nouvelle clé n\'est pas générée.');
+            } else {
+                [$ips, $ipsKo] = simcity_api_ip_list_parse((string)($d['api_chatia_ip_allow'] ?? ''));
+                if ($ipsKo) {
+                    flash('error', 'Adresses non reconnues (IP ou réseau CIDR attendu) : ' . implode(', ', array_slice($ipsKo, 0, 5)) . '. Rien n\'a été enregistré.');
+                } else {
+                    $avant = simcity_api_settings($pdo);
+                    $actif = !empty($d['api_chatia_enabled']);
+                    $debit = max(1, min(1000, (int)($d['api_chatia_rate'] ?? 120)));
+                    simcity_api_setting_set($pdo, 'api_chatia_enabled', $actif ? '1' : '0');
+                    simcity_api_setting_set($pdo, 'api_chatia_rate', (string)$debit);
+                    simcity_api_setting_set($pdo, 'api_chatia_ip_allow', implode(', ', $ips));
+                    simcity_api_setting_set($pdo, 'api_chatia_identifiers', !empty($d['api_chatia_identifiers']) ? '1' : '0');
+                    $quoi = [];
+                    if ($avant['enabled'] !== $actif) $quoi[] = $actif ? 'activée' : 'désactivée';
+                    $quoi[] = "$debit appels/min";
+                    $quoi[] = $ips ? 'adresses : ' . implode(', ', $ips) : 'toutes adresses';
+                    $quoi[] = 'identifiants techniques ' . (!empty($d['api_chatia_identifiers']) ? 'transmis' : 'retenus');
+                    logHistory($pdo, 'admin', (int)$_SESSION['user_id'], 'API chatIA : ' . implode(' ; ', $quoi));
+                    flash('success', 'Accès API enregistré.' . ($actif && $avant['key_hash'] === '' ? ' Générez maintenant une clé pour chatIA.' : ''));
+                }
+            }
         } elseif ($ent === 'secret_purge') {
             // Effacement d'un secret stocké dans « settings ». Une variable
             // d'environnement PRIME sur la base mais ne l'efface pas : la
@@ -4811,7 +4858,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // On ne flashe "Opération réussie" que si ce n'est pas un attachment, car l'attachment a déjà flashé "Document ajouté"
-        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'invoice', 'parc', 'secret_purge', 'ldap_test', 'smtp_test', 'mail_tpl'])) flash('success', 'Opération réussie.');
+        if (!in_array($ent, ['attachment', 'bon', 'bulk', 'settings', 'admin', 'admin_signature', 'quick_assign', 'backup', 'import', 'invoice', 'parc', 'secret_purge', 'ldap_test', 'smtp_test', 'mail_tpl', 'api_chatia'])) flash('success', 'Opération réussie.');
         if ($pdo->inTransaction()) $pdo->commit();
 
     } catch (Exception $e) {
@@ -8041,6 +8088,7 @@ elseif ($page === 'refs') {
             'requests' => '<i class="bi bi-inbox"></i> Demandes de téléphone',
             'security' => '<i class="bi bi-shield-lock"></i> Sécurité (AD/LDAP)',
         ];
+        if(!empty($_SESSION['is_admin'])) $subMenu['api'] = '<i class="bi bi-plug"></i> API chatIA';
         if(!empty($_SESSION['is_admin'])) $subMenu['maintenance'] = '<i class="bi bi-hdd"></i> Maintenance';
         $settingsSub = $_GET['sub'] ?? 'general';
         if(!isset($subMenu[$settingsSub])) $settingsSub = 'general';
@@ -8804,6 +8852,112 @@ elseif ($page === 'refs') {
       </div>
 
     </div><!-- fin section « Sécurité » -->
+    <?php endif; ?>
+
+    <?php if($settingsSub === 'api' && !empty($_SESSION['is_admin'])):
+        $apiCfg   = simcity_api_settings($pdo);
+        $apiUsage = simcity_api_usage($pdo);
+        $apiNewKey = $_SESSION['api_chatia_new_key'] ?? '';
+        unset($_SESSION['api_chatia_new_key']);   // montrée une seule fois
+        [$apiLastAt, $apiLastIp, $apiLastRes] = array_pad(explode('|', (string)$apiCfg['last_call'], 3), 3, '');
+        // Adresse à saisir dans chatIA : celle du site (URL publique si réglée)
+        $apiUrl = preg_replace('#/index\.php$#', '', baseUrl($pdo));
+    ?>
+    <div style="column-width:460px;column-gap:1.5rem;">
+
+      <!-- Bloc API chatIA -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-plug"></i> Accès de chatIA (API en lecture seule)</div>
+        <form method="post" style="padding:1.5rem;">
+          <input type="hidden" name="_entity" value="api_chatia">
+          <input type="hidden" name="_action" value="save">
+          <p style="color:var(--text2);font-size:.88rem;margin-bottom:1rem;line-height:1.6;">
+            <strong>chatIA</strong>, l'assistant de la ville, interroge <code>api.php</code> avec la clé ci-contre pour
+            répondre sur le parc mobile. <strong>Lecture seule</strong> : aucune modification possible.
+          </p>
+          <div class="form-grid">
+            <div class="form-group form-full">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;text-transform:none;font-size:.88rem;">
+                <input type="checkbox" name="api_chatia_enabled" value="1" <?=$apiCfg['enabled']?'checked':''?> style="width:15px;height:15px;accent-color:var(--primary);">
+                <span><strong>Activer l'API pour chatIA</strong></span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label>Appels maximum par minute</label>
+              <input type="number" name="api_chatia_rate" value="<?=(int)$apiCfg['rate']?>" min="1" max="1000">
+              <small style="color:var(--text3);font-size:.75rem;">Par adresse ; une question en fait jusqu'à 8.</small>
+            </div>
+            <div class="form-group">
+              <label style="display:flex;align-items:center;gap:.6rem;cursor:pointer;text-transform:none;font-size:.85rem;margin-top:1.4rem;">
+                <input type="checkbox" name="api_chatia_identifiers" value="1" <?=$apiCfg['identifiers']?'checked':''?> style="width:15px;height:15px;accent-color:var(--primary);">
+                <span>Transmettre les identifiants techniques <small style="color:var(--text3);">(ICCID, IMEI, n° de série et d'inventaire)</small></span>
+              </label>
+            </div>
+            <div class="form-group form-full">
+              <label>Adresses autorisées <span style="font-weight:400;text-transform:none;">(facultatif)</span></label>
+              <input type="text" name="api_chatia_ip_allow" value="<?=h($apiCfg['ip_allow'])?>" placeholder="ex. 10.0.12.40 ou 10.0.12.0/24 — vide : toutes" style="font-family:var(--font-mono);font-size:.85rem;">
+              <small style="color:var(--text3);font-size:.75rem;">Serveur de chatIA vu par SimCity (derrière un proxy : celle du proxy).</small>
+            </div>
+          </div>
+          <div style="padding-top:1rem;border-top:1px solid var(--border);margin-top:1rem;">
+            <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Bloc clé d'API et utilisation -->
+      <div class="card">
+        <div class="card-header"><i class="bi bi-key"></i> Clé d'API de chatIA</div>
+        <div style="padding:1.5rem 1.5rem 1rem;">
+          <?php if($apiNewKey !== ''): ?>
+          <div style="background:var(--success-dim);border-left:3px solid var(--success);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:.85rem;font-size:.85rem;">
+            <strong style="color:var(--success);"><i class="bi bi-key"></i> Nouvelle clé — copiez-la maintenant</strong>
+            <p style="margin:.35rem 0 .6rem;color:var(--text2);">Elle ne sera plus jamais affichée (SimCity n'en garde que l'empreinte). À coller dans
+              chatIA : Administration › Applications › SimCity › Connexion.</p>
+            <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+              <input type="text" id="api-chatia-cle" value="<?=h($apiNewKey)?>" readonly onclick="this.select()" style="flex:1;min-width:260px;font-family:var(--font-mono);font-size:.8rem;">
+              <button type="button" class="btn-secondary" onclick="var c=document.getElementById('api-chatia-cle');c.select();if(navigator.clipboard){navigator.clipboard.writeText(c.value);}this.textContent='Copiée';"><i class="bi bi-clipboard"></i> Copier</button>
+            </div>
+          </div>
+          <?php endif; ?>
+          <p style="font-size:.85rem;color:var(--text2);margin-bottom:.75rem;line-height:1.6;">
+            <?php if($apiCfg['key_hash'] !== ''): ?>
+              ✅ Clé en service, se terminant par <code style="font-family:var(--font-mono);">…<?=h($apiCfg['key_hint'])?></code>
+              — générée le <?=h($apiCfg['key_date'] ? date('d/m/Y à H:i', strtotime($apiCfg['key_date'])) : '?')?><?=$apiCfg['key_by'] !== '' ? ' par ' . h($apiCfg['key_by']) : ''?>.
+            <?php else: ?>
+              Aucune clé : chatIA ne peut pas encore interroger SimCity.
+            <?php endif; ?>
+          </p>
+          <div style="display:flex;gap:.6rem;flex-wrap:wrap;">
+            <form method="post" style="margin:0;" onsubmit="return <?=$apiCfg['key_hash'] !== '' ? "confirm('Générer une nouvelle clé ? L\\'ancienne cessera aussitôt de fonctionner : il faudra coller la nouvelle dans chatIA.')" : 'true'?>;">
+              <input type="hidden" name="_entity" value="api_chatia">
+              <input type="hidden" name="_action" value="generate">
+              <button type="submit" class="btn-secondary"><i class="bi bi-key"></i> <?=$apiCfg['key_hash'] !== '' ? 'Générer une nouvelle clé' : 'Générer une clé'?></button>
+            </form>
+            <?php if($apiCfg['key_hash'] !== ''): ?>
+            <form method="post" style="margin:0;" onsubmit="return confirm('Révoquer la clé ? chatIA ne pourra plus interroger SimCity.');">
+              <input type="hidden" name="_entity" value="api_chatia">
+              <input type="hidden" name="_action" value="revoke">
+              <button type="submit" class="btn-secondary" style="color:var(--danger);"><i class="bi bi-x-circle"></i> Révoquer la clé</button>
+            </form>
+            <?php endif; ?>
+          </div>
+        </div>
+
+        <div style="margin:0 1.5rem 1.5rem;padding:.85rem 1rem;background:var(--bg3);border-radius:var(--radius-sm);font-size:.84rem;color:var(--text2);line-height:1.6;">
+          <div><strong>Adresse à indiquer dans chatIA :</strong> <code style="font-family:var(--font-mono);"><?=h($apiUrl)?></code>
+            <span style="color:var(--text3);">(réglez l'URL publique dans Général si elle diffère)</span></div>
+          <div><strong>Dernier appel accepté :</strong>
+            <?php if($apiLastAt !== ''): ?>
+              <?=h(date('d/m/Y à H:i', strtotime($apiLastAt)))?> depuis <code style="font-family:var(--font-mono);"><?=h($apiLastIp)?></code> (<?=h($apiLastRes)?>)
+            <?php else: ?>aucun<?php endif; ?></div>
+          <div><strong>Sur 24 h :</strong> <?=(int)$apiUsage['acceptes']?> appel(s) accepté(s), <?=(int)$apiUsage['refuses']?> refusé(s)
+            <span style="color:var(--text3);">(clé absente ou fausse, adresse non autorisée)</span>.</div>
+          <div><strong>Jamais transmis :</strong> codes PIN/PUK, RIO, code d'activation eSIM, e-mails, notes, signatures et liens de signature.</div>
+        </div>
+      </div>
+
+    </div><!-- fin section « API chatIA » -->
     <?php endif; ?>
 
     <?php if($settingsSub === 'maintenance' && !empty($_SESSION['is_admin'])):
