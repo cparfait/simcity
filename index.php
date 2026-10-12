@@ -4405,7 +4405,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($pdo->inTransaction()) $pdo->commit();
                 // Même mécanique que la purge de l'import CSV : sauvegarde de
                 // sécurité, purge (comptes admin épargnés) puis recréation du
-                // schéma — pas de détour par install.php, l'opérateur reste
+                // schéma — sans quitter l'application, l'opérateur reste
                 // connecté sur une base vide prête à l'emploi.
                 $safety = '';
                 try { $safety = simcity_backup_to_disk($pdo); } catch (Throwable $e) { $safety = ''; }

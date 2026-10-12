@@ -23,11 +23,6 @@
     Require all denied
 </Files>
 
-# ─── Bloquer l'accès direct à install.php après installation ─
-<Files "install.php">
-    Require all denied
-</Files>
-
 # ─── Bloquer l'accès direct au dossier des sauvegardes ──────
 # Les fichiers .sql contiennent toutes les données (signatures, mot de passe
 # SMTP…). Ils ne doivent JAMAIS être servis directement : le téléchargement

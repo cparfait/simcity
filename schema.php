@@ -7,7 +7,7 @@
 //    - les migrations de colonnes (ALTER TABLE)
 //    - les données par défaut (settings, compte admin)
 //
-//  Inclus par : index.php, install.php
+//  Inclus par : index.php
 //  NE PAS inclure directement dans reset.php.
 //
 //  Prérequis : $pdo doit être connecté et la DB sélectionnée.
@@ -711,8 +711,8 @@ function simcity_apply_schema(PDO $pdo): void
     }
 }
 
-// Appel immédiat si inclus depuis index.php
-// (install.php appellera la fonction manuellement après l'avoir inclus)
+// Appel immédiat à l'inclusion (index.php). Définir SIMCITY_SCHEMA_MANUAL
+// avant l'include pour charger la fonction sans l'exécuter.
 if (!defined('SIMCITY_SCHEMA_MANUAL')) {
     simcity_apply_schema($pdo);
 }

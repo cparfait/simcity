@@ -49,7 +49,7 @@ define('DB_PASS', getenv('DB_PASS') ?: '');            // vide par défaut sous 
       environment:
         DB_HOST: simcity_db        # nom du service MySQL
         DB_NAME: simcity_db
-        DB_USER: simcity           # compte dédié (voir install.php)
+        DB_USER: simcity           # compte dédié (voir checklist de mise en production)
         DB_PASS: "votre_mot_de_passe"
         FORCE_HTTPS: "false"       # true si pas de reverse proxy
       volumes:
@@ -122,18 +122,12 @@ définie prime sur la base et verrouille 🔒 le champ dans l'interface.
 
 ### 3. Créer les tables
 
-> Étape réservée aux installations manuelles (LAMP / WAMP). **En Docker, il n'y a
-> rien à faire** : le schéma s'applique seul au premier chargement d'`index.php`,
-> et `install.php` est retiré de l'image (il réinitialise le mot de passe du
-> super-administrateur sans authentification).
+**Rien à faire** : au premier chargement d'`index.php`, la base est créée si le compte
+MySQL en a le droit, puis le schéma s'applique tout seul (tables, migrations, compte
+admin initial). C'est vrai en local comme en Docker.
 
-Accédez à `install.php` depuis votre navigateur :
-
-```
-http://localhost/simcity/install.php
-```
-
-L'écran doit afficher **"✅ Installation terminée"** avec la liste des tables créées.
+> Avec un compte MySQL dédié (sans privilège `CREATE DATABASE`), créez la base
+> au préalable — voir la checklist de mise en production.
 
 ### 4. Première connexion
 
@@ -148,10 +142,10 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 ### 5. Après installation
 
 - **Renommez le fichier `htaccess` en `.htaccess`** (avec le point initial) à la racine du site.
-  Tant qu'il n'a pas ce nom, Apache l'ignore : `config.php`, `install.php` et `reset.php`
+  Tant qu'il n'a pas ce nom, Apache l'ignore : `config.php` et `reset.php`
   restent accessibles et l'exécution de scripts PHP dans `uploads/` n'est pas bloquée.
   > ℹ️ Ce point n'a d'effet que sous Apache. Sous nginx, reportez ces règles dans la conf du serveur.
-- Supprimez ou protégez `install.php` et `reset.php` (accès restreint en production)
+- Supprimez ou protégez `reset.php` (accès restreint en production)
 - Configurez l'**URL publique du site** dans Paramètres → URL publique pour que les QR codes de signature pointent vers la bonne adresse
 
 ---
@@ -160,28 +154,25 @@ Connectez-vous sur `index.php` avec le compte par défaut :
 
 À traiter **avant d'ouvrir l'accès**. Les points 1 à 4 sont des go/no-go de sécurité.
 
-> 💡 `install.php` automatise l'essentiel de cette checklist : il propose de **définir le
-> mot de passe administrateur**, de **créer un compte MySQL dédié** (et de basculer
-> `config.php` dessus), d'**activer le `.htaccess`**, et affiche un panneau de
-> **contrôles d'environnement** (extensions PHP, droits d'écriture, identifiants DB par
-> défaut, `APP_DEBUG`). Les points restants ci-dessous sont à faire à la main.
-
 ### 🔴 Bloquants
 
-1. **Compte MySQL dédié** — depuis `install.php` (bloc « Créer un compte MySQL dédié »),
-   le compte `root` crée un utilisateur limité à `simcity_db` et met à jour `config.php`
-   automatiquement. L'application ne se connecte alors plus jamais en `root`.
-   > Si `config.php` n'est pas modifiable par le serveur web, `install.php` affiche les
-   > identifiants générés à reporter à la main. Pensez ensuite à définir un mot de passe
-   > fort pour `root` MySQL (côté serveur) — l'app n'en dépend plus, mais c'est une hygiène de base.
-2. **Mot de passe admin** — définissez-le directement depuis `install.php` (bloc
-   « Compte administrateur »), ou plus tard via Référentiels → Comptes Admin.
-   Ne laissez jamais `admin` / `admin` en production.
-3. **Activer le `.htaccess`** — bouton « Activer la protection » dans `install.php`,
-   ou renommez manuellement `htaccess` → `.htaccess` (avec le point) à la racine.
+1. **Compte MySQL dédié** — créez, en `root`, un utilisateur limité à `simcity_db` :
+   ```sql
+   CREATE DATABASE IF NOT EXISTS simcity_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   CREATE USER 'simcity_app'@'localhost' IDENTIFIED BY 'mot_de_passe_fort';
+   GRANT ALL PRIVILEGES ON simcity_db.* TO 'simcity_app'@'localhost';
+   FLUSH PRIVILEGES;
+   ```
+   (`'%'` au lieu de `'localhost'` si MySQL est sur une autre machine.) Reportez ensuite
+   ces identifiants dans `config.php` ou dans les variables `DB_USER` / `DB_PASS` :
+   l'application ne se connecte alors plus jamais en `root`. Pensez aussi à définir un
+   mot de passe fort pour `root` MySQL — l'app n'en dépend plus, mais c'est une hygiène de base.
+2. **Mot de passe admin** — changez-le via Référentiels → Comptes Admin dès la
+   première connexion. Ne laissez jamais `admin` / `admin` en production.
+3. **Activer le `.htaccess`** — renommez `htaccess` → `.htaccess` (avec le point) à la racine.
    Sans ce fichier, Apache ne protège rien et `config.php` (vos identifiants DB)
    devient téléchargeable en clair. **Point le plus critique.**
-4. **Supprimer ou protéger `install.php` et `reset.php`** une fois l'installation terminée.
+4. **Supprimer ou protéger `reset.php`** une fois l'installation terminée.
 
 ### 🟠 Fortement recommandés
 
@@ -348,7 +339,6 @@ simcity/
 ├── config.php        # Configuration (DB, sessions, uploads) — ne pas versionner en prod
 ├── index.php         # Application principale
 ├── schema.php        # Schéma et migrations de la base de données
-├── install.php       # Installation initiale (LAMP/WAMP) — retiré de l'image Docker
 ├── reset.php         # Réinitialisation complète — à supprimer après usage
 ├── import_lib.php    # Import CSV en masse (Paramètres → Maintenance)
 ├── invoice_lib.php   # Factures opérateur : parseur PDF, remise marché, noms
@@ -489,9 +479,11 @@ BASE_URL=http://localhost/simcity/index.php ADMIN_USER=admin ADMIN_PASS=admin ba
 
 Pour repartir de zéro (supprime toutes les données) :
 
-1. Accédez à `reset.php`
-2. Saisissez `SUPPRIMER` pour confirmer
-3. Relancez `install.php` pour recréer les tables
+1. Connecté en super-administrateur, ouvrez **Référentiels → Paramètres → Maintenance**
+2. Lancez la réinitialisation complète et saisissez `SUPPRIMER` pour confirmer
+
+Une sauvegarde de sécurité est faite avant la purge, les tables sont recréées
+aussitôt et les comptes d'administration sont conservés.
 
 ---
 
