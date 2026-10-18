@@ -1,0 +1,5 @@
+# Bibliothèques tierces versionnées : jamais de conversion de fins de ligne.
+# Sous Windows (core.autocrlf=true), git les extrairait en CRLF et leurs
+# empreintes ne correspondraient plus à vendor.lock.json ni aux paquets npm.
+vendor/** -text
+js/*.min.js -text

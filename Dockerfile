@@ -2,12 +2,19 @@
 #  SimCity — Image Docker (PHP 8.3 + Apache)
 #  Extensions : pdo_mysql (base) + ldap (authentification AD)
 # ============================================================
-FROM php:8.3-apache
+# Version de Debian figée (trixie) : une reconstruction applique les correctifs
+# de sécurité sans risquer un changement de version majeure de l'OS à l'insu de
+# tous. À faire évoluer volontairement à la prochaine version stable de Debian.
+FROM php:8.3-apache-trixie
 
+# L'image officielle n'est republiée que périodiquement : « apt-get upgrade »
+# récupère les correctifs Debian publiés depuis (OpenSSL, libxml, libldap…).
+# Ne rejoue qu'avec « docker build --pull --no-cache », voir README.
 # Extension ldap : nécessite les en-têtes OpenLDAP à la compilation.
 # poppler-utils fournit pdftotext, utilisé par le module Facturation / Contrôle
 # pour extraire le texte des factures PDF de l'opérateur.
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends libldap2-dev poppler-utils \
  && docker-php-ext-configure ldap --with-libdir=lib/$(uname -m)-linux-gnu \
  && docker-php-ext-install -j"$(nproc)" pdo_mysql ldap \

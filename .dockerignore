@@ -3,6 +3,8 @@
 .github
 .gitignore
 tests
+vendor.lock.json
+.gitattributes
 uploads
 backups
 db_data

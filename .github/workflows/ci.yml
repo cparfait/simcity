@@ -3,6 +3,10 @@ name: CI
 on:
   push:
   pull_request:
+  # Hebdomadaire : vérifie que l'image se reconstruit toujours avec les
+  # derniers correctifs Debian (job « docker »), sans attendre un commit.
+  schedule:
+    - cron: '0 5 * * 1'
 
 jobs:
   build:
@@ -49,6 +53,9 @@ jobs:
       - name: Test unitaire de l'API chatIA (clé, adresses, liste blanche des données)
         run: php tests/api_test.php
 
+      - name: Bibliothèques front-end (vendor.lock.json + paquets npm officiels)
+        run: php tests/vendor_test.php --upstream
+
       - name: Test de démarrage (smoke test)
         env:
           DB_HOST: 127.0.0.1
@@ -68,3 +75,21 @@ jobs:
           ADMIN_USER: admin
           ADMIN_PASS: admin
         run: echo "oui" | bash tests/smoke.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Même commande que la procédure de mise à jour du README : image de
+      # base re-tirée, aucune couche en cache, correctifs Debian appliqués.
+      - name: Construction de l'image (--pull --no-cache)
+        run: docker build --pull --no-cache -t simcity:ci .
+
+      - name: Contrôle de l'image (extensions PHP, pdftotext, fichiers exclus)
+        run: |
+          set -e
+          docker run --rm simcity:ci php -m | grep -qx ldap
+          docker run --rm simcity:ci php -m | grep -qx pdo_mysql
+          docker run --rm simcity:ci pdftotext -v
+          docker run --rm simcity:ci sh -c 'test -f .htaccess && test ! -e tests && test ! -e vendor.lock.json'

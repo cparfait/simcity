@@ -359,6 +359,7 @@ simcity/
 │   └── fonts/                # Fichiers woff/woff2 (icônes + polices Plex)
 ├── js/
 │   └── qrcode.min.js # Génération QR codes (client-side)
+├── vendor.lock.json  # « Lockfile » des bibliothèques ci-dessus : versions, paquet npm, SHA-256
 ├── tests/            # Tests unitaires + recette HTTP (hors image Docker)
 ├── htaccess          # Protections Apache — renommé « .htaccess » au build
 ├── Dockerfile        # Image PHP 8.3 + Apache (pdo_mysql, ldap, pdftotext)
@@ -397,14 +398,14 @@ git pull && docker build -t simcity:local .
 
 ### Correctifs de sécurité de l'image de base (à programmer)
 
-L'application n'a **aucun gestionnaire de dépendances** : les bibliothèques front-end
-(Chart.js, qrcode.js, IBM Plex, Bootstrap Icons) sont versionnées dans le dépôt, et tout
-le reste — OpenSSL, libxml, libldap, poppler-utils (`pdftotext`) — vient de l'image
-`php:8.3-apache`. Il n'y a donc rien à auditer côté *lockfile* : **le seul canal de
-correctifs pour ces composants est la reconstruction de l'image**.
+L'application n'a **aucun gestionnaire de dépendances** côté serveur : OpenSSL, libxml,
+libldap, poppler-utils (`pdftotext`)… viennent tous de l'image `php:8.3-apache-trixie`
+(Debian 13, version figée dans le `Dockerfile`). **Le seul canal de correctifs pour ces
+composants est la reconstruction de l'image**.
 
 Un `docker build` ordinaire réutilise les couches en cache et **ne récupère aucun
-correctif**. Pour re-tirer l'image de base et rejouer `apt-get update` :
+correctif**. Pour re-tirer l'image de base et rejouer `apt-get update && apt-get upgrade`
+(qui applique aussi les correctifs Debian publiés après l'image officielle) :
 
 ```bash
 docker build --pull --no-cache -t simcity:local .
@@ -413,7 +414,31 @@ docker build --pull --no-cache -t simcity:local .
 À planifier **périodiquement** (mensuellement par exemple), indépendamment des mises à
 jour applicatives — une installation stable sur le plan fonctionnel accumule sinon les
 CVE système sans que rien ne le signale. Puis recréer les conteneurs comme à l'étape 2
-ci-dessus.
+ci-dessus. La CI reconstruit l'image de la même façon chaque lundi : un échec signale
+qu'une reconstruction en production échouerait aussi.
+
+### Bibliothèques front-end
+
+Chart.js, Bootstrap Icons, qrcode.js et les polices IBM Plex sont versionnés dans
+`vendor/` et `js/`. `vendor.lock.json` en tient le registre : version, paquet npm
+d'origine (avec son empreinte d'intégrité) et SHA-256 de chaque fichier.
+
+```bash
+php tests/vendor_test.php --upstream
+```
+
+vérifie les empreintes locales, signale tout fichier non déclaré et, avec `--upstream`,
+compare chaque fichier au paquet npm officiel (exécuté en CI). Pour **mettre à jour** une
+bibliothèque : télécharger la nouvelle version depuis `registry.npmjs.org`, remplacer le
+fichier, puis reporter dans `vendor.lock.json` la version, l'URL du paquet, son
+`integrity` (`npm view <paquet>@<version> dist.integrity`) et le nouveau SHA-256.
+
+> qrcode.js (1.0.0, 2015) n'est plus maintenu en amont. Risque jugé faible : il ne fait
+> que dessiner côté navigateur un QR code à partir de données de l'application.
+
+`.gitattributes` interdit la conversion des fins de ligne sur ces fichiers : sous
+Windows (`core.autocrlf=true`), ils seraient sinon extraits en CRLF et ne
+correspondraient plus aux empreintes.
 
 ---
 
