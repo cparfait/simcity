@@ -234,6 +234,12 @@ Le compte initial s'appelle `admin`. Il n'a **pas de mot de passe par défaut** 
      0 2 * * * /usr/bin/php /chemin/simcity/backup.php >> /var/log/simcity_backup.log 2>&1
      ```
    - **Depuis l'hôte Docker** : `0 2 * * * docker exec <conteneur> php /var/www/html/backup.php`
+9. **Reconstruction hebdomadaire de l'image** — ⚠️ *pas encore en place en production* —
+   programmez `rebuild-image.sh` dans la crontab de l'hôte Docker (voir « Correctifs de
+   sécurité de l'image de base »). Sans elle, OpenSSL, libldap, libxml, `pdftotext`… ne
+   reçoivent aucun correctif. Avec un stack Portainer, `--image-only` prépare l'image mais
+   le redéploiement reste manuel (« Update the stack ») tant que le script ne passe pas par
+   l'API Portainer.
 
 ### 🟡 À connaître
 
