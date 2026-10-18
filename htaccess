@@ -94,7 +94,7 @@
     Header always set X-Frame-Options "DENY"
 
     # Politique de sécurité du contenu. Toutes les ressources de l'application
-    # sont auto-hébergées (Chart.js, qrcode.js, IBM Plex, Bootstrap Icons) :
+    # sont auto-hébergées (Chart.js, qrcode-generator, IBM Plex, Bootstrap Icons) :
     # 'self' suffit partout, aucun CDN à autoriser.
     #
     # Ce que cette politique verrouille : un script injecté ne peut plus charger
