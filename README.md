@@ -358,7 +358,7 @@ simcity/
 │   ├── chart.umd.min.js      # Chart.js auto-hébergé (graphiques stats & facturation, MIT)
 │   └── fonts/                # Fichiers woff/woff2 (icônes + polices Plex)
 ├── js/
-│   └── qrcode.min.js # Génération QR codes (client-side)
+│   └── qrcode-generator.js # Génération QR codes (client-side)
 ├── vendor.lock.json  # « Lockfile » des bibliothèques ci-dessus : versions, paquet npm, SHA-256
 ├── tests/            # Tests unitaires + recette HTTP (hors image Docker)
 ├── htaccess          # Protections Apache — renommé « .htaccess » au build
@@ -411,15 +411,31 @@ correctif**. Pour re-tirer l'image de base et rejouer `apt-get update && apt-get
 docker build --pull --no-cache -t simcity:local .
 ```
 
-À planifier **périodiquement** (mensuellement par exemple), indépendamment des mises à
-jour applicatives — une installation stable sur le plan fonctionnel accumule sinon les
-CVE système sans que rien ne le signale. Puis recréer les conteneurs comme à l'étape 2
-ci-dessus. La CI reconstruit l'image de la même façon chaque lundi : un échec signale
-qu'une reconstruction en production échouerait aussi.
+À faire **chaque semaine**, indépendamment des mises à jour applicatives : une
+installation stable sur le plan fonctionnel accumule sinon les CVE système sans que rien
+ne le signale. `rebuild-image.sh` l'automatise (re-tire aussi l'image MySQL et supprime
+les anciennes images) ; à programmer dans la crontab de l'hôte Docker (`crontab -e`) :
+
+```cron
+# Stack docker compose lancé depuis le dossier du dépôt : reconstruit et recrée les conteneurs
+0 4 * * 0  /chemin/vers/simcity/rebuild-image.sh >> /var/log/simcity-rebuild.log 2>&1
+# Stack Portainer : reconstruit simcity:local, le redéploiement reste à faire (étape 2)
+0 4 * * 0  /chemin/vers/simcity/rebuild-image.sh --image-only >> /var/log/simcity-rebuild.log 2>&1
+```
+
+Si la construction échoue, le script s'arrête sans toucher aux conteneurs en service :
+surveiller le journal. La recréation coupe l'application quelques secondes, d'où le
+créneau du dimanche à 4 h.
+
+La CI reconstruit l'image de la même façon chaque lundi puis la passe au scanner
+[Trivy](https://trivy.dev) : le job échoue si une vulnérabilité **HIGH** ou **CRITICAL**
+pour laquelle un correctif existe subsiste dans l'image. Un échec signale qu'une
+reconstruction en production échouerait aussi, ou qu'un correctif attend la prochaine
+publication de l'image officielle.
 
 ### Bibliothèques front-end
 
-Chart.js, Bootstrap Icons, qrcode.js et les polices IBM Plex sont versionnés dans
+Chart.js, Bootstrap Icons, qrcode-generator et les polices IBM Plex sont versionnés dans
 `vendor/` et `js/`. `vendor.lock.json` en tient le registre : version, paquet npm
 d'origine (avec son empreinte d'intégrité) et SHA-256 de chaque fichier.
 
@@ -432,9 +448,6 @@ compare chaque fichier au paquet npm officiel (exécuté en CI). Pour **mettre �
 bibliothèque : télécharger la nouvelle version depuis `registry.npmjs.org`, remplacer le
 fichier, puis reporter dans `vendor.lock.json` la version, l'URL du paquet, son
 `integrity` (`npm view <paquet>@<version> dist.integrity`) et le nouveau SHA-256.
-
-> qrcode.js (1.0.0, 2015) n'est plus maintenu en amont. Risque jugé faible : il ne fait
-> que dessiner côté navigateur un QR code à partir de données de l'application.
 
 `.gitattributes` interdit la conversion des fins de ligne sur ces fichiers : sous
 Windows (`core.autocrlf=true`), ils seraient sinon extraits en CRLF et ne

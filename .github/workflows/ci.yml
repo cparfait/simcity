@@ -93,3 +93,12 @@ jobs:
           docker run --rm simcity:ci php -m | grep -qx pdo_mysql
           docker run --rm simcity:ci pdftotext -v
           docker run --rm simcity:ci sh -c 'test -f .htaccess && test ! -e tests && test ! -e vendor.lock.json'
+
+      # Échoue sur toute vulnérabilité HIGH/CRITICAL qui a déjà un correctif :
+      # soit la reconstruction ne l'a pas récupéré, soit l'image officielle
+      # doit être republiée. Les CVE sans correctif n'appellent aucune action.
+      - name: Scan de vulnérabilités (Trivy)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:0.76.0 image --scanners vuln --ignore-unfixed \
+            --severity HIGH,CRITICAL --exit-code 1 --no-progress simcity:ci

@@ -3,8 +3,8 @@
 //  SimCity — Vérification des bibliothèques front-end vendues
 //
 //  Le dépôt n'a pas de gestionnaire de paquets : Chart.js, Bootstrap
-//  Icons, qrcode.js et les polices IBM Plex sont copiés tels quels dans
-//  vendor/ et js/. vendor.lock.json tient lieu de lockfile : version,
+//  Icons, qrcode-generator et les polices IBM Plex sont copiés tels quels
+//  dans vendor/ et js/. vendor.lock.json tient lieu de lockfile : version,
 //  paquet npm d'origine et empreinte SHA-256 de chaque fichier.
 //
 //  Couvre :

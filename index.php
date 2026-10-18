@@ -2202,7 +2202,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
         .bon-title{text-align:center;font-size:1rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:1rem;padding:.4rem;background:#f5f5f5;border:1px solid #ddd;}
         .mention{font-size:.78rem;margin:.75rem 0;color:#444;line-height:1.5;}
         .qr-wrap{text-align:right;font-size:.65rem;color:#777;line-height:1.4;}
-        .qr-wrap canvas, .qr-wrap img{display:block;margin-left:auto;margin-bottom:2px;}
+        .qr-wrap svg, .qr-wrap img{display:block;margin-left:auto;margin-bottom:2px;}
         .qr-url{font-size:.6rem;word-break:break-all;color:#555;max-width:130px;display:block;margin-top:3px;}
         .toolbar{display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:.75rem 1rem;margin-bottom:1.25rem;}
         .toolbar .tb-status{font-size:.8rem;color:#475569;}
@@ -2216,27 +2216,39 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
             .no-print { display: none !important; }
         }
     </style>
-    <?php
-    // Chercher qrcode.min.js localement
-    $qrJsPath = null;
-    foreach(['qrcode.min.js','js/qrcode.min.js','assets/qrcode.min.js'] as $p) {
-        if(file_exists(__DIR__.'/'.$p)) { $qrJsPath = $p; break; }
-    }
-    ?>
-    <?php if($qrJsPath && $qrTargets): ?>
-    <script src="<?=htmlspecialchars($qrJsPath)?>"></script>
+    <?php if($qrTargets && file_exists(__DIR__.'/js/qrcode-generator.js')): ?>
+    <script src="js/qrcode-generator.js"></script>
     <script>
+    // QR code vectoriel (SVG construit par le DOM, net à l'impression),
+    // 90 px, correction M, noir sur blanc.
     window.addEventListener('load', function() {
-        <?php foreach($qrTargets as $elId=>$url): ?>
-        try {
-            new QRCode(document.getElementById(<?=json_encode($elId)?>), {
-                text: <?=json_encode($url)?>,
-                width: 90, height: 90,
-                colorDark:'#000', colorLight:'#fff',
-                correctLevel: QRCode.CorrectLevel.M
-            });
-        } catch(e) {}
-        <?php endforeach; ?>
+        var NS = 'http://www.w3.org/2000/svg';
+        qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
+        var targets = <?=json_encode($qrTargets, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_SLASHES)?>;
+        Object.keys(targets).forEach(function(id) {
+            try {
+                var qr = qrcode(0, 'M');
+                qr.addData(targets[id]);
+                qr.make();
+                var n = qr.getModuleCount(), d = '';
+                for (var r = 0; r < n; r++)
+                    for (var c = 0; c < n; c++)
+                        if (qr.isDark(r, c)) d += 'M' + c + ' ' + r + 'h1v1h-1z';
+                var svg = document.createElementNS(NS, 'svg');
+                svg.setAttribute('viewBox', '0 0 ' + n + ' ' + n);
+                svg.setAttribute('width', '90');
+                svg.setAttribute('height', '90');
+                svg.setAttribute('shape-rendering', 'crispEdges');
+                svg.setAttribute('role', 'img');
+                svg.setAttribute('aria-label', 'QR code du lien de signature');
+                var bg = document.createElementNS(NS, 'rect');
+                bg.setAttribute('width', n); bg.setAttribute('height', n); bg.setAttribute('fill', '#fff');
+                var fg = document.createElementNS(NS, 'path');
+                fg.setAttribute('d', d); fg.setAttribute('fill', '#000');
+                svg.appendChild(bg); svg.appendChild(fg);
+                document.getElementById(id).appendChild(svg);
+            } catch(e) {}
+        });
     });
     </script>
     <?php endif; ?>
