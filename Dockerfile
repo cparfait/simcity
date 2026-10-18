@@ -32,7 +32,11 @@ RUN printf 'upload_max_filesize = 20M\npost_max_size = 64M\nmax_file_uploads = 4
 # « AllowOverride None » l'ignorerait silencieusement — config.php, reset.php
 # et backups/ seraient alors servis en clair. On fixe donc explicitement la
 # directive. « Options -Indexes » supprime le listing des répertoires.
-RUN printf '<Directory /var/www/html>\n    AllowOverride All\n    Options -Indexes\n</Directory>\n' \
+# uploads/ reçoit des fichiers venus de l'extérieur (téléversements, archives
+# restaurées) : un .htaccess qui s'y glisserait est ignoré (AllowOverride
+# None) et PHP n'y exécute rien, quelle que soit l'extension. Les règles du
+# .htaccess racine continuent, elles, de s'y appliquer.
+RUN printf '<Directory /var/www/html>\n    AllowOverride All\n    Options -Indexes\n</Directory>\n<Directory /var/www/html/uploads>\n    AllowOverride None\n    php_admin_flag engine off\n</Directory>\n' \
       > /etc/apache2/conf-available/simcity.conf \
  && a2enconf simcity
 

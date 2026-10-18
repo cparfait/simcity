@@ -64,8 +64,12 @@ define('DB_PASS', getenv('DB_PASS') ?: '');            // vide par défaut sous 
 ### 2 bis. Authentification LDAP / Active Directory (optionnelle)
 
 Les administrateurs peuvent se connecter avec leur **compte Active Directory**,
-en complément des comptes locaux. L'ordre de vérification : mot de passe local
-d'abord, puis bind LDAP. Un utilisateur AD valide et inconnu en base est
+en complément des comptes locaux. Chaque compte n'a qu'une source
+d'authentification : un compte **local** n'accepte que son mot de passe local, un
+compte **🌐 AD** que le bind LDAP. Un compte AD dont l'identifiant existe déjà en
+compte local ne peut donc pas l'ouvrir (sinon le titulaire AD d'un « admin »
+homonyme deviendrait super-admin) : supprimez le compte local pour qu'il soit
+recréé depuis l'AD à la connexion suivante. Un utilisateur AD valide et inconnu en base est
 **provisionné automatiquement** (jamais super-admin ; le rôle se promeut
 ensuite dans Référentiels → Comptes Admin).
 
@@ -114,11 +118,15 @@ Sentinelle) **priment sur la base** — le champ correspondant est alors verroui
 ### 2 ter. Envoi d'e-mails (SMTP)
 
 Comme le LDAP, le SMTP se configure dans **Référentiels → Paramètres** (carte
-« 📧 Envoi d'e-mails ») et peut être imposé par variables d'environnement —
+« 📧 Envoi d'e-mails », **super-admins uniquement**) et peut être imposé par variables d'environnement —
 **mêmes noms que Sentinelle** : `MAIL_SERVER`, `MAIL_PORT`, `MAIL_USE_TLS`
 (ou `MAIL_SECURE` : `tls`/`ssl`/`none`), `MAIL_USERNAME`, `MAIL_PASSWORD`,
 `MAIL_DEFAULT_SENDER` (+ `MAIL_FROM_NAME`, propre à SimCity). Une variable
 définie prime sur la base et verrouille 🔒 le champ dans l'interface.
+Changer le serveur, le port ou l'identifiant sans ressaisir le mot de passe
+**efface** le mot de passe enregistré : il ne part jamais vers une destination
+qu'on n'a pas confirmée en le retapant. Si le mot de passe vient de
+`MAIL_PASSWORD`, ces trois champs ne se modifient que côté serveur.
 
 ### 3. Créer les tables
 
@@ -131,13 +139,18 @@ admin initial). C'est vrai en local comme en Docker.
 
 ### 4. Première connexion
 
-Connectez-vous sur `index.php` avec le compte par défaut :
+Le compte initial s'appelle `admin`. Il n'a **pas de mot de passe par défaut** :
 
-| Identifiant | Mot de passe |
-|---|---|
-| `admin` | `admin` |
+- si la variable `ADMIN_INITIAL_PASSWORD` est définie au premier démarrage (base
+  vide), c'est ce mot de passe ;
+- sinon, un mot de passe aléatoire est tiré et écrit **une seule fois** dans le
+  journal d'erreurs PHP : `docker logs <conteneur> 2>&1 | grep "compte initial"`
+  sous Docker, le `error.log` d'Apache/PHP ailleurs.
 
-> ⚠️ **Changez ce mot de passe immédiatement** via Référentiels → Comptes Admin.
+> ⚠️ **Changez ce mot de passe dès la première connexion** via Référentiels → Comptes Admin,
+> et retirez `ADMIN_INITIAL_PASSWORD` de l'environnement. Les installations antérieures
+> créées avec `admin` / `admin` affichent un avertissement à chaque connexion tant que
+> le mot de passe est égal à l'identifiant.
 
 ### 5. Après installation
 
@@ -146,7 +159,10 @@ Connectez-vous sur `index.php` avec le compte par défaut :
   restent accessibles et l'exécution de scripts PHP dans `uploads/` n'est pas bloquée.
   > ℹ️ Ce point n'a d'effet que sous Apache. Sous nginx, reportez ces règles dans la conf du serveur.
 - Supprimez ou protégez `reset.php` (accès restreint en production)
-- Configurez l'**URL publique du site** dans Paramètres → URL publique pour que les QR codes de signature pointent vers la bonne adresse
+- Configurez l'**URL publique du site** dans Paramètres → URL publique pour que les QR codes de signature pointent vers la bonne adresse.
+  Sans elle, les liens envoyés par e-mail reprennent l'adresse vue par le dernier administrateur
+  connecté : l'en-tête `Host` d'une requête anonyme n'est jamais utilisé (il est choisi par le client,
+  et un lien de visa ou de suivi pointerait sinon vers n'importe quel site).
 
 ---
 
@@ -167,8 +183,8 @@ Connectez-vous sur `index.php` avec le compte par défaut :
    ces identifiants dans `config.php` ou dans les variables `DB_USER` / `DB_PASS` :
    l'application ne se connecte alors plus jamais en `root`. Pensez aussi à définir un
    mot de passe fort pour `root` MySQL — l'app n'en dépend plus, mais c'est une hygiène de base.
-2. **Mot de passe admin** — changez-le via Référentiels → Comptes Admin dès la
-   première connexion. Ne laissez jamais `admin` / `admin` en production.
+2. **Mot de passe admin** — changez le mot de passe initial (aléatoire ou
+   `ADMIN_INITIAL_PASSWORD`, voir « Première connexion ») dès la première connexion.
 3. **Activer le `.htaccess`** — renommez `htaccess` → `.htaccess` (avec le point) à la racine.
    Sans ce fichier, Apache ne protège rien et `config.php` (vos identifiants DB)
    devient téléchargeable en clair. **Point le plus critique.**

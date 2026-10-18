@@ -63,6 +63,9 @@ jobs:
           DB_PASS: ""
           DB_NAME: simcity_ci
           APP_DEBUG: "true"
+          # Base vide : le compte initial « admin » prend ce mot de passe
+          # (sinon aléatoire), attendu par tests/smoke.sh à l'étape suivante.
+          ADMIN_INITIAL_PASSWORD: admin
         run: |
           php -S 127.0.0.1:8123 >/tmp/server.log 2>&1 &
           sleep 2
@@ -92,7 +95,7 @@ jobs:
           docker run --rm simcity:ci php -m | grep -qx ldap
           docker run --rm simcity:ci php -m | grep -qx pdo_mysql
           docker run --rm simcity:ci pdftotext -v
-          docker run --rm simcity:ci sh -c 'test -f .htaccess && test ! -e tests && test ! -e vendor.lock.json'
+          docker run --rm simcity:ci sh -c 'test -f .htaccess && test ! -e tests && test ! -e vendor.lock.json && test ! -e docker-compose.yml && test ! -e Dockerfile && test ! -e README.md'
 
       # Échoue sur toute vulnérabilité HIGH/CRITICAL qui a déjà un correctif :
       # soit la reconstruction ne l'a pas récupéré, soit l'image officielle

@@ -5,6 +5,13 @@
 tests
 vendor.lock.json
 .gitattributes
+# Fichiers de déploiement : docker-compose.yml porte les mots de passe de la
+# base (et parfois LDAP/SMTP). Copiés dans le webroot, Apache les servirait.
+docker-compose*.yml
+Dockerfile
+.dockerignore
+*.md
+*.sh
 uploads
 backups
 db_data

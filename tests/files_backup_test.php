@@ -108,6 +108,9 @@ $put('sous/dossier/../../../evade_profond.txt', "remontée profonde\n");
 $put('/tmp/evade_absolu.txt',                 "chemin absolu\n");
 $put('C:/evade_windows.txt',                  "lettre de lecteur\n");
 $put('shell.php',                             "<?php system(\$_GET['c']);\n");
+$put('.htaccess',                             "AddType application/x-httpd-php .png\n");
+$put('invoices/.user.ini',                    "auto_prepend_file=../x.png\n");
+$put('porte.pht',                             "<?php system(\$_GET['c']);\n");
 $put('legitime.pdf',                          "contenu sain\n");
 gzwrite($gz, str_repeat("\0", 1024));
 gzclose($gz);
@@ -116,8 +119,9 @@ $evilOut = $TMP . '/evil_out';
 mkdir($evilOut, 0775, true);
 [$eOk, $eSkip] = simcity_files_archive_extract($evil, $evilOut);
 check('archive hostile — un seul fichier extrait', 1, $eOk);
-check('archive hostile — cinq entrées refusées', 5, $eSkip);
-check('archive hostile — aucun script déposé', false, file_exists($evilOut . '/shell.php'));
+check('archive hostile — huit entrées refusées', 8, $eSkip);
+check('archive hostile — aucun script déposé', false, file_exists($evilOut . '/shell.php') || file_exists($evilOut . '/porte.pht'));
+check('archive hostile — aucun .htaccess / .user.ini déposé', false, file_exists($evilOut . '/.htaccess') || file_exists($evilOut . '/invoices/.user.ini'));
 $escaped = array_filter([
     $TMP . '/evade_relatif.txt',
     $TMP . '/evade_profond.txt',

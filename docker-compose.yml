@@ -20,6 +20,10 @@ services:
       DB_PASS: "change-me"          # doit correspondre à MYSQL_PASSWORD ci-dessous
       FORCE_HTTPS: "false"          # true si pas de reverse proxy TLS devant
       APP_DEBUG: "false"
+      # Mot de passe du compte initial « admin », lu uniquement quand la base
+      # est vide. Absent : mot de passe aléatoire écrit dans « docker logs ».
+      # À retirer une fois le mot de passe changé dans l'interface.
+      # ADMIN_INITIAL_PASSWORD: "à-changer"
       # ── Authentification Active Directory (optionnel — sinon via l'UI) ──
       # LDAP_ENABLED: "true"
       # LDAP_SERVER: ldaps://dc.chatillon.lan

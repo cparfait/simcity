@@ -32,9 +32,19 @@ function isHttps(): bool {
     return strtolower(explode(',', $xfp)[0]) === 'https';
 }
 
+// En-tête Host de la requête s'il a la forme d'un nom d'hôte (DNS, IPv4 ou
+// [IPv6], port facultatif), sinon null. Le client choisit librement cette
+// valeur : elle ne doit jamais servir telle quelle à fabriquer une URL
+// absolue envoyée à un tiers (voir baseUrl()).
+function requestHost(): ?string {
+    $h = (string)($_SERVER['HTTP_HOST'] ?? '');
+    return preg_match('/^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/', $h) ? $h : null;
+}
+
 // ─── Redirection HTTPS forcée (production) ─────────────────────
 if (defined('FORCE_HTTPS') && FORCE_HTTPS && PHP_SAPI !== 'cli' && !isHttps()) {
-    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $host = requestHost();
+    if ($host === null) { http_response_code(400); exit('Requête invalide.'); }
     $uri  = $_SERVER['REQUEST_URI'] ?? '/';
     header('Location: https://' . $host . $uri, true, 301);
     exit;
@@ -1822,17 +1832,32 @@ th{background:#f5f5f5;}
 
 // ─── 3. GENERATION PDF (BON DE REMISE) ────────────────────────
 function formatPhone($phone) { $val = preg_replace('/[^0-9]/', '', (string)$phone); return $val ? implode(' ', str_split($val, 2)) : ''; }
+// URL absolue de index.php, base des liens de signature, de visa et de suivi
+// envoyés par e-mail. Priorité au paramètre site_url. À défaut, l'en-tête Host
+// n'est cru que pour une requête authentifiée : sinon, un anonyme qui dépose
+// une demande avec « Host: pirate.example » ferait partir vers les valideurs
+// des liens (porteurs de jetons) pointant chez lui. L'hôte vu par le dernier
+// administrateur connecté est mémorisé (site_url_auto) pour ces requêtes-là.
 function baseUrl($pdo = null) {
     if ($pdo) {
         $custom = getSetting($pdo, 'site_url', '');
         if ($custom) return rtrim($custom, '/') . '/index.php';
     }
-    $proto = isHttps() ? 'https' : 'http';
-    $host  = $_SERVER['HTTP_HOST'] ?? 'localhost';
     $script = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '/index.php');
     $dir   = rtrim(dirname($script), '/');
     if ($dir === '/' || $dir === '\\' || $dir === '.') $dir = '';
-    return $proto . '://' . $host . $dir . '/index.php';
+    $host  = requestHost();
+    $auto  = $pdo ? (string)getSetting($pdo, 'site_url_auto', '') : '';
+    if ($host !== null && !empty($_SESSION['user_id'])) {
+        $url = (isHttps() ? 'https' : 'http') . '://' . $host . $dir;
+        if ($pdo && $url !== $auto) {
+            $pdo->prepare("INSERT INTO settings (setting_key, setting_value, label) VALUES ('site_url_auto', ?, 'URL du site déduite de la dernière connexion admin (si site_url est vide)') ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value)")
+                ->execute([$url]);
+        }
+        return $url . '/index.php';
+    }
+    if ($auto !== '') return $auto . '/index.php';
+    return (isHttps() ? 'https' : 'http') . '://localhost' . $dir . '/index.php';
 }
 
 // ─── Helpers bons de remise / restitution ─────────────────────
@@ -1969,7 +1994,7 @@ function smtpSendMail($pdo, $to, $subject, $htmlBody) {
 
     try {
         if (!$expect($read(), 220)) return "Réponse SMTP inattendue à la connexion.";
-        $ehloHost = $_SERVER['SERVER_NAME'] ?? 'localhost';
+        $ehloHost = preg_replace('/:\d+$/', '', requestHost() ?? 'localhost');
         if (!$expect($cmd("EHLO $ehloHost"), 250)) return "EHLO refusé par le serveur.";
         if ($secure === 'tls') {
             if (!$expect($cmd("STARTTLS"), 220)) return "STARTTLS refusé par le serveur.";
@@ -2285,7 +2310,7 @@ if (isset($_GET['page']) && $_GET['page'] === 'pdf_bon') {
             foreach ([$bonRemise, $bonRestitution] as $tb):
                 if (!$tb || $tb['status'] !== 'pending' || ($tb['expires_at'] && strtotime($tb['expires_at']) < time())) continue;
                 $signUrl = baseUrl($pdo) . '?page=sign&token=' . $tb['token']; ?>
-            <button type="button" title="Copier le lien de signature du bon <?=h($tb['numero'])?>" onclick="copySignLink(this, '<?=h($signUrl)?>')">🔗 Copier le lien <?=h($tb['numero'])?></button>
+            <button type="button" title="Copier le lien de signature du bon <?=h($tb['numero'])?>" onclick="copySignLink(this, <?=jsArg($signUrl)?>)">🔗 Copier le lien <?=h($tb['numero'])?></button>
             <?php if ($smtpConfigured && $agt && !empty($agt['email'])): ?>
             <form method="post" action="index.php">
                 <?=csrf_field()?>
@@ -2444,9 +2469,14 @@ if (isset($_GET['page']) && $_GET['page'] === 'attachment') {
     $finfo = new finfo(FILEINFO_MIME_TYPE);
     $mime  = $finfo->file($path) ?: 'application/octet-stream';
     $name  = preg_replace('/[^\w .()-]/u', '_', (string)($att['file_name'] ?: basename($rel)));
+    // Affichage dans le navigateur réservé aux types inoffensifs : un fichier
+    // arrivé par une archive restaurée n'est pas passé par le contrôle de
+    // l'upload, et un text/html servi « inline » s'exécuterait dans l'origine.
+    $inline = in_array($mime, ['image/png','image/jpeg','image/gif','image/webp','application/pdf','text/plain'], true);
+    if (!$inline) $mime = 'application/octet-stream';
     while (ob_get_level()) ob_end_clean();
     header('Content-Type: ' . $mime);
-    header('Content-Disposition: inline; filename="' . $name . '"');
+    header('Content-Disposition: ' . ($inline ? 'inline' : 'attachment') . '; filename="' . $name . '"');
     header('Content-Length: ' . filesize($path));
     header('X-Content-Type-Options: nosniff');
     readfile($path);
@@ -2508,14 +2538,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
         $st->execute([$loginUser]);
         $u = $st->fetch();
 
-        // 1) Mot de passe local d'abord…
-        $authed   = ($u && $loginPass !== '' && password_verify($loginPass, $u['password']));
+        // Chaque compte n'a qu'une seule source d'authentification. Sans ce
+        // cloisonnement, le titulaire AD d'un identifiant identique à un compte
+        // local (« admin », un homonyme…) ouvrirait ce compte local avec son
+        // mot de passe AD, droits de super-admin compris.
+        $isLocal = $u && $u['auth_source'] !== 'ldap';
+
+        // 1) Mot de passe local (comptes locaux uniquement)…
+        $authed   = ($isLocal && $loginPass !== '' && password_verify($loginPass, $u['password']));
         $ldapUsed = false;
 
-        // 2) …puis bind LDAP / Active Directory (si activé). Un utilisateur AD
-        //    valide et inconnu en base est provisionné automatiquement
-        //    (jamais super-admin), comme sur Sentinelle.
-        if (!$authed && ldap_auth_enabled() && $loginUser !== '' && $loginPass !== '') {
+        // 2) …sinon bind LDAP / Active Directory (si activé), pour un compte
+        //    issu de l'AD ou inconnu en base. Un utilisateur AD valide et
+        //    inconnu est provisionné automatiquement (jamais super-admin),
+        //    comme sur Sentinelle.
+        if (!$authed && !$isLocal && ldap_auth_enabled() && $loginUser !== '' && $loginPass !== '') {
             $ldapInfo = ldap_authenticate_user($loginUser, $loginPass);
             if ($ldapInfo !== null) {
                 $authed = $ldapUsed = true;
@@ -2583,6 +2620,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                 $_SESSION['auth_ldap'] = $ldapUsed;
                 $fullName = trim(($u['first_name'] ?? '') . ' ' . ($u['last_name'] ?? ''));
                 if ($fullName) $_SESSION['admin_fullname'] = $fullName;
+                // Installations antérieures : le compte initial était « admin / admin ».
+                if (!$ldapUsed && strcasecmp($loginPass, (string)$u['username']) === 0) {
+                    flash('error', "⚠️ Le mot de passe de ce compte est identique à son identifiant. Changez-le dès maintenant (Référentiels → Comptes Admin).");
+                }
                 header('Location: index.php'); exit;
             }
         } else {
@@ -2637,6 +2678,10 @@ if (!isset($_SESSION['user_id'])) {
 
 // ─── 5. HELPERS ───────────────────────────────────────────────
 function h($str) { return htmlspecialchars((string)$str, ENT_QUOTES); }
+// Valeur PHP en argument JavaScript dans un attribut HTML : onclick="f(« jsArg($x) »)",
+// SANS guillemets autour. h() seul ne suffit pas : le navigateur décode
+// « &#039; » en « ' » avant d'exécuter le code, et la chaîne se referme.
+function jsArg($v) { return h(json_encode($v, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE)); }
 function S(array $d, string $k, string $def=''): string { return trim(strip_tags((string)($d[$k] ?? $def))); }
 // Les mots de passe ne doivent JAMAIS passer par S() : strip_tags() ampute tout
 // ce qui suit un « < » (ex. « zsA$E<i/f2VU4W » → « zsA$E »), et le hachage ne
@@ -3317,7 +3362,7 @@ if (isset($_GET['ajax_agent_details'])) {
                 echo "<a href='?page=pdf_bon&bon_id={$b['id']}' target='_blank' title='Voir / imprimer ce bon' style='text-decoration:none;font-size:.85rem;'>🖨️</a>";
                 if ($b['status'] === 'pending' && !$isExpired) {
                     $signUrl = baseUrl($pdo) . '?page=sign&token=' . $b['token'];
-                    echo "<button type='button' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Copier le lien de signature' onclick=\"copySignLink(this, '" . h($signUrl) . "')\"><i class='bi bi-link-45deg'></i></button>";
+                    echo "<button type='button' class='btn-icon' style='padding:0 .2rem;font-size:.85rem;' title='Copier le lien de signature' onclick=\"copySignLink(this, " . jsArg($signUrl) . ")\"><i class='bi bi-link-45deg'></i></button>";
                     if ($smtpConfigured && !empty($agt['email'])) {
                         echo "<form method='post' action='index.php' target='_blank' style='display:inline;margin:0;padding:0;'>
                             <input type='hidden' name='_entity' value='bon'>
@@ -3419,7 +3464,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $url = trim($d['site_url'] ?? '');
                 // Normaliser : retirer le slash final
                 $url = rtrim($url, '/');
-                $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='site_url'")->execute([$url]);
+                // http(s) uniquement : la valeur finit dans des href et des liens
+                // envoyés par e-mail (« javascript:… » y serait exécutable).
+                if ($url !== '' && !preg_match('#^https?://[A-Za-z0-9.\-]+(:\d{1,5})?(/[A-Za-z0-9._~%/\-]*)?$#', $url)) {
+                    flash('error', "URL du site ignorée : attendu http(s)://serveur[:port][/chemin].");
+                } else {
+                    $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key='site_url'")->execute([$url]);
+                }
             }
             // Configuration LDAP / Active Directory (réservée aux super-admins).
             // Les champs imposés par variable d'environnement ne sont pas écrasés.
@@ -3452,9 +3503,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash('success', 'Configuration LDAP enregistrée.' . (ldap_auth_enabled() ? '' : (ldap_cfg('ldap_enabled') && !extension_loaded('ldap') ? " ⚠️ Extension PHP « ldap » manquante : l'authentification AD restera inactive." : '')));
                 }
             }
-            // Configuration SMTP (envoi des liens de signature).
+            // Configuration SMTP (envoi des liens de signature), réservée aux
+            // super-admins comme la configuration LDAP : le mot de passe
+            // enregistré est présenté au serveur configuré à chaque envoi.
             // Les champs imposés par variable d'environnement (MAIL_*) ne sont pas écrasés.
-            if (isset($d['smtp_host'])) {
+            if (isset($d['smtp_host']) && empty($_SESSION['is_admin'])) {
+                flash('error', "La configuration SMTP est réservée aux super-administrateurs.");
+            } elseif (isset($d['smtp_host'])) {
+                // Changer de serveur, de port ou d'identifiant sans ressaisir le
+                // mot de passe l'effacerait sinon vers une destination nouvelle :
+                // pointer smtp_host sur son propre serveur suffirait à le
+                // recevoir en clair à l'envoi suivant (AUTH LOGIN).
+                $newPass = smtp_env_locked('smtp_pass') ? '' : (string)($d['smtp_pass'] ?? '');
+                $moved = false;
+                foreach (['smtp_host','smtp_port','smtp_user'] as $key) {
+                    if (!smtp_env_locked($key) && trim($d[$key] ?? '') !== trim((string)smtpSetting($pdo, $key, ''))) $moved = true;
+                }
+                if ($moved && $newPass === '' && smtp_env_locked('smtp_pass')) {
+                    flash('error', "Serveur, port ou identifiant SMTP non modifiés : le mot de passe est imposé par MAIL_PASSWORD et ne peut pas suivre un changement de destination fait dans l'interface.");
+                    foreach (['smtp_host','smtp_port','smtp_user'] as $key) $d[$key] = smtpSetting($pdo, $key, '');
+                } elseif ($moved && $newPass === '' && trim((string)getSetting($pdo, 'smtp_pass', '')) !== '') {
+                    $pdo->prepare("UPDATE settings SET setting_value='' WHERE setting_key='smtp_pass'")->execute();
+                    flash('warning', "Destination SMTP modifiée : le mot de passe enregistré a été effacé. Ressaisissez-le.");
+                }
                 foreach (['smtp_host','smtp_port','smtp_user','smtp_from','smtp_from_name'] as $key) {
                     if (!smtp_env_locked($key)) $pdo->prepare("UPDATE settings SET setting_value=? WHERE setting_key=?")->execute([trim($d[$key] ?? ''), $key]);
                 }
@@ -3514,8 +3585,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     flash('error', 'Format non autorisé. Utilisez PNG, JPG, GIF ou WEBP.');
                 } else {
                     if (!is_dir(UPLOAD_DIR)) mkdir(UPLOAD_DIR, 0755, true);
-                    $ext  = pathinfo($_FILES['pdf_logo']['name'], PATHINFO_EXTENSION);
-                    $dest = UPLOAD_DIR . 'pdf_logo_' . bin2hex(random_bytes(8)) . '.' . strtolower($ext);
+                    // Extension déduite du type réel, jamais du nom envoyé : le logo
+                    // est servi tel quel par Apache, qui choisit le Content-Type
+                    // d'après l'extension. Un PNG valide nommé « logo.html »
+                    // serait sinon rendu comme une page HTML (XSS stockée).
+                    $ext  = ['image/png' => 'png', 'image/jpeg' => 'jpg', 'image/gif' => 'gif', 'image/webp' => 'webp'][$mime];
+                    $dest = UPLOAD_DIR . 'pdf_logo_' . bin2hex(random_bytes(8)) . '.' . $ext;
                     // Supprimer l'ancien logo
                     $oldLogo = getSetting($pdo, 'pdf_logo_path', '');
                     if ($oldLogo && file_exists($oldLogo)) @unlink($oldLogo);
@@ -5056,7 +5131,7 @@ if ($page === 'dashboard') {
           ?>
           <tr>
             <td><?=$icon?> <strong style="font-family:var(--font-mono);font-size:.85rem;"><?=h($pb['numero'])?></strong> <span class="muted" style="font-size:.78rem;"><?=$lbl?></span></td>
-            <td><strong style="cursor:pointer;border-bottom:1px dashed var(--border2);" onclick="viewAgent(<?=$pb['agent_id']?>, '<?=h(trim($pb['agent_name']))?>')" title="Voir la fiche"><?=h(trim($pb['agent_name']))?></strong></td>
+            <td><strong style="cursor:pointer;border-bottom:1px dashed var(--border2);" onclick="viewAgent(<?=$pb['agent_id']?>, <?=jsArg(trim($pb['agent_name']))?>)" title="Voir la fiche"><?=h(trim($pb['agent_name']))?></strong></td>
             <td><?=h($pb['created_fmt'])?></td>
             <td>
               <?php if($expired): ?><span style="color:var(--danger);font-weight:600;">⏰ Expiré</span>
@@ -5128,7 +5203,7 @@ if ($page === 'dashboard') {
             <?php foreach($recent as $r): ?>
             <tr>
               <td><a href="?page=lines&open_line=<?=$r['line_id']?>" class="cell-link" style="font-family:var(--font-mono);color:var(--primary);font-size:1.05rem;font-weight:700;white-space:nowrap;" title="Ouvrir la fiche de la ligne"><?=formatPhone($r['phone_number'])?></a></td>
-              <td><?php if($r['agent_id']): ?><span class="cell-link" onclick="viewAgent(<?=$r['agent_id']?>, '<?=h(addslashes($r['first_name'].' '.$r['last_name']))?>')" title="Ouvrir la fiche utilisateur"><?=h($r['first_name'].' '.$r['last_name'])?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
+              <td><?php if($r['agent_id']): ?><span class="cell-link" onclick="viewAgent(<?=$r['agent_id']?>, <?=jsArg($r['first_name'].' '.$r['last_name'])?>)" title="Ouvrir la fiche utilisateur"><?=h($r['first_name'].' '.$r['last_name'])?></span><?php else: ?><span class="muted">—</span><?php endif; ?></td>
               <td><span class="badge badge-muted"><?=h($r['plan_type']?:'Non défini')?></span></td>
               <td><?=statusBadge($r['status'])?></td>
             </tr>
@@ -5308,7 +5383,7 @@ elseif ($page === 'lines') {
           <td>
             <?php if($l['agent_id']): ?>
               <strong style="cursor:pointer;border-bottom:1px dashed var(--border2);color:var(--text);"
-                onclick="viewAgent(<?=$l['agent_id']?>, '<?=h($l['first_name'].' '.$l['last_name'])?>')"
+                onclick="viewAgent(<?=$l['agent_id']?>, <?=jsArg($l['first_name'].' '.$l['last_name'])?>)"
                 title="👁️ Voir la fiche de cet utilisateur">
                 <?=h($l['first_name'].' '.$l['last_name'])?>
               </strong>
@@ -5343,7 +5418,7 @@ elseif ($page === 'lines') {
                 <a href="index.php?page=pdf_bon&agent_id=<?=$l['agent_id']?>" target="_blank" class="btn-icon" title="Voir / générer le bon de remise" style="text-decoration:none;"><i class="bi bi-printer"></i></a>
                 <?php endif; ?>
                 <button class="btn-icon" title="Changer la SIM (garder le numéro)" style="color:var(--warning)"
-                    onclick="openSimSwap(<?=$l['id']?>, '<?=h($l['phone_number'])?>', '<?=h($l['iccid'])?>', <?=!empty($l['esim'])?'true':'false'?>, '<?=h($l['eid']?:'')?>')"><i class="bi bi-arrow-repeat"></i></button>
+                    onclick="openSimSwap(<?=$l['id']?>, <?=jsArg($l['phone_number'])?>, <?=jsArg($l['iccid'])?>, <?=!empty($l['esim'])?'true':'false'?>, <?=jsArg($l['eid']?:'')?>)"><i class="bi bi-arrow-repeat"></i></button>
                 <button type="button" class="btn-icon btn-del" title="Résilier / Archiver" onclick="openArchiveLine(<?=$l['id']?>, <?=(int)$l['device_id']?>, <?=json_encode($l['device_id'] ? ($l['brand'].' '.$l['model_name'].' — S/N: '.($l['serial_number']?:($l['imei']?:'—'))) : '')?>)"><i class="bi bi-archive"></i></button>
             <?php else: ?>
                 <button class="btn-icon" title="Historique" onclick='showHistory(<?=json_encode($hist, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>)'><i class="bi bi-clock-history"></i></button>
@@ -5738,7 +5813,7 @@ elseif ($page === 'devices') {
           <td><strong><?=h($d['brand'].' '.$d['model_name'])?></strong></td>
           <td><span class="badge badge-muted"><?=h($d['category']?:'N/A')?></span></td>
           <td>IMEI: <code class="ref"><?=h($d['imei'])?></code><br><span class="muted">S/N: <?=h($d['serial_number']?:'-')?></span><?php if($d['inventory_label']): ?><br><span class="badge badge-muted" style="font-size:.68rem;"><i class="bi bi-tag"></i> <?=h($d['inventory_label'])?></span><?php endif; ?></td>
-          <td><?php if($d['agent_id']): ?><strong class="cell-link" onclick="viewAgent(<?=$d['agent_id']?>, '<?=h(addslashes($d['first_name'].' '.$d['last_name']))?>')" title="Ouvrir la fiche utilisateur"><?=h($d['first_name'].' '.$d['last_name'])?></strong><?php else: ?><strong class="muted">Non affecté</strong><?php endif; ?><br><span class="muted"><i class="bi bi-building"></i> <?=h($d['service_name']?:'-')?></span></td>
+          <td><?php if($d['agent_id']): ?><strong class="cell-link" onclick="viewAgent(<?=$d['agent_id']?>, <?=jsArg($d['first_name'].' '.$d['last_name'])?>)" title="Ouvrir la fiche utilisateur"><?=h($d['first_name'].' '.$d['last_name'])?></strong><?php else: ?><strong class="muted">Non affecté</strong><?php endif; ?><br><span class="muted"><i class="bi bi-building"></i> <?=h($d['service_name']?:'-')?></span></td>
           <td><?=statusBadge($d['status'])?></td>
           <td><?php if($d['mdm']): ?><span class="badge badge-success" title="Piloté par le MDM"><i class="bi bi-shield-check"></i> MDM</span><?php else: ?><span class="muted" title="Non piloté par le MDM">—</span><?php endif; ?></td>
           <td><?=$d['purchase_date']?date('d/m/Y',strtotime($d['purchase_date'])):'-'?></td>
@@ -7187,7 +7262,7 @@ elseif ($page === 'invoices') {
             <a class="btn-icon" title="Ajouter cette ligne dans SimCity" style="text-decoration:none;color:var(--success);"
                href="?page=lines&tab=active&open=modal-add-line&phone=<?=urlencode($r['phone'])?>"><i class="bi bi-plus-circle"></i></a>
             <?php endif; ?>
-            <?php if($app && $app['agent_id']): ?><button class="btn-icon" title="Fiche utilisateur" onclick="viewAgent(<?=$app['agent_id']?>, '<?=h(addslashes($app['fn'].' '.$app['ln']))?>')"><i class="bi bi-person"></i></button><?php endif; ?>
+            <?php if($app && $app['agent_id']): ?><button class="btn-icon" title="Fiche utilisateur" onclick="viewAgent(<?=$app['agent_id']?>, <?=jsArg($app['fn'].' '.$app['ln'])?>)"><i class="bi bi-person"></i></button><?php endif; ?>
           </td>
         </tr>
         <?php endforeach; if(!$shown): ?><tr><td colspan="8" class="empty-cell">Aucune ligne pour ce filtre</td></tr><?php endif; ?>
@@ -8287,6 +8362,9 @@ elseif ($page === 'refs') {
       <!-- Bloc SMTP -->
       <div class="card">
         <div class="card-header"><i class="bi bi-envelope"></i> Envoi d'e-mails (liens de signature)</div>
+        <?php if(empty($_SESSION['is_admin'])): ?>
+        <p style="padding:1.5rem 1.5rem 0;color:var(--text2);font-size:.88rem;">Configuration du serveur SMTP réservée aux super-administrateurs<?=trim(smtpSetting($pdo,'smtp_host','')) !== '' ? ' (serveur actuel : <code>'.h(smtpSetting($pdo,'smtp_host','')).'</code>)' : ''?>.</p>
+        <?php else: ?>
         <form method="post" style="padding:1.5rem;">
           <input type="hidden" name="_entity" value="settings">
           <input type="hidden" name="_action" value="save">
@@ -8319,6 +8397,7 @@ elseif ($page === 'refs') {
             <button type="submit" class="btn-primary"><i class="bi bi-save"></i> Enregistrer</button>
           </div>
         </form>
+        <?php endif; ?>
         <?=$secretPurgeBox($pdo, 'smtp_pass', 'MAIL_PASSWORD', 'mot de passe SMTP')?>
         <?php
           // Adresse de test pré-remplie avec l'e-mail de l'administrateur connecté
@@ -8397,7 +8476,7 @@ elseif ($page === 'refs') {
               <div class="form-group form-full"><label>Corps (HTML)</label>
                 <textarea name="tpl_body[<?=h($tk)?>]" rows="6" style="font-family:var(--font-mono);font-size:.78rem;"><?=h($ovB !== '' ? $ovB : $tpl['body'])?></textarea></div>
               <div style="text-align:right;margin-bottom:.5rem;">
-                <button type="button" class="btn-secondary btn-sm" onclick="mailTplPreview('<?=h($tk)?>')"><i class="bi bi-eye"></i> Aperçu</button>
+                <button type="button" class="btn-secondary btn-sm" onclick="mailTplPreview(<?=jsArg($tk)?>)"><i class="bi bi-eye"></i> Aperçu</button>
               </div>
               <?php if ($tpl['vars']): ?>
               <div style="font-size:.76rem;color:var(--text3);line-height:1.7;">
@@ -8579,7 +8658,7 @@ elseif ($page === 'refs') {
           </p>
           <div style="display:flex;align-items:center;gap:.6rem;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.6rem .9rem;margin-bottom:1.25rem;font-size:.8rem;">
             🔗 <code style="font-family:var(--font-mono);font-size:.75rem;word-break:break-all;flex:1;"><?=h(baseUrl($pdo) . '?page=demande')?></code>
-            <button type="button" class="btn-secondary" style="font-size:.75rem;padding:.3rem .7rem;" onclick="copySignLink(this, '<?=h(baseUrl($pdo) . '?page=demande')?>')">📋 Copier</button>
+            <button type="button" class="btn-secondary" style="font-size:.75rem;padding:.3rem .7rem;" onclick="copySignLink(this, <?=jsArg(baseUrl($pdo) . '?page=demande')?>)">📋 Copier</button>
           </div>
           <div class="form-grid">
             <div class="form-group"><label>E-mail notifié à chaque nouvelle demande</label><input type="email" name="request_notify_email" value="<?=h(getSetting($pdo,'request_notify_email',''))?>" placeholder="dsi@collectivite.fr"></div>
@@ -8643,7 +8722,7 @@ elseif ($page === 'refs') {
               <td style="white-space:nowrap;">
                 <button type="button" class="btn-icon" title="Modifier ce circuit" style="color:var(--primary);"
                   onclick='circuitPresetEdit(<?=json_encode(['id' => (int)$c['id'], 'name' => $c['name'], 'steps' => $cSteps], JSON_UNESCAPED_UNICODE | JSON_HEX_APOS | JSON_HEX_TAG)?>)'><i class="bi bi-pencil"></i></button>
-                <form method="post" style="display:inline;" onsubmit="return confirm('Supprimer le circuit « <?=h(addslashes($c['name']))?> » ? Les demandes déjà lancées ne sont pas modifiées.')">
+                <form method="post" style="display:inline;" onsubmit="return confirm(<?=jsArg("Supprimer le circuit « {$c['name']} » ? Les demandes déjà lancées ne sont pas modifiées.")?>)">
                   <?=csrf_field()?>
                   <input type="hidden" name="_entity" value="req_circuit">
                   <input type="hidden" name="_action" value="delete">
@@ -9806,7 +9885,7 @@ elseif ($page === 'refs') {
           <?php endif; ?>
           <td class="actions">
             <?php if($tab === 'agents'): ?>
-                <button class="btn-icon" title="Voir la Fiche Utilisateur" style="color:var(--primary)" onclick="viewAgent(<?=$row['id']?>, '<?=h($row['first_name'].' '.$row['last_name'])?>')"><i class="bi bi-eye"></i></button>
+                <button class="btn-icon" title="Voir la Fiche Utilisateur" style="color:var(--primary)" onclick="viewAgent(<?=$row['id']?>, <?=jsArg($row['first_name'].' '.$row['last_name'])?>)"><i class="bi bi-eye"></i></button>
                 <?php if(empty($row['archived'])): ?>
                     <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'><i class="bi bi-pencil"></i></button>
                     <form method="post" style="display:inline" onsubmit="return confirm('Archiver cet agent ? Son téléphone retournera en stock et sa ligne sera libérée automatiquement.')">
@@ -9831,14 +9910,14 @@ elseif ($page === 'refs') {
                 <?php if(!$isSelf): ?>
                     <span style="margin-right:4px">
                     <?php if($isActive): ?>
-                        <form method="post" style="display:inline" onsubmit="return confirm('Désactiver le compte « <?=h($row['username']) ?> » ? Il ne pourra plus se connecter.')">
+                        <form method="post" style="display:inline" onsubmit="return confirm(<?=jsArg("Désactiver le compte « {$row['username']} » ? Il ne pourra plus se connecter.")?>)">
                             <input type="hidden" name="_entity" value="admin">
                             <input type="hidden" name="_action" value="disable">
                             <input type="hidden" name="_id" value="<?=$row['id']?>">
                             <button type="submit" class="btn-icon" title="Désactiver ce compte" style="color:var(--warning)"><i class="bi bi-lock"></i></button>
                         </form>
                     <?php else: ?>
-                        <form method="post" style="display:inline" onsubmit="return confirm('Réactiver le compte « <?=h($row['username']) ?> » ?')">
+                        <form method="post" style="display:inline" onsubmit="return confirm(<?=jsArg("Réactiver le compte « {$row['username']} » ?")?>)">
                             <input type="hidden" name="_entity" value="admin">
                             <input type="hidden" name="_action" value="enable">
                             <input type="hidden" name="_id" value="<?=$row['id']?>">
@@ -9853,7 +9932,7 @@ elseif ($page === 'refs') {
                 <?php endif; ?>
                 <button class="btn-icon btn-edit" title="Modifier" onclick='openEditModal(<?=json_encode($row, JSON_HEX_TAG|JSON_HEX_APOS|JSON_HEX_QUOT)?>,"<?=$ent?>")'><i class="bi bi-pencil"></i></button>
                 <?php if(!$isSelf): ?>
-                    <form method="post" style="display:inline" onsubmit="return confirm('Supprimer définitivement le compte « <?=h($row['username']) ?> » ?')">
+                    <form method="post" style="display:inline" onsubmit="return confirm(<?=jsArg("Supprimer définitivement le compte « {$row['username']} » ?")?>)">
                         <input type="hidden" name="_entity" value="admin">
                         <input type="hidden" name="_action" value="delete">
                         <input type="hidden" name="_id" value="<?=$row['id']?>">
@@ -10179,7 +10258,7 @@ elseif ($page === 'history') {
       <div style="padding:.75rem 1.25rem;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;background:var(--card2);">
         <div style="display:flex;align-items:center;gap:.75rem;">
           <?php if($pair['agent_id']): ?>
-            <strong style="cursor:pointer;font-size:.95rem;" onclick="viewAgent(<?=$pair['agent_id']?>, '<?=h($agentName)?>')" title="Voir la fiche">👤 <?=h($agentName)?></strong>
+            <strong style="cursor:pointer;font-size:.95rem;" onclick="viewAgent(<?=$pair['agent_id']?>, <?=jsArg($agentName)?>)" title="Voir la fiche">👤 <?=h($agentName)?></strong>
           <?php else: ?>
             <strong style="color:var(--text3);">👤 Agent supprimé</strong>
           <?php endif; ?>
@@ -10326,7 +10405,7 @@ elseif ($page === 'requests') {
           <h4 style="color:var(--primary);margin-bottom:10px;border-bottom:1px solid var(--border);padding-bottom:5px;">👤 Agent au référentiel & équipement actuel</h4>
           <?php if ($linkedAgent): ?>
           <div style="background:var(--bg3);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:.75rem;">
-            <strong class="cell-link" onclick="viewAgent(<?=(int)$linkedAgent['id']?>, '<?=h(addslashes(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name'])))?>')" title="Ouvrir la fiche"><?=h(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name']))?></strong>
+            <strong class="cell-link" onclick="viewAgent(<?=(int)$linkedAgent['id']?>, <?=jsArg(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name']))?>)" title="Ouvrir la fiche"><?=h(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name']))?></strong>
             <span class="muted">— <?=h($linkedAgent['service_name'] ?: 'Aucun service')?></span>
             <div style="margin-top:.6rem;"><?=requestEquipmentHtml($pdo, (int)$linkedAgent['id'])?></div>
           </div>
@@ -10339,7 +10418,7 @@ elseif ($page === 'requests') {
           <div style="background:var(--bg3);border-radius:var(--radius-sm);padding:.85rem 1rem;margin-bottom:.75rem;">
             <div style="font-size:.72rem;font-weight:700;color:var(--text2);text-transform:uppercase;margin-bottom:.35rem;">♻️ Agent remplacé</div>
             <?php if ($replacedAgent): ?>
-            <strong class="cell-link" onclick="viewAgent(<?=(int)$replacedAgent['id']?>, '<?=h(addslashes(trim($replacedAgent['first_name'] . ' ' . $replacedAgent['last_name'])))?>')" title="Ouvrir la fiche"><?=h(trim($replacedAgent['first_name'] . ' ' . $replacedAgent['last_name']))?></strong>
+            <strong class="cell-link" onclick="viewAgent(<?=(int)$replacedAgent['id']?>, <?=jsArg(trim($replacedAgent['first_name'] . ' ' . $replacedAgent['last_name']))?>)" title="Ouvrir la fiche"><?=h(trim($replacedAgent['first_name'] . ' ' . $replacedAgent['last_name']))?></strong>
             <?php if ($req['replaced_agent_email']): ?><span class="muted" style="font-size:.8rem;"> — <?=h($req['replaced_agent_email'])?></span><?php endif; ?>
             <div style="margin-top:.6rem;"><?=requestEquipmentHtml($pdo, (int)$replacedAgent['id'])?></div>
             <div class="muted" style="font-size:.75rem;margin-top:.5rem;">💡 Matériel / lignes à récupérer ou transférer au nouvel agent.</div>
@@ -10519,7 +10598,7 @@ elseif ($page === 'requests') {
               <?=$s['notified_at'] ? '📧 ' . date('d/m H:i', strtotime($s['notified_at'])) : '—'?>
               <?php if($isCur && !$s['notified_at']): ?><br><span style="color:var(--warning);" title="L'e-mail n'a pas pu être envoyé (voir le journal de la demande). Transmettez le lien de visa manuellement.">⚠️ e-mail non parti</span><?php endif; ?>
               <?=$s['reminded_at'] ? '<br>🔔 ' . date('d/m H:i', strtotime($s['reminded_at'])) : ''?>
-              <?php if ($isCur): ?><br><button type="button" class="btn-icon" style="font-size:.78rem;color:var(--primary);padding:0;" title="Copier le lien de visa" onclick="copySignLink(this, '<?=h(baseUrl($pdo) . '?page=valider&token=' . $s['token'])?>')">🔗 lien</button><?php endif; ?>
+              <?php if ($isCur): ?><br><button type="button" class="btn-icon" style="font-size:.78rem;color:var(--primary);padding:0;" title="Copier le lien de visa" onclick="copySignLink(this, <?=jsArg(baseUrl($pdo) . '?page=valider&token=' . $s['token'])?>)">🔗 lien</button><?php endif; ?>
             </td>
           </tr>
           <?php endforeach; ?>
@@ -10543,7 +10622,7 @@ elseif ($page === 'requests') {
 
         <?php if ($req['status'] === 'validee'): ?>
         <?php if ($linkedAgent): ?>
-        <button type="button" class="btn-primary" onclick="viewAgent(<?=(int)$linkedAgent['id']?>, '<?=h(addslashes(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name'])))?>')">👤 Attribuer matériel / ligne (fiche agent)</button>
+        <button type="button" class="btn-primary" onclick="viewAgent(<?=(int)$linkedAgent['id']?>, <?=jsArg(trim($linkedAgent['first_name'] . ' ' . $linkedAgent['last_name']))?>)">👤 Attribuer matériel / ligne (fiche agent)</button>
         <form method="post" action="index.php" style="display:inline;" target="_blank">
           <?=csrf_field()?>
           <input type="hidden" name="_entity" value="request"><input type="hidden" name="_action" value="generate_bon"><input type="hidden" name="request_id" value="<?=$viewId?>">
@@ -10626,7 +10705,7 @@ elseif ($page === 'requests') {
       <div style="display:flex;align-items:center;gap:.6rem;font-size:.85rem;color:var(--text2);">
         <span>🔗 Formulaire public :</span>
         <code style="font-family:var(--font-mono);font-size:.78rem;background:var(--bg3);padding:.3rem .6rem;border-radius:6px;word-break:break-all;"><?=h($publicUrl)?></code>
-        <button type="button" class="btn-secondary" style="font-size:.78rem;padding:.35rem .8rem;" onclick="copySignLink(this, '<?=h($publicUrl)?>')">📋 Copier</button>
+        <button type="button" class="btn-secondary" style="font-size:.78rem;padding:.35rem .8rem;" onclick="copySignLink(this, <?=jsArg($publicUrl)?>)">📋 Copier</button>
       </div>
       <a href="<?=h($publicUrl)?>" target="_blank" class="btn-primary" style="text-decoration:none;">➕ Nouvelle demande (formulaire)</a>
     </div>

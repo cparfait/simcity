@@ -586,10 +586,20 @@ function simcity_apply_schema(PDO $pdo): void
     // DONNÉES PAR DÉFAUT
     // ─────────────────────────────────────────────────────────
 
-    // Compte admin initial (seulement si la table est vide) — super-admin d'office
+    // Compte admin initial (seulement si la table est vide) — super-admin d'office.
+    // Jamais de mot de passe connu d'avance : un « admin / admin » oublié en
+    // production donne la main à quiconque atteint la page de connexion. Le mot
+    // de passe vient de ADMIN_INITIAL_PASSWORD, sinon il est tiré au hasard et
+    // écrit dans le journal d'erreurs PHP (« docker logs » sous Docker).
     if ($pdo->query("SELECT COUNT(*) FROM users")->fetchColumn() == 0) {
+        $initPass = (string)getenv('ADMIN_INITIAL_PASSWORD');
+        $fromEnv  = $initPass !== '';
+        if (!$fromEnv) $initPass = bin2hex(random_bytes(9));
         $pdo->prepare("INSERT INTO users (username, password, is_admin) VALUES ('admin', ?, 1)")
-            ->execute([password_hash('admin', PASSWORD_DEFAULT)]);
+            ->execute([password_hash($initPass, PASSWORD_DEFAULT)]);
+        error_log($fromEnv
+            ? "SimCity: compte initial « admin » créé avec le mot de passe de ADMIN_INITIAL_PASSWORD."
+            : "SimCity: compte initial « admin » créé — mot de passe : $initPass (à changer dès la première connexion).");
     }
 
     // Garde-fou : s'il n'existe aucun super-admin (bug des installations neuves

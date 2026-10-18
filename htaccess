@@ -11,6 +11,15 @@
     RedirectMatch 403 (^|/)\.(?!well-known)
 </IfModule>
 
+# ─── Bloquer les fichiers de déploiement et de documentation ─
+# docker-compose.yml contient les mots de passe de la base (et souvent ceux
+# du compte de service AD ou du SMTP) ; Dockerfile, README et scripts
+# décrivent l'installation. L'image Docker ne les copie pas (.dockerignore),
+# mais un déploiement par « git clone » dans le webroot les servirait en clair.
+<IfModule mod_alias.c>
+    RedirectMatch 403 (?i)(^|/)(Dockerfile|docker-compose[^/]*|htaccess|vendor\.lock\.json|[^/]+\.(ya?ml|md|sh|lock|dist|bak|orig|swp))$
+</IfModule>
+
 # ─── Bloquer l'accès direct à config.php ─────────────────────
 <Files "config.php">
     Require all denied
@@ -59,7 +68,9 @@
     # installation en sous-répertoire (http://serveur/simcity/) donne un
     # REQUEST_URI « /simcity/uploads/pdf_logo_… », qu'une ancre « ^/uploads/ »
     # ne reconnaîtrait pas — le logo disparaîtrait alors de tous les e-mails.
-    RewriteCond %{REQUEST_URI} !/uploads/pdf_logo_
+    # L'exception se limite aux extensions d'image : un logo déposé avant le
+    # correctif avec une extension .html ou .svg (XSS stockée) reste bloqué.
+    RewriteCond %{REQUEST_URI} !/uploads/pdf_logo_[0-9a-f]+\.(png|jpe?g|gif|webp)$ [NC]
     RewriteRule ^uploads/[^/]+$ - [F,L]
 
     # Défense en profondeur : aucun document bureautique n'est servi

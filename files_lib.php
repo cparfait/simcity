@@ -22,7 +22,7 @@
 // contient jamais (l'upload les bloque déjà), mais une archive *téléversée*
 // par l'administrateur passe par le même extracteur : on ne se fie pas à sa
 // provenance. Doit rester alignée sur la liste de l'upload de documents.
-const SIMCITY_FILES_BLOCKED_EXT = ['php','phtml','phar','php3','php4','php5','php7','phps','cgi','pl','py','sh','rb','exe'];
+const SIMCITY_FILES_BLOCKED_EXT = ['php','phtml','phar','php3','php4','php5','php7','php8','phps','pht','phpt','cgi','pl','py','sh','rb','exe'];
 
 // ─────────────────────────────────────────────────────────────
 //  Chemins
@@ -104,6 +104,8 @@ function simcity_files_archive_create(string $srcDir, string $destPath): int {
         foreach ($it as $item) {
             $rel = str_replace('\\', '/', substr($item->getPathname(), strlen($srcDir) + 1));
             if ($rel === '') continue;
+            // Fichiers cachés (.htaccess de protection…) : l'extraction les refuse.
+            if (preg_match('#(^|/)\.#', $rel)) continue;
             if ($item->isDir()) {
                 simcity_tar_put_header($gz, $rel . '/', 0, (int)$item->getMTime(), '5', 0755);
                 continue;
@@ -153,8 +155,12 @@ function simcity_files_dir_stats(string $dir): array {
 // ─────────────────────────────────────────────────────────────
 
 // Extrait une archive dans $destDir. Retourne [extraits, ignorés].
-// Tout chemin absolu, remontant (« ../ ») ou d'extension exécutable est
-// ignoré : l'archive peut venir d'un téléversement, pas seulement de nous.
+// Tout chemin absolu, remontant (« ../ »), caché ou d'extension exécutable
+// est ignoré : l'archive peut venir d'un téléversement, pas seulement de nous.
+// Les fichiers cachés surtout : un « .htaccess » déposé dans uploads/
+// (« AddType application/x-httpd-php .png ») ferait exécuter n'importe
+// quelle image comme du PHP, et un « .user.ini » idem sous PHP-FPM.
+// SimCity n'en écrit jamais dans ses archives.
 function simcity_files_archive_extract(string $archivePath, string $destDir): array {
     $gz = @gzopen($archivePath, 'rb');
     if (!$gz) throw new RuntimeException("Archive illisible : " . basename($archivePath));
@@ -185,7 +191,7 @@ function simcity_files_archive_extract(string $archivePath, string $destDir): ar
             $rel  = str_replace('\\', '/', $name);
             $safe = $rel !== ''
                  && $rel[0] !== '/'
-                 && !preg_match('#(^|/)\.\.(/|$)#', $rel)
+                 && !preg_match('#(^|/)\.#', $rel)
                  && !preg_match('#^[A-Za-z]:#', $rel)
                  && !in_array(strtolower(pathinfo($rel, PATHINFO_EXTENSION)), SIMCITY_FILES_BLOCKED_EXT, true);
 
